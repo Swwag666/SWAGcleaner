@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui import icons, sounds, theme
-from ui.character import MOODS, Assistant, Mascot, SpeechBox
+from ui.character import MOODS, Assistant, Mascot, SpeechBox, demo_moods
 from ui.context import Context
 from ui.dialog import ConfirmDialog
 from ui.scene import SceneStack
@@ -52,11 +52,13 @@ _LOGGER = logging.getLogger("swag.ui.main")
 
 # Разделы приложения: имя (оно же ключ реплики персонажа), ключ названия,
 # класс страницы и настроение помощницы на этом разделе.
+# В покое она не ищет мусор: лупа появляется только на время работы, позу
+# «scan» ставит _start_work.
 PAGES = (
-    ("advisor", "tabs.advisor", AdvisorTab, "scan"),
+    ("advisor", "tabs.advisor", AdvisorTab, "idle"),
     ("cleaner", "tabs.cleaner", CleanerTab, "think"),
     ("dedup", "tabs.dedup", DedupTab, "think"),
-    ("tweaks", "tabs.tweaks", TweaksTab, "scan"),
+    ("tweaks", "tabs.tweaks", TweaksTab, "idle"),
     ("settings", "tabs.settings", SettingsTab, "calm"),
 )
 
@@ -394,10 +396,16 @@ class MainWindow(QMainWindow):
         self._assistant_button.setToolTip(self._context.tr(key))
 
     def cycle_mood(self) -> str:
-        """Показать по кругу все настроения помощницы (проверка поз без ядра)."""
+        """Показать по кругу позы помощницы (проверка арта без ядра).
+
+        Листаются только настроения со своей картинкой: idle, think и calm
+        сейчас рисуются одной и той же позой, и повторять её трижды подряд
+        в демонстрации незачем.
+        """
+        order = demo_moods() or list(MOODS)
         current = self._mascot.mood()
-        index = (MOODS.index(current) + 1) % len(MOODS) if current in MOODS else 0
-        mood = MOODS[index]
+        index = (order.index(current) + 1) % len(order) if current in order else 0
+        mood = order[index]
         self._mascot.set_mood(mood)
         self.setStatus(
             f"{self._context.tr('character.mood_label')}: "

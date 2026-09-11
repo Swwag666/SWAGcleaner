@@ -182,7 +182,7 @@ def _self_test() -> int:
         from PySide6.QtWidgets import QApplication
 
         from ui import sounds
-        from ui.character import available_moods, talk_frame_paths
+        from ui.character import available_moods, available_talk_frames, demo_moods
         from ui.context import init_context
         from ui.dialog import ConfirmDialog
         from ui.main import MainWindow
@@ -200,6 +200,8 @@ def _self_test() -> int:
 
         moods = available_moods()
         found_moods = sorted(name for name, path in moods.items() if path is not None)
+        talk = available_talk_frames()
+        own = demo_moods()
         speech = window._speech.full_text()
 
         lines.append(f"локаль: {context.locale()}")
@@ -210,7 +212,11 @@ def _self_test() -> int:
         lines.append(f"app.title: {title!r}")
         lines.append(f"tabs.advisor: {advisor!r}")
         lines.append(f"позы персонажа: {', '.join(found_moods) or 'нет'}")
-        lines.append(f"кадры речи: {len(talk_frame_paths())}")
+        lines.append(f"свои позы: {', '.join(own) or 'нет'}")
+        lines.append(
+            "кадры речи: "
+            + ", ".join(f"{mood}={count}" for mood, count in talk.items() if count)
+        )
         lines.append(f"первая реплика: {speech[:40]!r}")
 
         # Звук: блип собирается в памяти, для проверки аудиоустройства не нужны.
@@ -249,6 +255,14 @@ def _self_test() -> int:
             code = 1
         if moods["scan"] is None or moods["panic"] is None:
             lines.append("ОШИБКА: картинки персонажа не попали в сборку")
+            code = 1
+        if moods["calm"] is None or moods["calm"] == moods["scan"]:
+            lines.append("ОШИБКА: спокойная поза не попала в сборку")
+            code = 1
+        # Поз без кадров речи быть не должно: иначе рот не открывается.
+        silent = sorted(mood for mood, path in moods.items() if path and talk[mood] < 2)
+        if silent:
+            lines.append(f"ОШИБКА: нет кадров речи у поз: {', '.join(silent)}")
             code = 1
         if not speech:
             lines.append("ОШИБКА: панель реплики пуста — персонаж не заговорил")

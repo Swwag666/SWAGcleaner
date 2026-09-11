@@ -32,18 +32,21 @@ ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets" / "character"
 MOODS: Tuple[str, ...] = ("idle", "scan", "think", "calm", "panic")
 
 # Что искать для каждого настроения: первое найденное побеждает.
-# calm и think пока откатываются на рабочую позу — как только появятся
-# отдельные картинки с этими именами, они подхватятся сами.
+# Лупа — только у поиска мусора: спокойное ожидание, раздумья и выдох берут
+# calm.png, поэтому на главной странице она стоит спокойно, а поза с лупой
+# появляется ровно на время сканирования. idle и think пока откатываются на
+# спокойную позу: отдельных артов для них нет.
 MOOD_FILES: Dict[str, Tuple[str, ...]] = {
-    "idle": ("idle.png", "calm.png", "scan.png"),
+    "idle": ("idle.png", "calm.png"),
     "scan": ("scan.png",),
-    "think": ("think.png", "scan.png"),
+    "think": ("think.png", "calm.png"),
     "calm": ("calm.png", "scan.png"),
     "panic": ("panic.png",),
 }
 
-# Кадры речи: закрытый рот, открытый, необязательный промежуточный.
-TALK_FRAMES: Tuple[str, ...] = ("talk-closed.png", "talk-half.png", "talk-open.png")
+# Кадры речи ищем у той же позы: «calm-talk-open.png» и «calm-talk-closed.png».
+# Если у позы своих кадров нет, смотрим общие «talk-*.png».
+TALK_SUFFIXES: Tuple[str, ...] = ("closed", "half", "open")
 
 # Частота переключения кадров речи, кадров в секунду.
 TALK_FPS = 9.0
@@ -58,14 +61,39 @@ def pose_path(mood: str) -> Optional[Path]:
     return None
 
 
-def talk_frame_paths() -> List[Path]:
-    """Существующие кадры речи в порядке цикла."""
-    return [ASSETS_DIR / name for name in TALK_FRAMES if (ASSETS_DIR / name).is_file()]
+def talk_frame_paths(mood: str) -> List[Path]:
+    """Кадры речи для настроения: сначала свои у позы, потом общие.
+
+    Своих кадров нужно хотя бы два: один кадр — это не анимация, а статика.
+    """
+    pose = pose_path(mood)
+    if pose is not None:
+        own = [ASSETS_DIR / f"{pose.stem}-talk-{suffix}.png" for suffix in TALK_SUFFIXES]
+        own = [path for path in own if path.is_file()]
+        if len(own) >= 2:
+            return own
+    generic = [ASSETS_DIR / f"talk-{suffix}.png" for suffix in TALK_SUFFIXES]
+    return [path for path in generic if path.is_file()]
+
+
+def demo_moods() -> List[str]:
+    """Настроения со своей картинкой (не откат на чужую).
+
+    Нужно для демонстрации поз по F2: показывать по кругу одно и то же
+    изображение трижды подряд смысла нет. Как только появится отдельный арт
+    (idle.png, think.png), он попадёт в список сам — код менять не придётся.
+    """
+    return [mood for mood in MOODS if (ASSETS_DIR / f"{mood}.png").is_file()]
 
 
 def available_moods() -> Dict[str, Optional[Path]]:
     """Какие настроения реально есть в сборке — для самопроверки и тестов."""
     return {mood: pose_path(mood) for mood in MOODS}
+
+
+def available_talk_frames() -> Dict[str, int]:
+    """Сколько кадров речи нашлось для каждого настроения."""
+    return {mood: len(talk_frame_paths(mood)) for mood in MOODS}
 
 
 class Mascot(QWidget):
@@ -100,6 +128,8 @@ class Mascot(QWidget):
         if normalised == self._mood:
             return
         self._mood = normalised
+        # Кадры речи у каждой позы свои, поэтому кэш сбрасываем.
+        self._talk_frames = None
         self.update()
 
     def is_speaking(self) -> bool:
@@ -127,7 +157,7 @@ class Mascot(QWidget):
         if self._talk_frames is not None:
             return
         frames: List[QPixmap] = []
-        for path in talk_frame_paths():
+        for path in talk_frame_paths(self._mood):
             pixmap = QPixmap(str(path))
             if not pixmap.isNull():
                 frames.append(pixmap)

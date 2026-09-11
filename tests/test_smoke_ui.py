@@ -20,7 +20,17 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QPushButton, QWidget
 
 from ui import sounds, theme
-from ui.character import MOODS, Assistant, Mascot, SpeechBox, available_moods, pose_path
+from ui.character import (
+    MOODS,
+    Assistant,
+    Mascot,
+    SpeechBox,
+    available_moods,
+    available_talk_frames,
+    demo_moods,
+    pose_path,
+    talk_frame_paths,
+)
 from ui.context import ctx
 from ui.dialog import ConfirmDialog
 from ui.main import PAGES, MainWindow
@@ -515,18 +525,83 @@ class TestCharacterAssets:
         assert moods["scan"] is not None
         assert moods["panic"] is not None
 
-    def test_calm_and_think_fall_back_to_working_pose(self, qapp: t.Any) -> None:
-        # Отдельных артов для calm и think пока нет — они должны честно
-        # откатываться на рабочую позу, а не оставлять пустое место.
+    def test_calm_pose_is_its_own_picture(self, qapp: t.Any) -> None:
+        # Спокойная поза — отдельный арт, а не та же фотка с лупой.
         moods = available_moods()
-        assert moods["calm"] == moods["scan"]
-        assert moods["think"] == moods["scan"]
+        assert moods["calm"] is not None
+        assert moods["calm"] != moods["scan"]
+        assert moods["calm"].name == "calm.png"
+
+    def test_magnifier_stays_on_the_scanning_pose(self, qapp: t.Any) -> None:
+        # Поза с лупой — только у поиска мусора: покой и раздумья берут
+        # спокойную картинку, иначе лупа висела бы на главной странице.
+        moods = available_moods()
+        assert moods["idle"] == moods["calm"]
+        assert moods["think"] == moods["calm"]
+        assert moods["scan"] != moods["calm"]
+
+    def test_main_page_does_not_rest_in_scanning_pose(self, qapp: t.Any) -> None:
+        from ui.main import PAGES
+
+        advisor_mood = PAGES[0][3]
+        assert advisor_mood != "scan"
+        assert available_moods()[advisor_mood] == available_moods()["calm"]
+
+    def test_every_pose_has_mouth_frames(self, qapp: t.Any) -> None:
+        # Без кадров рта речь — только покачивание, и рот не открывается.
+        talk = available_talk_frames()
+        for mood, path in available_moods().items():
+            if path is None:
+                continue
+            assert talk[mood] >= 2, f"у позы {mood} нет кадров речи"
+
+    def test_talk_frames_keep_the_pose_size(self, qapp: t.Any) -> None:
+        # Кадры речи должны совпадать с позой по холсту: иначе на 9 кадрах
+        # в секунду фигура подпрыгивала бы при каждом открытии рта.
+        for mood in demo_moods():
+            pose = QImage(str(pose_path(mood)))
+            for frame_path in talk_frame_paths(mood):
+                frame = QImage(str(frame_path))
+                assert not frame.isNull()
+                assert frame.size() == pose.size()
+
+    def test_talk_frames_differ_only_around_the_mouth(self, qapp: t.Any) -> None:
+        # Разница между открытым и закрытым ртом должна сидеть в области
+        # лица: если она расползлась по кадру, кадры готовили вразнобой.
+        for mood in demo_moods():
+            frames = talk_frame_paths(mood)
+            closed = QImage(str(frames[0])).convertToFormat(QImage.Format.Format_ARGB32)
+            opened = QImage(str(frames[-1])).convertToFormat(QImage.Format.Format_ARGB32)
+            xs: t.List[int] = []
+            ys: t.List[int] = []
+            for y in range(0, closed.height(), 2):
+                for x in range(0, closed.width(), 2):
+                    a = closed.pixelColor(x, y)
+                    b = opened.pixelColor(x, y)
+                    delta = (
+                        abs(a.red() - b.red())
+                        + abs(a.green() - b.green())
+                        + abs(a.blue() - b.blue())
+                        + abs(a.alpha() - b.alpha())
+                    )
+                    if delta > 30:
+                        xs.append(x)
+                        ys.append(y)
+            assert xs, f"у позы {mood} открытый и закрытый рот одинаковые"
+            box = (max(xs) - min(xs)) / closed.width(), (max(ys) - min(ys)) / closed.height()
+            assert box[0] < 0.35, f"{mood}: разница по ширине {box}"
+            assert box[1] < 0.35, f"{mood}: разница по высоте {box}"
+            # И это именно лицо, а не угол кадра.
+            center_x = (min(xs) + max(xs)) / 2 / closed.width()
+            center_y = (min(ys) + max(ys)) / 2 / closed.height()
+            assert 0.35 < center_x < 0.85, f"{mood}: рот не там, где лицо ({center_x})"
+            assert center_y < 0.55, f"{mood}: рот ниже лица ({center_y})"
 
     def test_unknown_mood_has_no_file(self, qapp: t.Any) -> None:
         assert pose_path("неведомое") is None
 
     def test_poses_have_cut_out_background(self, qapp: t.Any) -> None:
-        for mood in ("scan", "panic"):
+        for mood in demo_moods():
             image = QImage(str(available_moods()[mood]))
             assert not image.isNull()
             assert image.hasAlphaChannel()
@@ -713,9 +788,26 @@ class TestWindowAssistant:
         assert win._assistant_button.toolTip() == ctx().tr("header.assistant_show")
         win.toggle_assistant()
 
-    def test_cycle_mood_walks_through_every_mood(self, win: t.Any) -> None:
-        seen = {win.cycle_mood() for _ in range(len(MOODS))}
-        assert seen == set(MOODS)
+    def test_cycle_mood_walks_through_every_drawn_pose(self, win: t.Any) -> None:
+        # Листаются только позы со своим артом: idle, think и calm рисуются
+        # одной картинкой, показывать её трижды подряд незачем.
+        order = demo_moods()
+        assert order
+        seen = {win.cycle_mood() for _ in range(len(order))}
+        assert seen == set(order)
+
+    def test_cycle_mood_never_repeats_the_same_picture(self, win: t.Any) -> None:
+        pictures = []
+        for _ in range(len(demo_moods())):
+            pictures.append(pose_path(win.cycle_mood()))
+        assert len(set(pictures)) == len(pictures)
+
+    def test_every_mood_from_the_core_is_still_accepted(self, win: t.Any) -> None:
+        # Демонстрация сузилась до нарисованных поз, но словарь настроений
+        # для ядра остался полным: скан, раздумья и покой никуда не делись.
+        for mood in MOODS:
+            win._mascot.set_mood(mood)
+            assert win._mascot.mood() == mood
 
     def test_context_can_order_a_line_and_a_mood(self, win: t.Any) -> None:
         ctx().say("Реплика из ядра")
