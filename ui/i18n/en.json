@@ -1,0 +1,111 @@
+{
+  "app": {
+    "title": "SWAGcleaner",
+    "subtitle": "Tidy up your PC — locally, safely"
+  },
+  "menu": {
+    "file": "File",
+    "edit": "Edit",
+    "view": "View",
+    "help": "Help",
+    "language": "Language",
+    "settings": "Settings",
+    "about": "About"
+  },
+  "tabs": {
+    "advisor": "Advisor",
+    "cleaner": "Cleaner",
+    "dedup": "Photo Duplicates",
+    "tweaks": "Tweaks",
+    "settings": "Settings"
+  },
+  "advisor": {
+    "title": "System Advisor",
+    "subtitle": "Reads the system and suggests a plan",
+    "scan_button": "Scan system",
+    "scan_hint": "Reads installed apps, processes, services, and startup items",
+    "scan_running": "Scanning…",
+    "scan_done": "Scan complete",
+    "scan_empty": "Nothing to scan.",
+    "plan_title": "Action Plan",
+    "no_plan": "No recommendations yet.",
+    "apply_button": "Apply selected",
+    "apply_running": "Applying…",
+    "item_type_remove": "Remove",
+    "item_type_disable": "Disable",
+    "item_type_explore": "Check",
+    "risk_low": "Low",
+    "risk_medium": "Medium",
+    "risk_high": "High",
+    "reason_placeholder": "Explanation will appear here"
+  },
+  "cleaner": {
+    "title": "Cleaner",
+    "scan_button": "Find temp files",
+    "scan_hint": "Looks for temp files, caches, and junk",
+    "scan_running": "Scanning…",
+    "scan_done": "Scan complete",
+    "scan_empty": "Nothing to scan.",
+    "candidates_title": "Candidates found",
+    "candidates_empty": "Nothing found.",
+    "clean_button": "Delete selected to Recycle Bin",
+    "clean_running": "Cleaning…",
+    "size_bytes": "bytes",
+    "size_kb": "KB",
+    "size_mb": "MB",
+    "size_gb": "GB"
+  },
+  "dedup": {
+    "title": "Photo Duplicates",
+    "subtitle": "Finds duplicate and visually similar photos",
+    "folder_button": "Choose folder",
+    "folder_hint": "Pick a folder to scan images inside",
+    "scan_button": "Find duplicates",
+    "scan_hint": "Uses exact hashes and perceptual hash (imagehash)",
+    "scan_running": "Scanning…",
+    "scan_done": "Scan complete",
+    "scan_empty": "Nothing to scan.",
+    "groups_title": "Groups found",
+    "groups_empty": "No duplicates found.",
+    "delete_button": "Delete selected to Recycle Bin",
+    "delete_running": "Deleting…",
+    "similar_hint": "Similar photos — perceptual hash"
+  },
+  "tweaks": {
+    "title": "Tweaks",
+    "startup_button": "Startup manager",
+    "services_button": "Services",
+    "uwp_button": "Built-in apps (UWP)",
+    "restore_button": "Create restore point",
+    "running": "Running…"
+  },
+  "settings": {
+    "title": "Settings",
+    "language_label": "Interface language",
+    "theme_label": "Theme",
+    "theme_dark": "Dark",
+    "theme_light": "Light",
+    "exclusions_label": "Cleaner exclusions",
+    "backup_label": "Backups",
+    "backup_viewer": "View backups",
+    "restore_button": "Restore from backup",
+    "backup_info": "Backups are stored locally and kept only for rollback.",
+    "ollama_label": "Ollama (optional)",
+    "ollama_note": "Later — local advisor with Ollama. Not active yet."
+  },
+  "status": {
+    "ready": "Ready",
+    "scanning": "Scanning…",
+    "processing": "Processing…",
+    "idle": "Idle"
+  },
+  "common": {
+    "yes": "Yes",
+    "no": "No",
+    "cancel": "Cancel",
+    "apply": "Apply",
+    "close": "Close",
+    "confirm": "Confirm",
+    "back": "Back"
+  }
+}

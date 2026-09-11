@@ -1,0 +1,111 @@
+{
+  "app": {
+    "title": "SWAGcleaner",
+    "subtitle": "Оптимизация ПК — локально, безопасно"
+  },
+  "menu": {
+    "file": "Файл",
+    "edit": "Правка",
+    "view": "Вид",
+    "help": "Справка",
+    "language": "Язык",
+    "settings": "Настройки",
+    "about": "О программе"
+  },
+  "tabs": {
+    "advisor": "Советник",
+    "cleaner": "Чистка",
+    "dedup": "Дубликаты фото",
+    "tweaks": "Твики",
+    "settings": "Настройки"
+  },
+  "advisor": {
+    "title": "Советник системы",
+    "subtitle": "Читает систему и предлагает план",
+    "scan_button": "Сканировать систему",
+    "scan_hint": "Читает установленные программы, процессы, службы и автозагрузку",
+    "scan_running": "Сканирование…",
+    "scan_done": "Сканирование завершено",
+    "scan_empty": "Ничего не сканировать.",
+    "plan_title": "План действий",
+    "no_plan": "Пока нет рекомендаций.",
+    "apply_button": "Применить выбранное",
+    "apply_running": "Применение…",
+    "item_type_remove": "Удалить",
+    "item_type_disable": "Отключить",
+    "item_type_explore": "Проверить",
+    "risk_low": "Низкий",
+    "risk_medium": "Средний",
+    "risk_high": "Высокий",
+    "reason_placeholder": "Пояснение появится здесь"
+  },
+  "cleaner": {
+    "title": "Чистка",
+    "scan_button": "Найти временные файлы",
+    "scan_hint": "Ищет временные файлы, кэши и мусор",
+    "scan_running": "Сканирование…",
+    "scan_done": "Сканирование завершено",
+    "scan_empty": "Ничего не сканировать.",
+    "candidates_title": "Найдено кандидатов",
+    "candidates_empty": "Ничего не найдено.",
+    "clean_button": "Удалить выбранное в корзину",
+    "clean_running": "Очистка…",
+    "size_bytes": "байт",
+    "size_kb": "КБ",
+    "size_mb": "МБ",
+    "size_gb": "ГБ"
+  },
+  "dedup": {
+    "title": "Дубликаты фото",
+    "subtitle": "Находит дубликаты и похожие фото",
+    "folder_button": "Выбрать папку",
+    "folder_hint": "Выбрать папку для сканирования изображений",
+    "scan_button": "Найти дубликаты",
+    "scan_hint": "Использует точные хеши и perceptual hash (imagehash)",
+    "scan_running": "Сканирование…",
+    "scan_done": "Сканирование завершено",
+    "scan_empty": "Ничего не сканировать.",
+    "groups_title": "Найдено групп",
+    "groups_empty": "Не найдено дубликатов.",
+    "delete_button": "Удалить выбранные в корзину",
+    "delete_running": "Удаление…",
+    "similar_hint": "Похожие фото — perceptual hash"
+  },
+  "tweaks": {
+    "title": "Твики",
+    "startup_button": "Управление автозагрузкой",
+    "services_button": "Службы",
+    "uwp_button": "Встроенные приложения (UWP)",
+    "restore_button": "Создать точку восстановления",
+    "running": "Выполняется…"
+  },
+  "settings": {
+    "title": "Настройки",
+    "language_label": "Язык интерфейса",
+    "theme_label": "Тема",
+    "theme_dark": "Тёмная",
+    "theme_light": "Светлая",
+    "exclusions_label": "Исключения для чистки",
+    "backup_label": "Бэкапы",
+    "backup_viewer": "Просмотр бэкапов",
+    "restore_button": "Восстановить из бэкапа",
+    "backup_info": "Бэкапы хранятся локально и остаются лишь для отката изменений.",
+    "ollama_label": "Ollama (опционально)",
+    "ollama_note": "В будущем — локальный советник с Ollama. Пока не активно."
+  },
+  "status": {
+    "ready": "Готов",
+    "scanning": "Сканирование…",
+    "processing": "Обработка…",
+    "idle": "Ожидание"
+  },
+  "common": {
+    "yes": "Да",
+    "no": "Нет",
+    "cancel": "Отмена",
+    "apply": "Применить",
+    "close": "Закрыть",
+    "confirm": "Подтвердить",
+    "back": "Назад"
+  }
+}
