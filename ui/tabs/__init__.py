@@ -1,53 +1,105 @@
-"""Вкладки SWAGcleaner — заглушки с кнопками для MVP.
+"""Страницы SWAGcleaner — разделы бокового меню.
 
-Каждая вкладка — самостоятельный виджет с заглушками кнопок.
-Позже заменим на реальную логику.
+Пока это каркас: у каждой страницы есть заголовок, пояснение, область
+результата и кнопки действий. Кнопки шлют сигналы, а к ядру их подключим
+следующим шагом.
+
+Важное про локализацию: страницы умеют переводить себя заново —
+retranslate() переставляет все подписи, поэтому переключение языка
+меняет интерфейс целиком, а не только пункты меню.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from PySide6.QtWidgets import QWidget
+from typing import Dict, List, Optional, Tuple
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QVBoxLayout,
     QWidget,
-    QGroupBox,
-    QComboBox,
 )
 
-from ui.theme import heading, subheading, body, hint, button, spacer
 from ui.context import ctx
+from ui.theme import body, button, card, divider, heading, hint, section, spacer, subheading
 
 
 class EmptyTab(QWidget):
-    """Базовая вкладка с заглушкой."""
+    """Базовая страница: заголовок, пояснение, область результата и кнопки."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._layout = QVBoxLayout(self)
-        self._layout.setContentsMargins(12, 12, 12, 12)
-        self._layout.setSpacing(8)
-        self._init()
+        self._buttons: List[Tuple[QPushButton, str]] = []
+        self._section_labels: List[Tuple[QLabel, str]] = []
+        self._title_label: Optional[QLabel] = None
+        self._sub_label: Optional[QLabel] = None
+        self._desc_label: Optional[QLabel] = None
 
-    def _init(self) -> None:
-        h = heading(self._title())
-        h.setProperty("role", "secondary")
-        sub = subheading(self._subheading())
-        sub.setProperty("role", "secondary")
-        desc = body(self._description())
-        desc.setProperty("role", "secondary")
-        desc.setWordWrap(True)
-        self._layout.addWidget(h)
-        self._layout.addWidget(sub)
-        self._layout.addWidget(desc)
-        self._layout.addWidget(spacer())
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(28, 24, 28, 22)
+        self._layout.setSpacing(6)
+        self._build()
+
+    # ---------- сборка ----------
+
+    def _build(self) -> None:
+        self._title_label = heading(self._title())
+        self._sub_label = subheading(self._subheading())
+        # Описание страницы — это полезный текст, а не сноска: делаем его
+        # вторичным цветом, а не самым бледным.
+        self._desc_label = body(self._description())
+        self._desc_label.setProperty("role", "secondary")
+        self._layout.addWidget(self._title_label)
+        self._layout.addWidget(self._sub_label)
+        self._layout.addWidget(self._desc_label)
+        self._layout.addWidget(spacer(8))
+        self._layout.addWidget(divider())
+        self._layout.addWidget(spacer(8))
+        self._add_result_area()
+        self._layout.addStretch(1)
         self._add_buttons()
-        self._layout.addStretch()
+
+    def _add_result_area(self) -> None:
+        """Область, где появятся результаты (заполняют подклассы)."""
+
+    def _add_buttons(self) -> None:
+        """Кнопки действий (заполняют подклассы)."""
+
+    def _make_card(self) -> Tuple[QFrame, QVBoxLayout]:
+        """Карточка для результатов."""
+        frame = card(self)
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
+        return frame, layout
+
+    def _add_button(self, text_key: str, primary: bool = False) -> QPushButton:
+        """Создать кнопку и запомнить её ключ перевода."""
+        widget = button(ctx().tr(text_key), self, primary=primary)
+        widget.setMinimumHeight(38)
+        self._buttons.append((widget, text_key))
+        return widget
+
+    def _add_section_label(self, text_key: str, card_layout: QVBoxLayout) -> QLabel:
+        """Заголовок блока внутри карточки (тоже переводится)."""
+        label = section(ctx().tr(text_key), self)
+        self._section_labels.append((label, text_key))
+        card_layout.addWidget(label)
+        return label
+
+    def _add_row(self, *widgets: QWidget) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        for widget in widgets:
+            row.addWidget(widget)
+        row.addStretch(1)
+        self._layout.addLayout(row)
+        return row
+
+    # ---------- тексты ----------
 
     def _title(self) -> str:
         return ""
@@ -58,52 +110,49 @@ class EmptyTab(QWidget):
     def _description(self) -> str:
         return ""
 
-    def _add_buttons(self) -> None:
-        pass
+    def retranslate(self) -> None:
+        """Перевести все подписи страницы заново."""
+        if self._title_label is not None:
+            self._title_label.setText(self._title())
+        if self._sub_label is not None:
+            self._sub_label.setText(self._subheading())
+        if self._desc_label is not None:
+            self._desc_label.setText(self._description())
+        for label, key in self._section_labels:
+            label.setText(ctx().tr(key))
+        for widget, key in self._buttons:
+            widget.setText(ctx().tr(key))
 
 
 class AdvisorTab(EmptyTab):
-    """Вкладка советника — пока заглушка с видимыми кнопками и слотами.
-
-    Планируется: скан → план → подтверждение → применение.
-    """
+    """Советник: скан → план → подтверждение пользователя."""
 
     scanRequested = Signal()
     applyRequested = Signal()
 
-    _status_label: QLabel | None = None
-    _plan_area: QLabel | None = None
-
     def __init__(self, parent: QWidget | None = None) -> None:
+        self._status_label: Optional[QLabel] = None
+        self._plan_area: Optional[QLabel] = None
         super().__init__(parent)
 
-    def _init(self) -> None:
-        # Шапку строим сами (как в остальных вкладках): иначе кнопки
-        # добавлялись бы дважды, а статус и план уезжали под растяжку.
-        h = heading(self._title())
-        h.setProperty("role", "secondary")
-        sub = subheading(self._subheading())
-        sub.setProperty("role", "secondary")
-        desc = body(self._description())
-        desc.setProperty("role", "secondary")
-        desc.setWordWrap(True)
-        self._layout.addWidget(h)
-        self._layout.addWidget(sub)
-        self._layout.addWidget(desc)
-        # Статус-строка, видимая поверх кнопок
-        self._status_label = body(self._status_text())
+    def _add_result_area(self) -> None:
+        frame, layout = self._make_card()
+        self._add_section_label("advisor.plan_title", layout)
+        self._status_label = body(self._status_text(), self)
         self._status_label.setProperty("role", "secondary")
-        self._status_label.setWordWrap(True)
-        self._layout.addWidget(self._status_label)
-        self._layout.addWidget(spacer())
-        # План — пока только заглушка, но видимый контейнер
-        self._plan_area = body(self._plan_text())
+        self._plan_area = body(self._plan_text(), self)
         self._plan_area.setProperty("role", "secondary")
-        self._plan_area.setWordWrap(True)
-        self._layout.addWidget(self._plan_area)
-        self._layout.addWidget(spacer())
-        self._add_buttons()
-        self._layout.addStretch()
+        layout.addWidget(self._status_label)
+        layout.addWidget(self._plan_area)
+        self._layout.addWidget(frame)
+
+    def _add_buttons(self) -> None:
+        scan = self._add_button("advisor.scan_button", primary=True)
+        scan.clicked.connect(self.scanRequested.emit)
+        apply_button = self._add_button("advisor.apply_button", primary=True)
+        apply_button.clicked.connect(self.applyRequested.emit)
+        self._add_row(scan, apply_button)
+        self._layout.addStretch(1)
 
     def _status_text(self) -> str:
         return ctx().tr("advisor.scan_empty")
@@ -128,75 +177,42 @@ class AdvisorTab(EmptyTab):
     def _description(self) -> str:
         return ctx().tr("advisor.scan_hint")
 
-    def _add_buttons(self) -> None:
-        scan_btn = button(ctx().tr("advisor.scan_button"), primary=True)
-        scan_btn.setMinimumHeight(36)
-        scan_btn.clicked.connect(self.scanRequested.emit)
-        apply_btn = button(ctx().tr("advisor.apply_button"), primary=True)
-        apply_btn.setMinimumHeight(36)
-        apply_btn.clicked.connect(self.applyRequested.emit)
-        # Кнопки приоритетнее — ставим их после статуса/плана,
-        # но до растягивающего элемента.
-        self._layout.addWidget(scan_btn)
-        self._layout.addWidget(spacer())
-        self._layout.addWidget(apply_btn)
-
 
 class CleanerTab(EmptyTab):
-    """Вкладка чистки — пока заглушка с видимыми кнопками.
-
-    Планируется: скан путей → список кандидатов → удаление в корзину.
-    """
+    """Чистка: скан путей → кандидаты → удаление только в корзину."""
 
     scanRequested = Signal()
     cleanRequested = Signal()
 
-    _status_label: QLabel | None = None
-    _candidates_area: QLabel | None = None
-
     def __init__(self, parent: QWidget | None = None) -> None:
-        # Метки создаёт _init(), здесь их обнулять нельзя —
-        # иначе setStatus()/setCandidates() молча ничего не делают.
+        self._status_label: Optional[QLabel] = None
+        self._candidates_area: Optional[QLabel] = None
         super().__init__(parent)
 
-    def _init(self) -> None:
-        h = heading(self._title())
-        h.setProperty("role", "secondary")
-        sub = subheading(self._subheading())
-        sub.setProperty("role", "secondary")
-        desc = body(self._description())
-        desc.setProperty("role", "secondary")
-        desc.setWordWrap(True)
-        self._layout.addWidget(h)
-        self._layout.addWidget(sub)
-        self._layout.addWidget(desc)
-        self._status_label = body(self._status_text())
+    def _add_result_area(self) -> None:
+        frame, layout = self._make_card()
+        self._add_section_label("cleaner.candidates_title", layout)
+        self._status_label = body(self._status_text(), self)
         self._status_label.setProperty("role", "secondary")
-        self._status_label.setWordWrap(True)
-        self._layout.addWidget(self._status_label)
-        self._layout.addWidget(spacer())
-        self._candidates_area = body(self._candidates_text())
+        self._candidates_area = body(self._candidates_text(), self)
         self._candidates_area.setProperty("role", "secondary")
-        self._candidates_area.setWordWrap(True)
-        self._layout.addWidget(self._candidates_area)
-        self._layout.addWidget(spacer())
-        self._add_buttons()
-        self._layout.addStretch()
+        layout.addWidget(self._status_label)
+        layout.addWidget(self._candidates_area)
+        self._layout.addWidget(frame)
+
+    def _add_buttons(self) -> None:
+        scan = self._add_button("cleaner.scan_button", primary=True)
+        scan.clicked.connect(self.scanRequested.emit)
+        clean = self._add_button("cleaner.clean_button", primary=True)
+        clean.clicked.connect(self.cleanRequested.emit)
+        self._add_row(scan, clean)
+        self._layout.addStretch(1)
 
     def _status_text(self) -> str:
         return ctx().tr("cleaner.scan_empty")
 
     def _candidates_text(self) -> str:
         return ctx().tr("cleaner.candidates_empty")
-
-    def _title(self) -> str:
-        return ctx().tr("cleaner.title")
-
-    def _subheading(self) -> str:
-        return ctx().tr("cleaner.scan_hint")
-
-    def _description(self) -> str:
-        return ""
 
     def setStatus(self, text: str) -> None:
         if self._status_label is not None:
@@ -206,73 +222,54 @@ class CleanerTab(EmptyTab):
         if self._candidates_area is not None:
             self._candidates_area.setText(text)
 
-    def _add_buttons(self) -> None:
-        scan_btn = button(ctx().tr("cleaner.scan_button"), primary=True)
-        scan_btn.setMinimumHeight(36)
-        scan_btn.clicked.connect(self.scanRequested.emit)
-        clean_btn = button(ctx().tr("cleaner.clean_button"), primary=True)
-        clean_btn.setMinimumHeight(36)
-        clean_btn.clicked.connect(self.cleanRequested.emit)
-        self._layout.addWidget(scan_btn)
-        self._layout.addWidget(spacer())
-        self._layout.addWidget(clean_btn)
+    def _title(self) -> str:
+        return ctx().tr("cleaner.title")
+
+    def _subheading(self) -> str:
+        return ctx().tr("cleaner.scan_hint")
+
+    def _description(self) -> str:
+        return ctx().tr("cleaner.candidates_empty")
 
 
 class DedupTab(EmptyTab):
-    """Вкладка поиска дубликатов фото — заглушка с видимыми кнопками.
-
-    Планируется: выбор папки → скан → группы → удаление в корзину.
-    """
+    """Дубликаты фото: папка → скан → удаление в корзину."""
 
     chooseFolderRequested = Signal()
     scanRequested = Signal()
     deleteRequested = Signal()
 
-    _status_label: QLabel | None = None
-    _groups_area: QLabel | None = None
-
     def __init__(self, parent: QWidget | None = None) -> None:
-        # См. CleanerTab: метки создаёт _init(), обнулять их нельзя.
+        self._status_label: Optional[QLabel] = None
+        self._groups_area: Optional[QLabel] = None
         super().__init__(parent)
 
-    def _init(self) -> None:
-        h = heading(self._title())
-        h.setProperty("role", "secondary")
-        sub = subheading(self._subheading())
-        sub.setProperty("role", "secondary")
-        desc = body(self._description())
-        desc.setProperty("role", "secondary")
-        desc.setWordWrap(True)
-        self._layout.addWidget(h)
-        self._layout.addWidget(sub)
-        self._layout.addWidget(desc)
-        self._status_label = body(self._status_text())
+    def _add_result_area(self) -> None:
+        frame, layout = self._make_card()
+        self._add_section_label("dedup.groups_title", layout)
+        self._status_label = body(self._status_text(), self)
         self._status_label.setProperty("role", "secondary")
-        self._status_label.setWordWrap(True)
-        self._layout.addWidget(self._status_label)
-        self._layout.addWidget(spacer())
-        self._groups_area = body(self._groups_text())
+        self._groups_area = body(self._groups_text(), self)
         self._groups_area.setProperty("role", "secondary")
-        self._groups_area.setWordWrap(True)
-        self._layout.addWidget(self._groups_area)
-        self._layout.addWidget(spacer())
-        self._add_buttons()
-        self._layout.addStretch()
+        layout.addWidget(self._status_label)
+        layout.addWidget(self._groups_area)
+        self._layout.addWidget(frame)
+
+    def _add_buttons(self) -> None:
+        folder = self._add_button("dedup.folder_button")
+        folder.clicked.connect(self.chooseFolderRequested.emit)
+        scan = self._add_button("dedup.scan_button", primary=True)
+        scan.clicked.connect(self.scanRequested.emit)
+        delete = self._add_button("dedup.delete_button", primary=True)
+        delete.clicked.connect(self.deleteRequested.emit)
+        self._add_row(folder, scan, delete)
+        self._layout.addStretch(1)
 
     def _status_text(self) -> str:
         return ctx().tr("dedup.scan_empty")
 
     def _groups_text(self) -> str:
         return ctx().tr("dedup.groups_empty")
-
-    def _title(self) -> str:
-        return ctx().tr("dedup.title")
-
-    def _subheading(self) -> str:
-        return ctx().tr("dedup.scan_hint")
-
-    def _description(self) -> str:
-        return ""
 
     def setStatus(self, text: str) -> None:
         if self._status_label is not None:
@@ -282,110 +279,171 @@ class DedupTab(EmptyTab):
         if self._groups_area is not None:
             self._groups_area.setText(text)
 
-    def _add_buttons(self) -> None:
-        folder_btn = button(ctx().tr("dedup.folder_button"))
-        folder_btn.setMinimumHeight(36)
-        folder_btn.clicked.connect(self.chooseFolderRequested.emit)
-        scan_btn = button(ctx().tr("dedup.scan_button"), primary=True)
-        scan_btn.setMinimumHeight(36)
-        scan_btn.clicked.connect(self.scanRequested.emit)
-        delete_btn = button(ctx().tr("dedup.delete_button"), primary=True)
-        delete_btn.setMinimumHeight(36)
-        delete_btn.clicked.connect(self.deleteRequested.emit)
-        self._layout.addWidget(folder_btn)
-        self._layout.addWidget(spacer())
-        self._layout.addWidget(scan_btn)
-        self._layout.addWidget(spacer())
-        self._layout.addWidget(delete_btn)
+    def _title(self) -> str:
+        return ctx().tr("dedup.title")
+
+    def _subheading(self) -> str:
+        return ctx().tr("dedup.subtitle")
+
+    def _description(self) -> str:
+        return ctx().tr("dedup.scan_hint")
 
 
 class TweaksTab(EmptyTab):
-    """Вкладка твиков — заглушка с видимыми кнопками.
-
-    Планируется: автозагрузка, службы, UWP, точки восстановления.
-    """
+    """Твики: автозагрузка, службы, встроенные приложения, точка восстановления."""
 
     startupRequested = Signal()
     servicesRequested = Signal()
     uwpRequested = Signal()
     restoreRequested = Signal()
 
+    def _add_buttons(self) -> None:
+        startup = self._add_button("tweaks.startup_button")
+        startup.clicked.connect(self.startupRequested.emit)
+        services = self._add_button("tweaks.services_button")
+        services.clicked.connect(self.servicesRequested.emit)
+        uwp = self._add_button("tweaks.uwp_button")
+        uwp.clicked.connect(self.uwpRequested.emit)
+        restore = self._add_button("tweaks.restore_button")
+        restore.clicked.connect(self.restoreRequested.emit)
+        self._add_row(startup, services)
+        self._add_row(uwp, restore)
+        self._layout.addStretch(1)
+
     def _title(self) -> str:
         return ctx().tr("tweaks.title")
 
-    def _subheading(self) -> str:
-        return ""
-
     def _description(self) -> str:
-        return ""
-
-    def _add_buttons(self) -> None:
-        startup_btn = button(ctx().tr("tweaks.startup_button"))
-        startup_btn.setMinimumHeight(36)
-        startup_btn.clicked.connect(self.startupRequested.emit)
-        services_btn = button(ctx().tr("tweaks.services_button"))
-        services_btn.setMinimumHeight(36)
-        services_btn.clicked.connect(self.servicesRequested.emit)
-        uwp_btn = button(ctx().tr("tweaks.uwp_button"))
-        uwp_btn.setMinimumHeight(36)
-        uwp_btn.clicked.connect(self.uwpRequested.emit)
-        restore_btn = button(ctx().tr("tweaks.restore_button"))
-        restore_btn.setMinimumHeight(36)
-        restore_btn.clicked.connect(self.restoreRequested.emit)
-        self._layout.addWidget(startup_btn)
-        self._layout.addWidget(spacer())
-        self._layout.addWidget(services_btn)
-        self._layout.addWidget(spacer())
-        self._layout.addWidget(uwp_btn)
-        self._layout.addWidget(spacer())
-        self._layout.addWidget(restore_btn)
+        return ctx().tr("tweaks.running")
 
 
 class SettingsTab(EmptyTab):
-    """Вкладка настроек — заглушка с видимыми переключателями.
-
-    Планируется: язык, тема, исключения, бэкапы, Ollama.
-    """
+    """Настройки: язык, тема и шрифт применяются сразу и запоминаются."""
 
     languageChanged = Signal(str)
     themeChanged = Signal(str)
+    fontChanged = Signal(str)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        self._lang_combo: Optional[QComboBox] = None
+        self._theme_combo: Optional[QComboBox] = None
+        self._font_combo: Optional[QComboBox] = None
+        super().__init__(parent)
+
+    def _add_result_area(self) -> None:
+        frame, layout = self._make_card()
+
+        self._add_section_label("settings.language_label", layout)
+        self._lang_combo = QComboBox(self)
+        self._lang_combo.currentIndexChanged.connect(self._on_language_selected)
+        layout.addWidget(self._lang_combo)
+
+        self._add_section_label("settings.theme_label", layout)
+        self._theme_combo = QComboBox(self)
+        self._theme_combo.currentIndexChanged.connect(self._on_theme_selected)
+        layout.addWidget(self._theme_combo)
+
+        self._add_section_label("settings.font_label", layout)
+        self._font_combo = QComboBox(self)
+        self._font_combo.currentIndexChanged.connect(self._on_font_selected)
+        layout.addWidget(self._font_combo)
+        layout.addWidget(hint(ctx().tr("settings.font_note"), self))
+
+        self._layout.addWidget(frame)
+        self._fill_combos()
+
+    def _add_buttons(self) -> None:
+        backup = self._add_button("settings.backup_viewer")
+        backup.clicked.connect(self._open_backup_viewer)
+        about = self._add_button("menu.about")
+        about.clicked.connect(self._show_about)
+        self._add_row(backup, about)
+        self._layout.addStretch(1)
+
+    def _show_about(self) -> None:
+        """Показать окно «О программе»."""
+        from PySide6.QtWidgets import QMessageBox
+
+        QMessageBox.about(
+            self,
+            ctx().tr("menu.about"),
+            f"{ctx().tr('app.title')}\n{ctx().tr('app.subtitle')}",
+        )
+
+    # ---------- синхронизация со состоянием приложения ----------
+
+    @staticmethod
+    def _select_data(combo: QComboBox, value: str) -> None:
+        """Выставить значение, не поднимая сигнал изменения."""
+        combo.blockSignals(True)
+        index = combo.findData(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+
+    def _fill_combos(self) -> None:
+        if self._lang_combo is not None:
+            self._lang_combo.blockSignals(True)
+            self._lang_combo.clear()
+            for code, name in ctx().supportedLocales().items():
+                self._lang_combo.addItem(name, code)
+            self._lang_combo.blockSignals(False)
+            self._select_data(self._lang_combo, ctx().locale())
+
+        if self._theme_combo is not None:
+            self._theme_combo.blockSignals(True)
+            self._theme_combo.clear()
+            self._theme_combo.addItem(ctx().tr("settings.theme_dark"), "dark")
+            self._theme_combo.addItem(ctx().tr("settings.theme_light"), "light")
+            self._theme_combo.blockSignals(False)
+            self._select_data(self._theme_combo, ctx().theme())
+
+        if self._font_combo is not None:
+            self._font_combo.blockSignals(True)
+            self._font_combo.clear()
+            self._font_combo.addItem(ctx().tr("settings.font_pixel"), "pixel")
+            self._font_combo.addItem(ctx().tr("settings.font_default"), "default")
+            self._font_combo.blockSignals(False)
+            self._select_data(self._font_combo, ctx().fontKind())
+
+    # ---------- обработчики ----------
+
+    def _on_language_selected(self, index: int) -> None:
+        if self._lang_combo is None:
+            return
+        code = self._lang_combo.itemData(index)
+        if code:
+            ctx().setLocale(str(code))
+            self.languageChanged.emit(str(code))
+
+    def _on_theme_selected(self, index: int) -> None:
+        if self._theme_combo is None:
+            return
+        name = self._theme_combo.itemData(index)
+        if name:
+            ctx().setTheme(str(name))
+            self.themeChanged.emit(str(name))
+
+    def _on_font_selected(self, index: int) -> None:
+        if self._font_combo is None:
+            return
+        kind = self._font_combo.itemData(index)
+        if kind:
+            ctx().setFontKind(str(kind))
+            self.fontChanged.emit(str(kind))
+
+    def _open_backup_viewer(self) -> None:
+        """Открыть список бэкапов (пока заглушка)."""
+
+    def retranslate(self) -> None:
+        super().retranslate()
+        self._fill_combos()
 
     def _title(self) -> str:
         return ctx().tr("settings.title")
 
     def _subheading(self) -> str:
-        return ""
-
-    def _description(self) -> str:
         return ctx().tr("settings.backup_info")
 
-    def _add_buttons(self) -> None:
-        lang_label = subheading(ctx().tr("settings.language_label"))
-        lang_combo = QComboBox()
-        for code, name in ctx().supportedLocales().items():
-            lang_combo.addItem(name, code)
-        lang_combo.setCurrentText(ctx().supportedLocales().get(ctx().locale(), "Russian"))
-        lang_combo.currentTextChanged.connect(
-            lambda text: self.languageChanged.emit(lang_combo.itemData(lang_combo.findText(text)))
-        )
-        self._layout.addWidget(lang_label)
-        self._layout.addWidget(lang_combo)
-        self._layout.addWidget(spacer())
-        theme_label = subheading(ctx().tr("settings.theme_label"))
-        theme_combo = QComboBox()
-        theme_combo.addItem(ctx().tr("settings.theme_dark"), "dark")
-        theme_combo.addItem(ctx().tr("settings.theme_light"), "light")
-        theme_combo.setCurrentText(ctx().tr("settings.theme_dark"))
-        theme_combo.currentTextChanged.connect(
-            lambda text: self.themeChanged.emit(theme_combo.itemData(theme_combo.findText(text)))
-        )
-        self._layout.addWidget(theme_label)
-        self._layout.addWidget(theme_combo)
-        self._layout.addWidget(spacer())
-        backup_btn = button(ctx().tr("settings.backup_viewer"))
-        backup_btn.setMinimumHeight(36)
-        backup_btn.clicked.connect(self._open_backup_viewer)
-        self._layout.addWidget(backup_btn)
-
-    def _open_backup_viewer(self) -> None:
-        pass
+    def _description(self) -> str:
+        return ctx().tr("settings.ollama_note")

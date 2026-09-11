@@ -3,6 +3,7 @@
 """
 import os
 import sys
+import tempfile
 import typing as t
 from pathlib import Path
 
@@ -17,7 +18,16 @@ _project_root = Path(__file__).resolve().parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
+from PySide6.QtCore import QSettings
+
 from core.models import AppInfo
+
+# Язык, тема и шрифт сохраняются в QSettings. Во время тестов уводим их в
+# временную папку: прогон не должен трогать реальные настройки пользователя
+# и не должен зависеть от того, что он выбирал в прошлый раз.
+_SETTINGS_DIR = tempfile.mkdtemp(prefix="swagcleaner-tests-")
+QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, _SETTINGS_DIR)
 
 
 class FakeInstalledProvider:

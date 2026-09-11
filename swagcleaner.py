@@ -183,26 +183,37 @@ def _self_test() -> int:
 
         from ui.context import init_context
         from ui.main import MainWindow
+        from ui.theme import pixel_font_available
 
         app = QApplication([])
         context = init_context(app)
         window = MainWindow(app, context)
         window.show()
 
-        tab_count = window._tab_widget.count()
+        page_count = window._stack.count()
         title = context.tr("app.title")
         advisor = context.tr("tabs.advisor")
+        nav_count = window._sidebar.count()
 
         lines.append(f"локаль: {context.locale()}")
-        lines.append(f"вкладок: {tab_count}")
+        lines.append(f"тема: {context.theme()}")
+        lines.append(f"шрифт: {context.fontKind()}")
+        lines.append(f"страниц: {page_count}")
+        lines.append(f"пунктов меню: {nav_count}")
         lines.append(f"app.title: {title!r}")
         lines.append(f"tabs.advisor: {advisor!r}")
 
-        if tab_count != 5:
-            lines.append(f"ОШИБКА: ожидалось 5 вкладок, получилось {tab_count}")
+        if page_count != 5:
+            lines.append(f"ОШИБКА: ожидалось 5 страниц, получилось {page_count}")
+            code = 1
+        if nav_count != 5:
+            lines.append(f"ОШИБКА: ожидалось 5 пунктов меню, получилось {nav_count}")
             code = 1
         if advisor == "tabs.advisor":
             lines.append("ОШИБКА: строки локализации не загрузились")
+            code = 1
+        if not pixel_font_available():
+            lines.append("ОШИБКА: пиксельный шрифт не попал в сборку")
             code = 1
 
         QTimer.singleShot(0, app.quit)

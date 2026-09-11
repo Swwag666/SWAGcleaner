@@ -79,12 +79,22 @@
     "restore_button": "Создать точку восстановления",
     "running": "Выполняется…"
   },
+  "sidebar": {
+    "caption": "РАЗДЕЛЫ"
+  },
+  "header": {
+    "language": "Переключить язык"
+  },
   "settings": {
     "title": "Настройки",
     "language_label": "Язык интерфейса",
     "theme_label": "Тема",
     "theme_dark": "Тёмная",
     "theme_light": "Светлая",
+    "font_label": "Шрифт интерфейса",
+    "font_pixel": "Пиксельный",
+    "font_default": "Обычный",
+    "font_note": "Пиксельный шрифт на любителя — переключается на обычный в один клик.",
     "exclusions_label": "Исключения для чистки",
     "backup_label": "Бэкапы",
     "backup_viewer": "Просмотр бэкапов",

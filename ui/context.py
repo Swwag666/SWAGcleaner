@@ -11,8 +11,10 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from PySide6.QtCore import QObject, Signal, QTranslator
+from PySide6.QtCore import QObject, QSettings, QTranslator, Signal
 from PySide6.QtWidgets import QApplication
+
+from ui.theme import FONT_KINDS, THEMES, register_bundled_fonts
 
 _LOGGER = logging.getLogger("swag.ui.context")
 
@@ -30,6 +32,7 @@ class Context(QObject):
 
     languageChanged = Signal(str)
     themeChanged = Signal(str)
+    fontChanged = Signal(str)
 
     def __new__(cls) -> "Context":
         if cls._instance is None:
@@ -40,20 +43,47 @@ class Context(QObject):
         super().__init__()
         self._locale: str = "ru"
         self._theme: str = "dark"
+        self._font_kind: str = "pixel"
         self._translator: Optional[QTranslator] = None
         self._strings_ru: Dict[str, Any] = {}
         self._strings_en: Dict[str, Any] = {}
         self._cache: Dict[str, str] = {}
         self._exclusions: list[str] = []
         self._backup_dir: Optional[Path] = None
+        self._settings: Optional[QSettings] = None
 
     # ---------- инициализация ----------
 
     def init(self, app: QApplication) -> None:
-        """Инициализировать контекст: загрузить локали, тему, провайдеры."""
+        """Инициализировать контекст: шрифты, локали, сохранённый выбор."""
+        register_bundled_fonts()
         self._load_strings()
+        self._load_saved_choice()
         self._apply_locale(app, self._locale)
         self._apply_theme()
+
+    # ---------- сохранённые настройки ----------
+
+    def _store(self) -> QSettings:
+        """Хранилище настроек приложения (язык, тема, шрифт)."""
+        if self._settings is None:
+            self._settings = QSettings("SWAGcleaner", "SWAGcleaner")
+        return self._settings
+
+    def _remember(self, key: str, value: str) -> None:
+        store = self._store()
+        store.setValue(f"interface/{key}", value)
+        store.sync()
+
+    def _load_saved_choice(self) -> None:
+        """Прочитать язык, тему и шрифт, выбранные в прошлый раз."""
+        store = self._store()
+        locale = str(store.value("interface/locale", self._locale))
+        theme = str(store.value("interface/theme", self._theme))
+        font_kind = str(store.value("interface/font", self._font_kind))
+        self._locale = locale if locale in LOCALES else "ru"
+        self._theme = theme if theme in THEMES else "dark"
+        self._font_kind = font_kind if font_kind in FONT_KINDS else "pixel"
 
     def _load_strings(self) -> None:
         """Загрузить строки из json-файлов локалей."""
@@ -137,11 +167,13 @@ class Context(QObject):
             if locale in LOCALES and locale != self._locale:
                 self._locale = locale
                 self._cache.clear()
+                self._remember("locale", locale)
             return
         if locale not in LOCALES:
             locale = "ru"
         if locale != self._locale:
             self._apply_locale(app, locale)
+            self._remember("locale", locale)
 
     def locale(self) -> str:
         return self._locale
@@ -149,16 +181,31 @@ class Context(QObject):
     # ---------- тема ----------
 
     def setTheme(self, theme: str) -> None:
-        """Установить тему (dark / light)."""
-        if theme not in ("dark", "light"):
+        """Установить тему (dark / light) и запомнить выбор."""
+        if theme not in THEMES:
             theme = "dark"
         if theme != self._theme:
             self._theme = theme
             self._apply_theme()
+            self._remember("theme", theme)
             self.themeChanged.emit(theme)
 
     def theme(self) -> str:
         return self._theme
+
+    # ---------- шрифт ----------
+
+    def setFontKind(self, kind: str) -> None:
+        """Выбрать шрифт интерфейса: pixel (по умолчанию) или default."""
+        if kind not in FONT_KINDS:
+            kind = "pixel"
+        if kind != self._font_kind:
+            self._font_kind = kind
+            self._remember("font", kind)
+            self.fontChanged.emit(kind)
+
+    def fontKind(self) -> str:
+        return self._font_kind
 
 
 # Одиночка контекста — ленивая инициализация.

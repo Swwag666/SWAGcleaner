@@ -79,12 +79,22 @@
     "restore_button": "Create restore point",
     "running": "Running…"
   },
+  "sidebar": {
+    "caption": "SECTIONS"
+  },
+  "header": {
+    "language": "Switch language"
+  },
   "settings": {
     "title": "Settings",
     "language_label": "Interface language",
     "theme_label": "Theme",
     "theme_dark": "Dark",
     "theme_light": "Light",
+    "font_label": "Interface font",
+    "font_pixel": "Pixel",
+    "font_default": "Default",
+    "font_note": "The pixel font is a matter of taste — one click switches back to default.",
     "exclusions_label": "Cleaner exclusions",
     "backup_label": "Backups",
     "backup_viewer": "View backups",
