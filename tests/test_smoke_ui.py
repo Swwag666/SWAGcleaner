@@ -13,13 +13,14 @@ import typing as t
 
 import pytest
 from PySide6.QtCore import QEvent
-from PySide6.QtGui import QFont, QRawFont
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QRawFont
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QComboBox, QPushButton
 
 from ui import theme
 from ui.context import ctx
 from ui.main import MainWindow
+from ui.scene import SceneStack
 from ui.sidebar import Sidebar
 from ui.tabs import AdvisorTab, CleanerTab, DedupTab, SettingsTab, TweaksTab
 from ui.workers import AppWorker, WorkerPool, WorkerTask
@@ -31,8 +32,16 @@ def _buttons(widget: t.Any) -> t.List[QPushButton]:
 
 @pytest.fixture
 def win(qapp: t.Any) -> t.Any:
-    """Главное окно на время одного теста."""
+    """Главное окно на время одного теста.
+
+    Окно показывается: под offscreen-платформой его никто не увидит, зато
+    становится осмысленным isVisible() у страниц и по-настоящему считается
+    разметка — именно это и проверяет часть тестов.
+    """
     window = MainWindow(qapp, ctx())
+    window.resize(1100, 700)
+    window.show()
+    QTest.qWait(80)
     yield window
     window.close()
     window.deleteLater()
@@ -152,6 +161,60 @@ class TestFonts:
         default = theme.fonts_sizes("default")["base"]
         assert pixel > default
 
+    def test_pixel_font_size_is_in_whole_pixels(self, qapp: t.Any) -> None:
+        # Именно здесь был баг: размер задавался в пунктах, 16pt ≈ 21.33 px,
+        # и большая часть штрихов попадала на дробные пиксели.
+        font = theme.font_for("pixel")
+        assert font.pixelSize() > 0
+        assert font.pointSizeF() == -1
+
+    def test_default_font_size_is_in_points(self, qapp: t.Any) -> None:
+        font = theme.font_for("default")
+        assert font.pointSize() > 0
+        assert font.pixelSize() == -1
+
+    @staticmethod
+    def _distance(a: QColor, b: QColor) -> int:
+        return abs(a.red() - b.red()) + abs(a.green() - b.green()) + abs(a.blue() - b.blue())
+
+    def _blur_ratio(self, theme_name: str) -> float:
+        """Доля штрихов, которые легли на пол-пикселя (0 — идеальные пиксели)."""
+        colors = theme.palette(theme_name)
+        background, foreground = QColor(colors["bg_panel"]), QColor(colors["text_primary"])
+        image = QImage(560, 54, QImage.Format_ARGB32)
+        image.fill(background)
+        painter = QPainter(image)
+        painter.setFont(theme.font_for("pixel", theme_name))
+        painter.setPen(foreground)
+        painter.drawText(4, 38, "Советник Чистка 12%")
+        painter.end()
+
+        ink = blurred = 0
+        for y in range(image.height()):
+            for x in range(image.width()):
+                pixel = image.pixelColor(x, y)
+                if self._distance(pixel, background) <= 20:
+                    continue
+                ink += 1
+                if self._distance(pixel, foreground) > 20:
+                    blurred += 1
+        assert ink > 100, "текст вообще не нарисовался"
+        return blurred / ink
+
+    def test_pixel_font_has_no_blurred_strokes(self, qapp: t.Any) -> None:
+        for theme_name in ("dark", "light"):
+            ratio = self._blur_ratio(theme_name)
+            assert ratio == 0.0, f"в теме {theme_name} размыто {ratio:.0%} штрихов"
+
+    def test_dark_theme_uses_bolder_pixel_font(self, qapp: t.Any) -> None:
+        # Светлое на тёмном кажется тоньше, поэтому на тёмной теме вес выше.
+        dark = theme.font_for("pixel", "dark").weight()
+        light = theme.font_for("pixel", "light").weight()
+        assert dark.value > light.value
+
+    def test_default_font_is_not_bolded(self, qapp: t.Any) -> None:
+        assert theme.font_for("default", "dark").weight().value == theme.font_for("default", "light").weight().value
+
 
 # ---------- страницы ----------
 
@@ -228,9 +291,108 @@ class TestPages:
 # ---------- боковое меню ----------
 
 
+class TestPaletteContrast:
+    """Цвета текста должны оставаться читаемыми в обеих темах."""
+
+    MIN_CONTRAST = 4.5
+    MIN_ACCENT_CONTRAST = 3.0
+
+    @staticmethod
+    def _luminance(color: str) -> float:
+        raw = color.lstrip("#")
+        channels = [int(raw[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+        linear = [(c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4) for c in channels]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    def _contrast(self, foreground: str, background: str) -> float:
+        first, second = self._luminance(foreground), self._luminance(background)
+        high, low = max(first, second), min(first, second)
+        return (high + 0.05) / (low + 0.05)
+
+    @pytest.mark.parametrize("theme_name", ("dark", "light"))
+    @pytest.mark.parametrize(
+        "role", ("text_primary", "text_secondary", "text_placeholder")
+    )
+    def test_text_is_readable_on_panel(self, theme_name: str, role: str) -> None:
+        colors = theme.palette(theme_name)
+        ratio = self._contrast(colors[role], colors["bg_panel"])
+        assert ratio >= self.MIN_CONTRAST, f"{theme_name}/{role}: контраст всего {ratio:.1f}"
+
+    @pytest.mark.parametrize("theme_name", ("dark", "light"))
+    def test_accent_is_visible_on_panel(self, theme_name: str) -> None:
+        colors = theme.palette(theme_name)
+        ratio = self._contrast(colors["accent"], colors["bg_panel"])
+        assert ratio >= self.MIN_ACCENT_CONTRAST, f"{theme_name}: акцент всего {ratio:.1f}"
+
+    @pytest.mark.parametrize("theme_name", ("dark", "light"))
+    def test_base_is_not_blindingly_bright(self, theme_name: str) -> None:
+        # Светлая тема не должна быть чистым белым на весь экран.
+        colors = theme.palette(theme_name)
+        if theme_name == "light":
+            assert self._luminance(colors["bg_base"]) < self._luminance("#f0f0f0")
+
+
+class TestSceneStack:
+    def test_starts_on_first_page(self, win: t.Any) -> None:
+        assert win._stack.count() == 5
+        assert win._stack.currentIndex() == 0
+        assert win._stack.currentWidget() is win._stack.widget(0)
+
+    def test_transition_settles_on_final_state(self, win: t.Any) -> None:
+        win.go_to_page(2)
+        page = win._stack.widget(2)
+        QTest.qWait(SceneStack.TRANSITION_MS + 120)
+        assert win._stack.currentIndex() == 2
+        assert page.pos().x() == 0
+        assert page.graphicsEffect().opacity() == 1.0
+
+    def test_previous_page_is_hidden_after_transition(self, win: t.Any) -> None:
+        win.go_to_page(3)
+        QTest.qWait(SceneStack.TRANSITION_MS + 120)
+        assert not win._stack.widget(0).isVisible()
+
+    def test_page_slides_in_from_the_side(self, win: t.Any) -> None:
+        win.go_to_page(1)
+        page = win._stack.widget(1)
+        # Сразу после переключения страница ещё смещена вправо и прозрачна.
+        assert page.pos().x() > 0
+        assert page.graphicsEffect().opacity() < 1.0
+        QTest.qWait(SceneStack.TRANSITION_MS + 120)
+        assert page.pos().x() == 0
+
+    def test_rapid_switching_leaves_no_ghost_pages(self, win: t.Any) -> None:
+        for index in (1, 3, 4, 2):
+            win.go_to_page(index)
+        QTest.qWait(SceneStack.TRANSITION_MS + 200)
+        visible = [i for i, page in enumerate(win._stack._pages) if page.isVisible()]
+        assert visible == [2]
+        assert win._stack.widget(2).graphicsEffect().opacity() == 1.0
+        assert win._stack.widget(2).pos().x() == 0
+
+    def test_same_page_switch_is_ignored(self, win: t.Any) -> None:
+        win.go_to_page(1)
+        QTest.qWait(SceneStack.TRANSITION_MS + 120)
+        before = win._stack.widget(1).graphicsEffect().opacity()
+        win.go_to_page(1)
+        assert win._stack.widget(1).graphicsEffect().opacity() == before
+
+    def test_accent_bar_sweeps_under_the_header(self, win: t.Any) -> None:
+        QTest.qWait(MainWindow.ACCENT_SWEEP_MS + 120)
+        win.go_to_page(1)
+        QTest.qWait(MainWindow.ACCENT_SWEEP_MS + 150)
+        assert win._accent_bar.maximumWidth() == win._header.width()
+
+    def test_accent_bar_restarts_on_every_section(self, win: t.Any) -> None:
+        QTest.qWait(MainWindow.ACCENT_SWEEP_MS + 120)
+        win.go_to_page(1)
+        assert win._accent_bar.maximumWidth() < win._header.width()
+
+
 class TestSidebar:
-    def test_starts_collapsed_with_icons_only(self, win: t.Any) -> None:
+    def test_collapsed_state_shows_icons_only(self, win: t.Any) -> None:
         sidebar = win._sidebar
+        sidebar.collapse()
+        QTest.qWait(Sidebar.ANIMATION_MS + 120)
         assert not sidebar.is_expanded()
         assert sidebar.count() == 5
         assert sidebar.minimumWidth() == Sidebar.COLLAPSED_WIDTH

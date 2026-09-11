@@ -13,14 +13,21 @@ from __future__ import annotations
 import logging
 from typing import List
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import (
+    QAbstractAnimation,
+    QEasingCurve,
+    QPropertyAnimation,
+    QSize,
+    Qt,
+    Signal,
+)
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QPushButton,
-    QStackedWidget,
     QStatusBar,
     QVBoxLayout,
     QWidget,
@@ -28,6 +35,7 @@ from PySide6.QtWidgets import (
 
 from ui import icons, theme
 from ui.context import Context
+from ui.scene import SceneStack
 from ui.sidebar import Sidebar
 from ui.tabs import AdvisorTab, CleanerTab, DedupTab, SettingsTab, TweaksTab
 
@@ -48,6 +56,9 @@ class MainWindow(QMainWindow):
 
     closed = Signal()
 
+    # Длительность проезда акцентной полоски под шапкой.
+    ACCENT_SWEEP_MS = 340
+
     def __init__(self, app: QApplication, context: Context) -> None:
         super().__init__()
         self._app = app
@@ -59,7 +70,7 @@ class MainWindow(QMainWindow):
         self._connect_context()
         self._apply_visuals()
         self.retranslate()
-        self._sidebar.set_current(0)
+        self.go_to_page(0)
 
     # ---------- сборка окна ----------
 
@@ -95,7 +106,13 @@ class MainWindow(QMainWindow):
     def _build_header(self) -> QWidget:
         header = QWidget(self)
         header.setObjectName("header")
-        layout = QHBoxLayout(header)
+        self._header = header
+        outer = QVBoxLayout(header)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        row = QWidget(header)
+        layout = QHBoxLayout(row)
         layout.setContentsMargins(28, 18, 24, 12)
         layout.setSpacing(12)
 
@@ -120,6 +137,20 @@ class MainWindow(QMainWindow):
         self._language_button.setMinimumWidth(84)
         layout.addWidget(self._language_button)
 
+        outer.addWidget(row)
+
+        # Акцентная полоска под шапкой. Она выезжает слева направо каждый раз,
+        # когда меняется раздел — тот самый «переход сцены».
+        self._accent_bar = QFrame(header)
+        self._accent_bar.setObjectName("accentBar")
+        self._accent_bar.setFixedHeight(2)
+        self._accent_bar.setMaximumWidth(0)
+        outer.addWidget(self._accent_bar)
+
+        self._accent_animation = QPropertyAnimation(self._accent_bar, b"maximumWidth", self)
+        self._accent_animation.setDuration(self.ACCENT_SWEEP_MS)
+        self._accent_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
         return header
 
     def _make_header_button(self, icon_name: str) -> QPushButton:
@@ -130,8 +161,8 @@ class MainWindow(QMainWindow):
         widget.setIcon(icons.icon(icon_name, theme.palette(self._context.theme())["text_secondary"], 20))
         return widget
 
-    def _build_stack(self) -> QStackedWidget:
-        self._stack = QStackedWidget(self)
+    def _build_stack(self) -> SceneStack:
+        self._stack = SceneStack(self)
         for _icon, _key, page_cls in PAGES:
             page = page_cls(self._stack)
             self._pages.append(page)
@@ -187,6 +218,26 @@ class MainWindow(QMainWindow):
 
     def _on_page_changed(self, index: int) -> None:
         self._sidebar.set_current(index)
+        self._sweep_accent()
+
+    def _sweep_accent(self) -> None:
+        """Провести акцентную полоску под шапкой заново."""
+        full_width = max(self._header.width(), 1)
+        self._accent_animation.stop()
+        self._accent_bar.setMaximumWidth(0)
+        self._accent_animation.setStartValue(0)
+        self._accent_animation.setEndValue(full_width)
+        self._accent_animation.start()
+
+    def resizeEvent(self, event) -> None:  # noqa: ANN001
+        super().resizeEvent(event)
+        # Полоска должна занимать всю шапку и после изменения размера окна.
+        # Если она как раз выезжает — правим не ширину, а цель анимации.
+        full_width = max(self._header.width(), 1)
+        if self._accent_animation.state() == QAbstractAnimation.State.Stopped:
+            self._accent_bar.setMaximumWidth(full_width)
+        else:
+            self._accent_animation.setEndValue(full_width)
 
     def toggle_theme(self) -> None:
         self._context.setTheme("light" if self._context.theme() == "dark" else "dark")

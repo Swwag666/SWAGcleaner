@@ -33,9 +33,12 @@ _FONTS_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
 _PIXEL_FAMILY = "Handjet"
 _DEFAULT_FAMILY = "Segoe UI"
 
-# Пиксельный шрифт мельче обычного, поэтому ему нужен больший кегль.
+# Размеры шрифтов. У пиксельного они в ПИКСЕЛЯХ, у обычного — в пунктах:
+# пиксельному шрифту дробный размер противопоказан. 16pt ≈ 21.33px, и тогда
+# штрихи попадают на половину пикселя — половина буквы получается размытой.
+# При целом размере в пикселях размытых штрихов нет вообще.
 _FONT_SIZES: Dict[str, Dict[str, int]] = {
-    "pixel": {"base": 16, "small": 13, "title": 21, "nav": 17},
+    "pixel": {"base": 20, "small": 17, "title": 26, "nav": 20},
     "default": {"base": 13, "small": 11, "title": 15, "nav": 13},
 }
 
@@ -63,25 +66,26 @@ PALETTES: Dict[str, Dict[str, str]] = {
         "shadow": "rgba(0, 0, 0, 90)",
     },
     "light": {
-        "bg_base": "#eef1f6",
-        "bg_sidebar": "#ffffff",
-        "bg_panel": "#ffffff",
-        "bg_panel_hover": "#e8edf5",
-        "bg_inset": "#f1f4f9",
-        "bg_input": "#ffffff",
-        "border": "#d8dfe9",
-        "border_soft": "#e6ebf2",
+        # Чуть приглушённая светлая тема: чистый белый на весь экран режет глаз.
+        "bg_base": "#e5e9f0",
+        "bg_sidebar": "#f6f8fb",
+        "bg_panel": "#f6f8fb",
+        "bg_panel_hover": "#dfe6f0",
+        "bg_inset": "#eaeef5",
+        "bg_input": "#fbfcfe",
+        "border": "#cbd5e2",
+        "border_soft": "#dbe3ee",
         "accent": "#2f6fe0",
         "accent_soft": "#7ba6ee",
         "accent_hover": "#1f57c4",
         "text_primary": "#16202b",
-        "text_secondary": "#5a6878",
-        # Не светлее этого: на белом фоне подсказки иначе почти не видны.
-        "text_placeholder": "#6b7887",
+        "text_secondary": "#556374",
+        # Не светлее этого: на светлом фоне подсказки иначе почти не видны.
+        "text_placeholder": "#63707e",
         "on": "#12a97e",
         "warn": "#c67c17",
         "danger": "#d9463f",
-        "select_bg": "#d6e3fb",
+        "select_bg": "#cfdffa",
         "shadow": "rgba(30, 45, 70, 40)",
     },
 }
@@ -130,20 +134,26 @@ def fonts_sizes(kind: str) -> Dict[str, int]:
     return dict(_FONT_SIZES.get(kind, _FONT_SIZES["default"]))
 
 
-def font_for(kind: str, weight: QFont.Weight | None = None) -> QFont:
+def font_for(kind: str, theme: str = "dark", weight: QFont.Weight | None = None) -> QFont:
     """Собрать шрифт приложения.
 
-    Для пиксельного шрифта сглаживание выключается — иначе края букв
-    размываются и весь смысл пиксельного рисунка теряется.
+    Для пиксельного шрифта: целый размер в пикселях, выключенное сглаживание
+    и, на тёмной теме, более жирный вес. Последнее — оптическая компенсация:
+    светлые штрихи на тёмном фоне кажутся тоньше, чем такие же тёмные на
+    светлом, поэтому на тёмной теме тот же текст выглядит «потрёпанным».
     """
     _kind = kind if kind in FONT_KINDS else "default"
-    font = QFont(resolve_family(_kind), fonts_sizes(_kind)["base"])
-    if weight is not None:
-        font.setWeight(weight)
+    font = QFont(resolve_family(_kind))
     if _kind == "pixel":
-        # Без сглаживания края букв остаются квадратными, как в пиксельной игре.
+        font.setPixelSize(fonts_sizes(_kind)["base"])
         font.setStyleStrategy(QFont.StyleStrategy.NoAntialias)
         font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
+        if theme not in ("light",):
+            font.setWeight(QFont.Weight.Bold)
+    else:
+        font.setPointSize(fonts_sizes(_kind)["base"])
+    if weight is not None:
+        font.setWeight(weight)
     return font
 
 
@@ -161,6 +171,8 @@ def qss(theme: str = "dark", font_kind: str = "pixel") -> str:
     c = palette(theme)
     size = fonts_sizes(font_kind)
     spacing = "1px" if font_kind == "pixel" else "0px"
+    # У пиксельного шрифта размер задаём в пикселях, у обычного — в пунктах.
+    unit = "px" if font_kind == "pixel" else "pt"
     return f"""
     QMainWindow, QWidget#central {{
         background-color: {c["bg_base"]};
@@ -175,14 +187,14 @@ def qss(theme: str = "dark", font_kind: str = "pixel") -> str:
         letter-spacing: {spacing};
     }}
     QLabel[role="secondary"] {{ color: {c["text_secondary"]}; }}
-    QLabel[role="hint"] {{ color: {c["text_placeholder"]}; font-size: {size["small"]}px; }}
-    QLabel[role="title"] {{ font-size: {size["title"]}px; color: {c["text_primary"]}; }}
+    QLabel[role="hint"] {{ color: {c["text_placeholder"]}; font-size: {size["small"]}{unit}; }}
+    QLabel[role="title"] {{ font-size: {size["title"]}{unit}; color: {c["text_primary"]}; }}
     QLabel[role="section"] {{
-        font-size: {size["small"]}px;
+        font-size: {size["small"]}{unit};
         color: {c["text_placeholder"]};
         letter-spacing: 2px;
     }}
-    QLabel[role="stat"] {{ font-size: {size["title"]}px; color: {c["accent"]}; }}
+    QLabel[role="stat"] {{ font-size: {size["title"]}{unit}; color: {c["accent"]}; }}
 
     /* ---------- боковое меню ---------- */
     QFrame#sidebar {{
@@ -191,7 +203,7 @@ def qss(theme: str = "dark", font_kind: str = "pixel") -> str:
     }}
     QLabel#sidebarCaption {{
         color: {c["text_placeholder"]};
-        font-size: {size["small"]}px;
+        font-size: {size["small"]}{unit};
         letter-spacing: 2px;
         padding: 0px 4px;
     }}
@@ -203,7 +215,7 @@ def qss(theme: str = "dark", font_kind: str = "pixel") -> str:
         border-radius: 0px;
         padding: 9px 10px;
         text-align: left;
-        font-size: {size["nav"]}px;
+        font-size: {size["nav"]}{unit};
         letter-spacing: {spacing};
     }}
     QPushButton#navItem:hover {{
@@ -223,7 +235,7 @@ def qss(theme: str = "dark", font_kind: str = "pixel") -> str:
         border: 1px solid {c["border"]};
         border-radius: 7px;
         padding: 8px 16px;
-        font-size: {size["base"]}px;
+        font-size: {size["base"]}{unit};
         letter-spacing: {spacing};
     }}
     QPushButton:hover {{
@@ -252,7 +264,7 @@ def qss(theme: str = "dark", font_kind: str = "pixel") -> str:
         border: 1px solid {c["border"]};
         border-radius: 8px;
         padding: 6px 10px;
-        font-size: {size["base"]}px;
+        font-size: {size["base"]}{unit};
         letter-spacing: {spacing};
     }}
     QPushButton#headerButton:hover {{
@@ -263,6 +275,11 @@ def qss(theme: str = "dark", font_kind: str = "pixel") -> str:
 
     /* ---------- шапка ---------- */
     QWidget#header {{ background-color: {c["bg_base"]}; }}
+    /* Полоска под шапкой: выезжает при смене раздела, как заставка сцены. */
+    QFrame#accentBar {{
+        background-color: {c["accent"]};
+        border: none;
+    }}
 
     /* ---------- карточки ---------- */
     QFrame#card {{
@@ -283,7 +300,7 @@ def qss(theme: str = "dark", font_kind: str = "pixel") -> str:
         border: 1px solid {c["border"]};
         border-radius: 7px;
         padding: 7px 9px;
-        font-size: {size["base"]}px;
+        font-size: {size["base"]}{unit};
         letter-spacing: {spacing};
     }}
     QLineEdit:focus, QComboBox:focus, QTextEdit:focus {{
@@ -308,7 +325,7 @@ def qss(theme: str = "dark", font_kind: str = "pixel") -> str:
         selection-background-color: {c["select_bg"]};
         selection-color: {c["text_primary"]};
         gridline-color: {c["border_soft"]};
-        font-size: {size["base"]}px;
+        font-size: {size["base"]}{unit};
         letter-spacing: {spacing};
     }}
 
@@ -317,7 +334,7 @@ def qss(theme: str = "dark", font_kind: str = "pixel") -> str:
         background-color: {c["bg_sidebar"]};
         color: {c["text_secondary"]};
         border-top: 1px solid {c["border_soft"]};
-        font-size: {size["small"]}px;
+        font-size: {size["small"]}{unit};
         letter-spacing: {spacing};
     }}
 
@@ -326,7 +343,7 @@ def qss(theme: str = "dark", font_kind: str = "pixel") -> str:
         background-color: {c["bg_sidebar"]};
         color: {c["text_primary"]};
         border-bottom: 1px solid {c["border_soft"]};
-        font-size: {size["base"]}px;
+        font-size: {size["base"]}{unit};
     }}
     QMenuBar::item:selected {{ background-color: {c["bg_panel_hover"]}; }}
     QMenu {{
@@ -349,7 +366,7 @@ def qss(theme: str = "dark", font_kind: str = "pixel") -> str:
         border-radius: 6px;
         text-align: center;
         color: {c["text_primary"]};
-        font-size: {size["small"]}px;
+        font-size: {size["small"]}{unit};
     }}
     QProgressBar::chunk {{ background-color: {c["accent"]}; border-radius: 5px; }}
     QScrollBar:vertical {{
@@ -377,7 +394,7 @@ def qss(theme: str = "dark", font_kind: str = "pixel") -> str:
 def apply_theme(app: QApplication, theme: str = "dark", font_kind: str = "pixel") -> None:
     """Применить тему и шрифт ко всему приложению."""
     app.setStyleSheet(qss(theme, font_kind))
-    app.setFont(font_for(font_kind))
+    app.setFont(font_for(font_kind, theme))
 
 
 # ---------- фабрики типовых виджетов ----------
