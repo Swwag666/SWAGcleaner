@@ -62,10 +62,14 @@ def qapp() -> t.Any:
     """
     from PySide6.QtWidgets import QApplication
 
+    from ui import sounds
     from ui.context import ctx
 
     app = QApplication.instance() or QApplication([])
     ctx().init(app)
+    # Прогон не должен пищать на машине и мешать работать рядом.
+    ctx().setSounds(False)
+    sounds.player().setEnabled(False)
     yield app
 
 

@@ -25,15 +25,22 @@ datas = [
     ("ui/i18n/en.json", "ui/i18n"),
     ("assets/fonts/Handjet.ttf", "assets/fonts"),
     ("assets/fonts/OFL.txt", "assets/fonts"),
+    # Картинки помощницы: каждая поза — отдельный файл. Исходники в
+    # assets/character/raw в сборку не идут: они в разы тяжелее.
+    ("assets/character/*.png", "assets/character"),
 ]
 
 # Пакет ui — обычный, но PyInstaller о нём знает только через эти импорты.
 hiddenimports = [
     "ui",
+    "ui.character",
     "ui.context",
+    "ui.dialog",
     "ui.main",
-    "ui.theme",
+    "ui.sounds",
     "ui.tabs",
+    "ui.theme",
+    "ui.widgets",
     "ui.workers",
     "core",
 ]

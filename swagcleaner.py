@@ -181,7 +181,10 @@ def _self_test() -> int:
         from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import QApplication
 
+        from ui import sounds
+        from ui.character import available_moods, talk_frame_paths
         from ui.context import init_context
+        from ui.dialog import ConfirmDialog
         from ui.main import MainWindow
         from ui.theme import pixel_font_available
 
@@ -195,6 +198,10 @@ def _self_test() -> int:
         advisor = context.tr("tabs.advisor")
         nav_count = window._sidebar.count()
 
+        moods = available_moods()
+        found_moods = sorted(name for name, path in moods.items() if path is not None)
+        speech = window._speech.full_text()
+
         lines.append(f"локаль: {context.locale()}")
         lines.append(f"тема: {context.theme()}")
         lines.append(f"шрифт: {context.fontKind()}")
@@ -202,6 +209,31 @@ def _self_test() -> int:
         lines.append(f"пунктов меню: {nav_count}")
         lines.append(f"app.title: {title!r}")
         lines.append(f"tabs.advisor: {advisor!r}")
+        lines.append(f"позы персонажа: {', '.join(found_moods) or 'нет'}")
+        lines.append(f"кадры речи: {len(talk_frame_paths())}")
+        lines.append(f"первая реплика: {speech[:40]!r}")
+
+        # Звук: блип собирается в памяти, для проверки аудиоустройства не нужны.
+        blip = sounds.wav_bytes(880.0, 0.03)
+        lines.append(f"пиксельный звук: {len(blip)} байт")
+        if blip[:4] != b"RIFF" or len(blip) < 1000:
+            lines.append("ОШИБКА: генератор звука не работает")
+            code = 1
+
+        # Подтверждение: окно должно собираться и знать свои пункты.
+        dialog = ConfirmDialog(window, [("Проверка 1", "low"), ("Проверка 2", "high")])
+        lines.append(f"пунктов в подтверждении: {dialog.count()}")
+        if dialog.count() != 2:
+            lines.append("ОШИБКА: окно подтверждения не собралось")
+            code = 1
+        dialog.deleteLater()
+
+        # Занятость: полоска под шапкой должна уметь работать индикатором.
+        window.set_busy(True)
+        if not window._accent_bar.is_busy():
+            lines.append("ОШИБКА: полоска занятости не включается")
+            code = 1
+        window.set_busy(False)
 
         if page_count != 5:
             lines.append(f"ОШИБКА: ожидалось 5 страниц, получилось {page_count}")
@@ -214,6 +246,12 @@ def _self_test() -> int:
             code = 1
         if not pixel_font_available():
             lines.append("ОШИБКА: пиксельный шрифт не попал в сборку")
+            code = 1
+        if moods["scan"] is None or moods["panic"] is None:
+            lines.append("ОШИБКА: картинки персонажа не попали в сборку")
+            code = 1
+        if not speech:
+            lines.append("ОШИБКА: панель реплики пуста — персонаж не заговорил")
             code = 1
 
         QTimer.singleShot(0, app.quit)

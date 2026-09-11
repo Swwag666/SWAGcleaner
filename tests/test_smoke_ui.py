@@ -12,14 +12,19 @@ from __future__ import annotations
 import typing as t
 
 import pytest
-from PySide6.QtCore import QEvent
+import struct
+
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QRawFont
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QComboBox, QPushButton
+from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QPushButton, QWidget
 
-from ui import theme
+from ui import sounds, theme
+from ui.character import MOODS, Assistant, Mascot, SpeechBox, available_moods, pose_path
 from ui.context import ctx
-from ui.main import MainWindow
+from ui.dialog import ConfirmDialog
+from ui.main import PAGES, MainWindow
+from ui.widgets import AccentBar, AnimatedNumber, StatsRow
 from ui.scene import SceneStack
 from ui.sidebar import Sidebar
 from ui.tabs import AdvisorTab, CleanerTab, DedupTab, SettingsTab, TweaksTab
@@ -377,13 +382,13 @@ class TestSceneStack:
         assert win._stack.widget(1).graphicsEffect().opacity() == before
 
     def test_accent_bar_sweeps_under_the_header(self, win: t.Any) -> None:
-        QTest.qWait(MainWindow.ACCENT_SWEEP_MS + 120)
+        QTest.qWait(AccentBar.SWEEP_MS + 120)
         win.go_to_page(1)
-        QTest.qWait(MainWindow.ACCENT_SWEEP_MS + 150)
+        QTest.qWait(AccentBar.SWEEP_MS + 150)
         assert win._accent_bar.maximumWidth() == win._header.width()
 
     def test_accent_bar_restarts_on_every_section(self, win: t.Any) -> None:
-        QTest.qWait(MainWindow.ACCENT_SWEEP_MS + 120)
+        QTest.qWait(AccentBar.SWEEP_MS + 120)
         win.go_to_page(1)
         assert win._accent_bar.maximumWidth() < win._header.width()
 
@@ -499,6 +504,569 @@ class TestMainWindow:
     def test_status_keeps_value(self, win: t.Any) -> None:
         win.setStatus("работаю")
         assert win.status() == "работаю"
+
+
+# ---------- персонаж и панель реплики ----------
+
+
+class TestCharacterAssets:
+    def test_scan_and_panic_poses_are_in_the_build(self, qapp: t.Any) -> None:
+        moods = available_moods()
+        assert moods["scan"] is not None
+        assert moods["panic"] is not None
+
+    def test_calm_and_think_fall_back_to_working_pose(self, qapp: t.Any) -> None:
+        # Отдельных артов для calm и think пока нет — они должны честно
+        # откатываться на рабочую позу, а не оставлять пустое место.
+        moods = available_moods()
+        assert moods["calm"] == moods["scan"]
+        assert moods["think"] == moods["scan"]
+
+    def test_unknown_mood_has_no_file(self, qapp: t.Any) -> None:
+        assert pose_path("неведомое") is None
+
+    def test_poses_have_cut_out_background(self, qapp: t.Any) -> None:
+        for mood in ("scan", "panic"):
+            image = QImage(str(available_moods()[mood]))
+            assert not image.isNull()
+            assert image.hasAlphaChannel()
+            # Фон вырезан: углы должны быть прозрачными, иначе на тёмной
+            # теме вокруг персонажа был бы белый квадрат.
+            for x, y in ((0, 0), (image.width() - 1, 0), (0, image.height() - 1)):
+                assert image.pixelColor(x, y).alpha() < 32
+
+
+class TestMascot:
+    def test_default_mood_is_idle(self, qapp: t.Any) -> None:
+        assert Mascot().mood() == "idle"
+
+    def test_unknown_mood_falls_back_to_idle(self, qapp: t.Any) -> None:
+        mascot = Mascot()
+        mascot.set_mood("неведомое")
+        assert mascot.mood() == "idle"
+
+    def test_mood_switch_keeps_pose_available(self, qapp: t.Any) -> None:
+        mascot = Mascot()
+        for mood in MOODS:
+            mascot.set_mood(mood)
+            assert mascot.mood() == mood
+
+    def test_speaking_toggles_with_typing(self, qapp: t.Any) -> None:
+        speech = SpeechBox()
+        mascot = Mascot()
+        Assistant(mascot, speech)
+        speech.say("Привет")
+        assert mascot.is_speaking()
+        speech.finish_typing()
+        assert not mascot.is_speaking()
+
+    def test_mascot_paints_something_visible(self, win: t.Any) -> None:
+        win._mascot.set_mood("panic")
+        image = QImage(win._mascot.size(), QImage.Format.Format_ARGB32)
+        image.fill(QColor(0, 0, 0, 0))
+        win._mascot.render(image)
+        ink = sum(
+            1
+            for y in range(0, image.height(), 6)
+            for x in range(0, image.width(), 6)
+            if image.pixelColor(x, y).alpha() > 0
+        )
+        assert ink > 0
+
+
+class TestSpeechBox:
+    def test_text_is_typed_letter_by_letter(self, qapp: t.Any) -> None:
+        box = SpeechBox()
+        box.say("Привет, мир")
+        assert box.is_typing()
+        assert box.shown_text() == ""
+        QTest.qWait(80)
+        assert 0 < len(box.shown_text()) < len(box.full_text())
+        box.finish_typing()
+        assert box.shown_text() == box.full_text()
+        assert not box.is_typing()
+
+    def test_first_click_skips_typing_second_asks_for_more(self, qapp: t.Any) -> None:
+        box = SpeechBox()
+        asked: t.List[bool] = []
+        box.advanced.connect(lambda: asked.append(True))
+        box.say("Раз, два, три")
+        box.advance()
+        assert box.shown_text() == box.full_text()
+        assert asked == []
+        box.advance()
+        assert asked == [True]
+
+    def test_empty_line_types_nothing(self, qapp: t.Any) -> None:
+        box = SpeechBox()
+        box.say("")
+        assert box.full_text() == ""
+        assert not box.is_typing()
+        assert box.shown_text() == ""
+
+    def test_name_and_tooltip_follow_locale(self, qapp: t.Any) -> None:
+        box = SpeechBox()
+        assert box._name.text() == ctx().tr("character.name")
+        assert ctx().tr("character.hint") in box.toolTip()
+        ctx().setLocale("en")
+        box.retranslate()
+        assert box._name.text() == "Clini"
+        ctx().setLocale("ru")
+
+    def test_every_character_line_is_translated(self, qapp: t.Any) -> None:
+        for locale in ("ru", "en"):
+            for key in (
+                "hello",
+                "advisor",
+                "cleaner",
+                "dedup",
+                "tweaks",
+                "settings",
+                "scan",
+                "clean",
+                "calm",
+                "panic",
+            ):
+                value = ctx().tr(f"character.lines.{key}", locale)
+                assert value != f"character.lines.{key}"
+                assert value.strip()
+
+
+class TestAssistantQueue:
+    def test_script_advances_on_click(self, qapp: t.Any) -> None:
+        speech = SpeechBox()
+        mascot = Mascot()
+        assistant = Assistant(mascot, speech)
+        assistant.play([("scan", "первая"), ("panic", "вторая")])
+        assert speech.full_text() == "первая"
+        assert mascot.mood() == "scan"
+        assert assistant.pending() == 1
+        speech.finish_typing()
+        speech.advance()
+        assert speech.full_text() == "вторая"
+        assert mascot.mood() == "panic"
+        assert assistant.pending() == 0
+
+    def test_say_replaces_the_queue(self, qapp: t.Any) -> None:
+        speech = SpeechBox()
+        mascot = Mascot()
+        assistant = Assistant(mascot, speech)
+        assistant.play([("scan", "первая"), ("panic", "вторая")])
+        assistant.say("одна", "calm")
+        assert assistant.pending() == 0
+        assert speech.full_text() == "одна"
+        assert mascot.mood() == "calm"
+
+    def test_advance_on_empty_queue_keeps_last_line(self, qapp: t.Any) -> None:
+        speech = SpeechBox()
+        assistant = Assistant(Mascot(), speech)
+        assistant.say("последняя", "idle")
+        speech.finish_typing()
+        speech.advance()
+        assert speech.full_text() == "последняя"
+
+
+class TestWindowAssistant:
+    def test_window_starts_with_a_greeting(self, win: t.Any) -> None:
+        assert win._speech.full_text() == ctx().tr("character.lines.hello")
+
+    def test_each_page_has_its_line_and_mood(self, win: t.Any) -> None:
+        for index in (1, 2, 3, 4, 0):
+            win.go_to_page(index)
+            name, _key, _page_cls, mood = PAGES[index]
+            assert win._speech.full_text() == ctx().tr(f"character.lines.{name}")
+            assert win._mascot.mood() == mood
+
+    @staticmethod
+    def _in_window(win: t.Any, widget: t.Any) -> QRect:
+        """Геометрия виджета в координатах окна."""
+        return widget.geometry().translated(widget.mapTo(win, QPoint(0, 0)))
+
+    def test_character_stands_beside_the_page_not_on_it(self, win: t.Any) -> None:
+        mascot = self._in_window(win, win._mascot)
+        speech = self._in_window(win, win._speech)
+        stack = self._in_window(win, win._stack)
+        # Персонаж и панель реплики не должны перекрываться между собой…
+        assert not mascot.intersects(speech)
+        # …а колонка персонажа не должна наезжать на страницу раздела.
+        assert mascot.left() >= stack.right() - 1
+
+    def test_hide_and_show_assistant(self, win: t.Any) -> None:
+        page_width = win._stack.width()
+        win.toggle_assistant()
+        QTest.qWait(MainWindow.ASSISTANT_ANIMATION_MS + 140)
+        assert not win.assistant_visible()
+        assert not win._mascot.isVisible()
+        assert not win._speech.isVisible()
+        assert win._stack.width() > page_width
+
+        win.toggle_assistant()
+        QTest.qWait(MainWindow.ASSISTANT_ANIMATION_MS + 140)
+        assert win.assistant_visible()
+        assert win._mascot.isVisible()
+        assert win._speech.isVisible()
+        assert win._mascot.width() == win._character_width()
+
+    def test_assistant_button_has_hint(self, win: t.Any) -> None:
+        assert win._assistant_button.toolTip() == ctx().tr("header.assistant_hide")
+        win.toggle_assistant()
+        assert win._assistant_button.toolTip() == ctx().tr("header.assistant_show")
+        win.toggle_assistant()
+
+    def test_cycle_mood_walks_through_every_mood(self, win: t.Any) -> None:
+        seen = {win.cycle_mood() for _ in range(len(MOODS))}
+        assert seen == set(MOODS)
+
+    def test_context_can_order_a_line_and_a_mood(self, win: t.Any) -> None:
+        ctx().say("Реплика из ядра")
+        assert win._speech.full_text() == "Реплика из ядра"
+        ctx().setAssistantMood("panic")
+        assert win._mascot.mood() == "panic"
+
+    def test_language_change_repeats_greeting_in_new_language(self, win: t.Any) -> None:
+        ru_line = win._speech.full_text()
+        ctx().setLocale("en")
+        assert win._speech.full_text() == ctx().tr("character.lines.hello")
+        assert win._speech.full_text() != ru_line
+
+
+# ---------- живая полоска, числа и подтверждение ----------
+
+
+class TestAccentBar:
+    def test_sweep_ends_with_full_width(self, qapp: t.Any) -> None:
+        bar = AccentBar()
+        bar.resize(400, 2)
+        bar.sweep(400)
+        QTest.qWait(AccentBar.SWEEP_MS + 80)
+        assert bar.maximumWidth() == 400
+        assert not bar.is_sweeping()
+
+    def test_busy_mode_runs_a_segment(self, qapp: t.Any) -> None:
+        host = QWidget()
+        host.resize(500, 400)
+        bar = AccentBar(host)
+        bar.resize(500, 2)
+        assert not bar.is_busy()
+        bar.set_busy(True)
+        assert bar.is_busy()
+        assert bar.property("mode") == "busy"
+        assert bar.maximumWidth() == host.width()
+        assert bar._timer.isActive()
+        bar.set_busy(False)
+        assert bar.property("mode") == "normal"
+        assert not bar._timer.isActive()
+
+    def test_bar_keeps_up_with_the_header(self, win: t.Any) -> None:
+        # На старте шапка ещё не разложена, и полоска однажды застревала
+        # шириной 100 пикселей на всю сессию — проверяем, что не застревает.
+        QTest.qWait(AccentBar.SWEEP_MS + 120)
+        assert win._accent_bar.maximumWidth() == win._header.width()
+        win.resize(1240, 720)
+        QTest.qWait(150)
+        assert win._accent_bar.maximumWidth() == win._header.width()
+        assert win._accent_bar.width() == win._header.width()
+
+    def test_busy_bar_paints_without_errors(self, qapp: t.Any) -> None:
+        host = QWidget()
+        host.resize(300, 200)
+        bar = AccentBar(host)
+        # Ширину выставляем после set_busy: до этого полоска намеренно
+        # сжата в ноль (maximumWidth == 0), пока не проедет первый раз.
+        bar.set_busy(True)
+        bar.resize(300, 2)
+        bar.apply_colors(theme.palette("dark"))
+        assert bar.width() == 300
+        image = QImage(bar.size(), QImage.Format.Format_ARGB32)
+        image.fill(QColor(0, 0, 0, 0))
+        bar.render(image)
+        ink = sum(
+            1 for x in range(image.width()) if image.pixelColor(x, 0).alpha() > 0
+        )
+        assert ink > 0
+
+
+class TestAnimatedNumber:
+    def test_number_creeps_up_instead_of_appearing(self, qapp: t.Any) -> None:
+        number = AnimatedNumber()
+        number.setValue(1000)
+        assert number.value() == 1000
+        assert number.is_animating()
+        QTest.qWait(AnimatedNumber.STEP_MS * 3)
+        assert 0 < number.shown_value() < 1000
+        number.finish()
+        assert number.shown_value() == 1000
+        assert not number.is_animating()
+
+    def test_thousands_are_grouped_and_decimals_kept(self, qapp: t.Any) -> None:
+        number = AnimatedNumber()
+        number.setValue(1284)
+        number.finish()
+        assert number.text() == "1 284"
+        number.setValue(2412.5, decimals=1)
+        number.finish()
+        assert number.text() == "2 412.5"
+
+    def test_same_value_does_not_restart_animation(self, qapp: t.Any) -> None:
+        number = AnimatedNumber()
+        number.setValue(7)
+        number.finish()
+        number.setValue(7)
+        assert not number.is_animating()
+
+
+class TestStatsRow:
+    def test_tiles_keep_values_and_keys(self, qapp: t.Any) -> None:
+        row = StatsRow()
+        row.add("apps", "advisor.stats_apps")
+        row.add("size", "cleaner.stats_size", "cleaner.size_mb", 1)
+        assert row.keys() == ("apps", "size")
+        assert not row.has_values()
+        row.setValue("apps", 36)
+        row.setValue("size", 2412.0)
+        assert row.value("apps") == 36
+        assert row.value("size") == 2412.0
+        assert row.has_values()
+        row.setValue("нет такого", 5)
+
+    def test_captions_follow_locale(self, qapp: t.Any) -> None:
+        row = StatsRow()
+        tile = row.add("apps", "advisor.stats_apps")
+        ctx().setLocale("en")
+        row.retranslate()
+        assert "apps" not in row.tile("apps")._caption.text()
+        assert row.tile("apps")._caption.text() == ctx().tr("advisor.stats_apps")
+        ctx().setLocale("ru")
+        row.retranslate()
+        assert tile._caption.text() == ctx().tr("advisor.stats_apps")
+
+
+class TestConfirmDialog:
+    ITEMS = [("Первое действие", "low"), ("Второе действие", "medium")]
+
+    def test_dialog_lists_every_action(self, win: t.Any) -> None:
+        dialog = ConfirmDialog(win, self.ITEMS)
+        dialog.show()
+        QTest.qWait(40)
+        assert dialog.count() == len(self.ITEMS)
+        assert [text for text, _risk in dialog.items()] == [t for t, _ in self.ITEMS]
+        assert len(dialog.findChildren(QLabel)) >= len(self.ITEMS)
+        dialog.deleteLater()
+
+    def test_scrim_color_comes_from_palette(self, qapp: t.Any) -> None:
+        for theme_name in theme.PALETTES:
+            color = QColor(theme.palette(theme_name)["scrim"])
+            assert color.isValid()
+            assert color.alpha() > 0
+
+    def test_panel_covers_the_bottom_of_the_window(self, win: t.Any) -> None:
+        dialog = ConfirmDialog(win, self.ITEMS)
+        dialog.show()
+        QTest.qWait(ConfirmDialog.ANIMATION_MS + 60)
+        panel = dialog.panel().geometry()
+        assert dialog.rect().contains(panel)
+        assert panel.left() >= ConfirmDialog.PANEL_MARGIN - 1
+        assert panel.bottom() <= dialog.height() - ConfirmDialog.PANEL_MARGIN + 1
+        dialog.deleteLater()
+
+    def test_buttons_confirm_and_cancel(self, win: t.Any) -> None:
+        dialog = ConfirmDialog(win, self.ITEMS)
+        dialog.show()
+        dialog.cancel_button().click()
+        assert dialog.result() == ConfirmDialog.DialogCode.Rejected
+        dialog.deleteLater()
+
+        dialog = ConfirmDialog(win, self.ITEMS)
+        dialog.show()
+        dialog.confirm_button().click()
+        assert dialog.result() == ConfirmDialog.DialogCode.Accepted
+        dialog.deleteLater()
+
+    def test_escape_cancels_and_enter_confirms(self, win: t.Any) -> None:
+        dialog = ConfirmDialog(win, self.ITEMS)
+        dialog.show()
+        QTest.keyClick(dialog, Qt.Key.Key_Escape)
+        assert dialog.result() == ConfirmDialog.DialogCode.Rejected
+        dialog.deleteLater()
+
+        dialog = ConfirmDialog(win, self.ITEMS)
+        dialog.show()
+        QTest.keyClick(dialog, Qt.Key.Key_Return)
+        assert dialog.result() == ConfirmDialog.DialogCode.Accepted
+        dialog.deleteLater()
+
+    def test_ask_returns_the_pressed_answer(self, win: t.Any) -> None:
+        def press(confirm: bool) -> None:
+            for widget in QApplication.topLevelWidgets():
+                if isinstance(widget, ConfirmDialog):
+                    widget.confirm() if confirm else widget.cancel()
+
+        QTimer.singleShot(60, lambda: press(True))
+        assert ConfirmDialog.ask(win, self.ITEMS) is True
+        QTimer.singleShot(60, lambda: press(False))
+        assert ConfirmDialog.ask(win, self.ITEMS) is False
+
+    def test_demo_items_are_translated(self, qapp: t.Any) -> None:
+        for locale in ("ru", "en"):
+            for key in ("tmp", "startup", "photo"):
+                value = ctx().tr(f"demo.items.{key}", locale)
+                assert value != f"demo.items.{key}"
+                assert value.strip()
+
+
+# ---------- звуки ----------
+
+
+class _RecordingPlayer(sounds.SoundPlayer):
+    """Проигрыватель-шпион: помнит, какие звуки просили сыграть."""
+
+    def __init__(self) -> None:
+        super().__init__(True)
+        self.events: t.List[str] = []
+
+    def play(self, event: str) -> None:
+        self.events.append(event)
+
+
+class TestSounds:
+    def test_generated_blip_is_a_valid_wav(self, qapp: t.Any) -> None:
+        data = sounds.wav_bytes(880.0, 0.02)
+        assert data[:4] == b"RIFF"
+        assert data[8:12] == b"WAVE"
+        assert data[12:16] == b"fmt "
+        assert data[36:40] == b"data"
+        assert struct.unpack("<I", data[4:8])[0] == len(data) - 8
+        assert struct.unpack("<I", data[40:44])[0] == len(data) - 44
+
+    def test_waveform_changes_with_length(self, qapp: t.Any) -> None:
+        short = sounds.wav_bytes(440.0, 0.01)
+        long = sounds.wav_bytes(440.0, 0.05)
+        assert len(long) > len(short)
+
+    def test_disabled_player_stays_silent(self, qapp: t.Any) -> None:
+        player = sounds.SoundPlayer(False)
+        player.play("дичь")  # даже неизвестное событие не должно падать
+        assert player.isEnabled() is False
+        assert player._cache == {}
+
+    def test_every_event_has_a_tone(self, qapp: t.Any) -> None:
+        for name in ("click", "page", "done", "cancel"):
+            frequency, seconds = sounds.EVENTS[name]
+            assert frequency > 0 and seconds > 0
+
+    def test_click_filter_skips_navigation_items(
+        self, qapp: t.Any, monkeypatch: t.Any
+    ) -> None:
+        # Подменяем проигрыватель шпионом и возвращаем настоящий после теста.
+        recorder = _RecordingPlayer()
+        monkeypatch.setattr(sounds, "_player", recorder)
+
+        filter_ = sounds.ClickSoundFilter()
+        button = QPushButton("действие")
+        filter_.eventFilter(button, QEvent(QEvent.Type.MouseButtonPress))
+        assert recorder.events == ["click"]
+
+        nav = QPushButton("раздел")
+        nav.setObjectName("navItem")
+        filter_.eventFilter(nav, QEvent(QEvent.Type.MouseButtonPress))
+        assert recorder.events == ["click"]
+
+        filter_.eventFilter(QLabel("подпись"), QEvent(QEvent.Type.MouseButtonPress))
+        assert recorder.events == ["click"]
+
+        filter_.eventFilter(button, QEvent(QEvent.Type.KeyPress))
+        assert recorder.events == ["click"]
+
+    def test_settings_checkbox_turns_sounds_off_and_on(self, win: t.Any) -> None:
+        page = win._pages[4]
+        ctx().setSounds(True)
+        page.retranslate()
+        assert page._sounds_check.isChecked()
+        assert sounds.player().isEnabled()
+
+        page._sounds_check.setChecked(False)
+        assert not ctx().soundsEnabled()
+        assert not sounds.player().isEnabled()
+
+        page._sounds_check.setChecked(True)
+        assert ctx().soundsEnabled()
+        assert sounds.player().isEnabled()
+        ctx().setSounds(False)
+
+
+# ---------- показ работы на страницах ----------
+
+
+class TestWorkFlow:
+    def test_every_page_has_its_own_stat_tiles(self, win: t.Any) -> None:
+        advisor = win._pages[0].stats()
+        assert advisor.keys() == ("apps", "recs")
+        assert win._pages[1].stats().keys() == ("candidates", "size")
+        assert win._pages[2].stats().keys() == ("groups", "dupes")
+        # У твиков и настроек показателей нет — это нормально.
+        assert win._pages[3].stats().keys() == ()
+        assert win._pages[4].stats().keys() == ()
+
+    def test_demo_numbers_match_the_tiles(self, win: t.Any) -> None:
+        for index, (name, _key, _cls, _mood) in enumerate(PAGES):
+            page = win._pages[index]
+            for key in MainWindow.DEMO_RESULTS.get(name, {}):
+                assert key in page.stats().keys()
+
+    def test_progress_hides_by_default(self, win: t.Any) -> None:
+        for page in win._pages:
+            assert not page.progress().isVisible()
+
+    def test_scan_button_runs_the_whole_pipeline(self, win: t.Any) -> None:
+        win.go_to_page(1)
+        page = win._pages[1]
+        page.scanRequested.emit()
+        assert win.is_busy()
+        assert win._accent_bar.is_busy()
+        assert page.progress().isVisible()
+        assert page.progress().value() == 0
+        assert win._speech.full_text() == ctx().tr("character.lines.scan")
+
+        QTest.qWait(MainWindow.DEMO_WORK_MS + 400)
+        assert not win.is_busy()
+        assert not page.progress().isVisible()
+        assert page.stats().value("candidates") == MainWindow.DEMO_RESULTS["cleaner"]["candidates"]
+        assert page.stats().value("size") == MainWindow.DEMO_RESULTS["cleaner"]["size"]
+        assert page._status_label.text() == ctx().tr("cleaner.scan_done")
+        assert win._mascot.mood() == "calm"
+
+    def test_second_action_waits_while_busy(self, win: t.Any) -> None:
+        win.go_to_page(1)
+        page = win._pages[1]
+        page.scanRequested.emit()
+        assert win.is_busy()
+        progress = page.progress().value()
+        page.scanRequested.emit()
+        assert page.progress().value() == progress
+        QTest.qWait(MainWindow.DEMO_WORK_MS + 400)
+
+    def test_action_button_asks_for_confirmation(self, win: t.Any) -> None:
+        win.go_to_page(1)
+        page = win._pages[1]
+
+        def answer(confirm: bool) -> None:
+            for widget in QApplication.topLevelWidgets():
+                if isinstance(widget, ConfirmDialog):
+                    widget.confirm() if confirm else widget.cancel()
+
+        # Отмена: работы нет, персонаж успокаивается.
+        QTimer.singleShot(60, lambda: answer(False))
+        page.cleanRequested.emit()
+        assert not win.is_busy()
+        assert win._speech.full_text() == ctx().tr("character.lines.cancelled")
+
+        # Подтверждение: начинается работа и заполняются показатели.
+        QTimer.singleShot(60, lambda: answer(True))
+        page.cleanRequested.emit()
+        assert win.is_busy()
+        QTest.qWait(MainWindow.DEMO_WORK_MS + 400)
+        assert not win.is_busy()
+        assert page.stats().value("candidates") == MainWindow.DEMO_RESULTS["cleaner"]["candidates"]
 
 
 # ---------- воркеры ----------

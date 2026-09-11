@@ -33,6 +33,12 @@ class Context(QObject):
     languageChanged = Signal(str)
     themeChanged = Signal(str)
     fontChanged = Signal(str)
+    # Реплика персонажа и его настроение. Ядру и страницам не нужно знать про
+    # виджеты: достаточно попросить контекст — окно покажет реплику само.
+    speechRequested = Signal(str)
+    assistantMoodRequested = Signal(str)
+    # Пиксельные звуки интерфейса: включаются и выключаются в настройках.
+    soundsChanged = Signal(bool)
 
     def __new__(cls) -> "Context":
         if cls._instance is None:
@@ -44,6 +50,7 @@ class Context(QObject):
         self._locale: str = "ru"
         self._theme: str = "dark"
         self._font_kind: str = "pixel"
+        self._sounds: bool = True
         self._translator: Optional[QTranslator] = None
         self._strings_ru: Dict[str, Any] = {}
         self._strings_en: Dict[str, Any] = {}
@@ -84,6 +91,10 @@ class Context(QObject):
         self._locale = locale if locale in LOCALES else "ru"
         self._theme = theme if theme in THEMES else "dark"
         self._font_kind = font_kind if font_kind in FONT_KINDS else "pixel"
+        # Флаг читаем строками и булевым: QSettings в ini-файле возвращает
+        # строку, в реестре Windows — настоящее значение.
+        sounds = store.value("interface/sounds", "true")
+        self._sounds = str(sounds).strip().lower() not in ("", "0", "false", "no")
 
     def _load_strings(self) -> None:
         """Загрузить строки из json-файлов локалей."""
@@ -206,6 +217,31 @@ class Context(QObject):
 
     def fontKind(self) -> str:
         return self._font_kind
+
+    # ---------- звук ----------
+
+    def soundsEnabled(self) -> bool:  # noqa: N802
+        return self._sounds
+
+    def setSounds(self, enabled: bool) -> None:  # noqa: N802
+        """Включить или выключить пиксельные звуки и запомнить выбор."""
+        enabled = bool(enabled)
+        if enabled == self._sounds:
+            return
+        self._sounds = enabled
+        self._remember("sounds", "true" if enabled else "false")
+        self.soundsChanged.emit(enabled)
+
+    # ---------- персонаж ----------
+
+    def say(self, text: str) -> None:
+        """Попросить персонажа сказать реплику."""
+        if text:
+            self.speechRequested.emit(text)
+
+    def setAssistantMood(self, mood: str) -> None:  # noqa: N802 - как у остальных set*
+        """Попросить персонажа сменить настроение (idle / scan / calm / panic…)."""
+        self.assistantMoodRequested.emit(mood)
 
 
 # Одиночка контекста — ленивая инициализация.

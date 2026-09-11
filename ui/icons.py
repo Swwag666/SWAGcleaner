@@ -93,6 +93,17 @@ GRIDS: Dict[str, tuple[str, ...]] = {
         ".X.XX.X.",
         "...XX...",
     ),
+    # Персонаж — голова и плечи: показать или скрыть помощницу.
+    "assistant": (
+        "...XX...",
+        "..XXXX..",
+        ".XXXXXX.",
+        "XX.XX.XX",
+        ".XXXXXX.",
+        "..X..X..",
+        ".XX..XX.",
+        "XXX..XXX",
+    ),
     # Язык — глобус.
     "language": (
         "..XXXX..",

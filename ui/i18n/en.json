@@ -29,6 +29,8 @@
     "scan_empty": "Nothing to scan.",
     "plan_title": "Action Plan",
     "no_plan": "No recommendations yet.",
+    "stats_apps": "Programs found",
+    "stats_recs": "Recommendations",
     "apply_button": "Apply selected",
     "apply_running": "Applying…",
     "item_type_remove": "Remove",
@@ -47,6 +49,8 @@
     "scan_done": "Scan complete",
     "scan_empty": "Nothing to scan.",
     "candidates_title": "Candidates found",
+    "stats_candidates": "Candidates",
+    "stats_size": "Total size",
     "candidates_empty": "Nothing found.",
     "clean_button": "Delete selected to Recycle Bin",
     "clean_running": "Cleaning…",
@@ -66,6 +70,8 @@
     "scan_done": "Scan complete",
     "scan_empty": "Nothing to scan.",
     "groups_title": "Groups found",
+    "stats_groups": "Groups",
+    "stats_dupes": "Duplicates",
     "groups_empty": "No duplicates found.",
     "delete_button": "Delete selected to Recycle Bin",
     "delete_running": "Deleting…",
@@ -82,8 +88,49 @@
   "sidebar": {
     "caption": "SECTIONS"
   },
+  "confirm": {
+    "title": "Here is exactly what will be done",
+    "count": "actions",
+    "note": "This list is a demo for now: the real one arrives once the core is wired.",
+    "apply": "Run",
+    "cancel": "Cancel"
+  },
+  "demo": {
+    "items": {
+      "tmp": "Move temp files to the Recycle Bin — 1,284 files, 2.4 GB",
+      "startup": "Disable “Discord” at startup — boot gets faster",
+      "photo": "Send 63 duplicate photos to the Recycle Bin, keeping one file per group"
+    }
+  },
   "header": {
-    "language": "Switch language"
+    "language": "Switch language",
+    "assistant_hide": "Hide the assistant",
+    "assistant_show": "Show the assistant"
+  },
+  "character": {
+    "name": "Clini",
+    "hint": "Click for the next line",
+    "mood_label": "Mood",
+    "moods": {
+      "idle": "calm",
+      "scan": "looking around",
+      "think": "thinking",
+      "calm": "relieved",
+      "panic": "panic"
+    },
+    "lines": {
+      "hello": "Hi! I'm Clini. I'll show you what's going on with this machine and clean up — with almost no questions asked.",
+      "advisor": "Taking a look around. The advisor reads the system and offers a plan, and I'll point out anything that smells off.",
+      "cleaner": "Garbage is my element. Temp files and caches go to the Recycle Bin, not into nowhere.",
+      "dedup": "Photo duplicates mean the same picture in three copies. I'll find them and keep one.",
+      "tweaks": "Startup and services — easy there: I don't switch anything off without your word.",
+      "settings": "Theme, language, font — here we can take a breath. Phew.",
+      "scan": "Going down the list: programs, services, startup items…",
+      "clean": "Found some mess. Have a look at the list — I touch nothing without you.",
+      "calm": "Phew. Almost clean in here — but no slacking, there is still work to do.",
+      "cancelled": "Fine, I'm touching nothing. Say the word and we'll get back to it.",
+      "panic": "Will you look at all this! One bucket won't do the job — we need a plan."
+    }
   },
   "settings": {
     "title": "Settings",
@@ -95,6 +142,8 @@
     "font_pixel": "Pixel",
     "font_default": "Default",
     "font_note": "The pixel font is a matter of taste — one click switches back to default.",
+    "sounds_label": "Pixel sounds",
+    "sounds_note": "Short blips on clicks, section changes and finished work.",
     "exclusions_label": "Cleaner exclusions",
     "backup_label": "Backups",
     "backup_viewer": "View backups",

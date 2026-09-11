@@ -14,10 +14,12 @@ from typing import Dict, List, Optional, Tuple
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -25,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from ui.context import ctx
 from ui.theme import body, button, card, divider, heading, hint, section, spacer, subheading
+from ui.widgets import StatsRow
 
 
 class EmptyTab(QWidget):
@@ -59,11 +62,51 @@ class EmptyTab(QWidget):
         self._layout.addWidget(divider())
         self._layout.addWidget(spacer(8))
         self._add_result_area()
+        self._add_stats()
         self._layout.addStretch(1)
         self._add_buttons()
 
     def _add_result_area(self) -> None:
         """Область, где появятся результаты (заполняют подклассы)."""
+
+    # ---------- показатели и прогресс ----------
+
+    def _stat_tiles(self) -> Tuple[Tuple[str, str, Optional[str], int], ...]:
+        """Показатели страницы: ключ, подпись, единица, знаков после запятой."""
+        return ()
+
+    def _add_stats(self) -> None:
+        """Ряд показателей и полоса прогресса — их заполняют, когда приходят данные."""
+        self._stats = StatsRow(self)
+        for key, caption_key, unit_key, decimals in self._stat_tiles():
+            self._stats.add(key, caption_key, unit_key, decimals)
+        if self._stat_tiles():
+            self._layout.addWidget(self._stats)
+            self._layout.addWidget(spacer(6))
+
+        self._progress = QProgressBar(self)
+        self._progress.setTextVisible(True)
+        self._progress.setFixedHeight(18)
+        self._progress.setVisible(False)
+        self._layout.addWidget(self._progress)
+
+    def stats(self) -> StatsRow:
+        return self._stats
+
+    def setStats(self, key: str, value: float) -> None:  # noqa: N802
+        """Показать число: оно набежит до нужного значения само."""
+        self._stats.setValue(key, value)
+
+    def progress(self) -> QProgressBar:
+        return self._progress
+
+    def set_progress(self, percent: Optional[int]) -> None:
+        """Полоса прогресса: число процентов или None, чтобы спрятать."""
+        if percent is None:
+            self._progress.setVisible(False)
+            return
+        self._progress.setVisible(True)
+        self._progress.setValue(max(0, min(100, int(percent))))
 
     def _add_buttons(self) -> None:
         """Кнопки действий (заполняют подклассы)."""
@@ -122,6 +165,7 @@ class EmptyTab(QWidget):
             label.setText(ctx().tr(key))
         for widget, key in self._buttons:
             widget.setText(ctx().tr(key))
+        self._stats.retranslate()
 
 
 class AdvisorTab(EmptyTab):
@@ -163,6 +207,12 @@ class AdvisorTab(EmptyTab):
     def setStatus(self, text: str) -> None:
         if self._status_label is not None:
             self._status_label.setText(text)
+
+    def _stat_tiles(self) -> Tuple[Tuple[str, str, Optional[str], int], ...]:
+        return (
+            ("apps", "advisor.stats_apps", None, 0),
+            ("recs", "advisor.stats_recs", None, 0),
+        )
 
     def setPlan(self, text: str) -> None:
         if self._plan_area is not None:
@@ -217,6 +267,12 @@ class CleanerTab(EmptyTab):
     def setStatus(self, text: str) -> None:
         if self._status_label is not None:
             self._status_label.setText(text)
+
+    def _stat_tiles(self) -> Tuple[Tuple[str, str, Optional[str], int], ...]:
+        return (
+            ("candidates", "cleaner.stats_candidates", None, 0),
+            ("size", "cleaner.stats_size", "cleaner.size_mb", 1),
+        )
 
     def setCandidates(self, text: str) -> None:
         if self._candidates_area is not None:
@@ -275,6 +331,12 @@ class DedupTab(EmptyTab):
         if self._status_label is not None:
             self._status_label.setText(text)
 
+    def _stat_tiles(self) -> Tuple[Tuple[str, str, Optional[str], int], ...]:
+        return (
+            ("groups", "dedup.stats_groups", None, 0),
+            ("dupes", "dedup.stats_dupes", None, 0),
+        )
+
     def setGroups(self, text: str) -> None:
         if self._groups_area is not None:
             self._groups_area.setText(text)
@@ -323,11 +385,13 @@ class SettingsTab(EmptyTab):
     languageChanged = Signal(str)
     themeChanged = Signal(str)
     fontChanged = Signal(str)
+    soundsChanged = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         self._lang_combo: Optional[QComboBox] = None
         self._theme_combo: Optional[QComboBox] = None
         self._font_combo: Optional[QComboBox] = None
+        self._sounds_check: Optional[QCheckBox] = None
         super().__init__(parent)
 
     def _add_result_area(self) -> None:
@@ -349,8 +413,19 @@ class SettingsTab(EmptyTab):
         layout.addWidget(self._font_combo)
         layout.addWidget(hint(ctx().tr("settings.font_note"), self))
 
+        self._add_section_label("settings.sounds_label", layout)
+        self._sounds_check = QCheckBox(ctx().tr("settings.sounds_label"), self)
+        self._sounds_check.setChecked(ctx().soundsEnabled())
+        self._sounds_check.toggled.connect(self._on_sounds_toggled)
+        layout.addWidget(self._sounds_check)
+        layout.addWidget(hint(ctx().tr("settings.sounds_note"), self))
+
         self._layout.addWidget(frame)
         self._fill_combos()
+
+    def _on_sounds_toggled(self, enabled: bool) -> None:
+        ctx().setSounds(enabled)
+        self.soundsChanged.emit(enabled)
 
     def _add_buttons(self) -> None:
         backup = self._add_button("settings.backup_viewer")
@@ -438,6 +513,11 @@ class SettingsTab(EmptyTab):
     def retranslate(self) -> None:
         super().retranslate()
         self._fill_combos()
+        if self._sounds_check is not None:
+            self._sounds_check.blockSignals(True)
+            self._sounds_check.setText(ctx().tr("settings.sounds_label"))
+            self._sounds_check.setChecked(ctx().soundsEnabled())
+            self._sounds_check.blockSignals(False)
 
     def _title(self) -> str:
         return ctx().tr("settings.title")

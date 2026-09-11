@@ -64,6 +64,8 @@ PALETTES: Dict[str, Dict[str, str]] = {
         "danger": "#ff5f5f",
         "select_bg": "#22334f",
         "shadow": "rgba(0, 0, 0, 90)",
+        # Затемнение под диалогом подтверждения (#AARRGGBB).
+        "scrim": "#b30a0d12",
     },
     "light": {
         # Чуть приглушённая светлая тема: чистый белый на весь экран режет глаз.
@@ -87,6 +89,7 @@ PALETTES: Dict[str, Dict[str, str]] = {
         "danger": "#d9463f",
         "select_bg": "#cfdffa",
         "shadow": "rgba(30, 45, 70, 40)",
+        "scrim": "#59101a2a",
     },
 }
 
@@ -275,10 +278,53 @@ def qss(theme: str = "dark", font_kind: str = "pixel") -> str:
 
     /* ---------- шапка ---------- */
     QWidget#header {{ background-color: {c["bg_base"]}; }}
-    /* Полоска под шапкой: выезжает при смене раздела, как заставка сцены. */
+    /* Полоска под шапкой: выезжает при смене раздела, как заставка сцены.
+       Во время работы она тускнеет, а по ней бежит акцентный сегмент —
+       отдельный спиннер не нужен. */
     QFrame#accentBar {{
         background-color: {c["accent"]};
         border: none;
+    }}
+    QFrame#accentBar[mode="busy"] {{ background-color: {c["border_soft"]}; }}
+
+    /* ---------- показатели результатов ---------- */
+    QFrame#statTile {{
+        background-color: {c["bg_inset"]};
+        border: 1px solid {c["border_soft"]};
+        border-radius: 10px;
+    }}
+    QLabel#statTileCaption {{ color: {c["text_placeholder"]}; }}
+
+    /* ---------- подтверждение ---------- */
+    QDialog#confirmDialog {{ background: transparent; }}
+    QFrame#dialogPanel {{
+        background-color: {c["bg_panel"]};
+        border: 1px solid {c["border"]};
+        border-radius: 14px;
+    }}
+    QFrame#dialogItem {{
+        background-color: {c["bg_inset"]};
+        border: 1px solid {c["border_soft"]};
+        border-radius: 9px;
+    }}
+    QLabel#riskBadge {{ font-size: {size["small"]}{unit}; letter-spacing: 1px; }}
+    QLabel#riskBadge[risk="low"] {{ color: {c["on"]}; }}
+    QLabel#riskBadge[risk="medium"] {{ color: {c["warn"]}; }}
+    QLabel#riskBadge[risk="high"] {{ color: {c["danger"]}; }}
+
+    /* ---------- флажки ---------- */
+    QCheckBox {{ color: {c["text_primary"]}; spacing: 8px; }}
+    QCheckBox::indicator {{
+        width: 16px;
+        height: 16px;
+        border: 1px solid {c["border"]};
+        border-radius: 4px;
+        background-color: {c["bg_input"]};
+    }}
+    QCheckBox::indicator:hover {{ border-color: {c["accent_soft"]}; }}
+    QCheckBox::indicator:checked {{
+        background-color: {c["accent"]};
+        border-color: {c["accent"]};
     }}
 
     /* ---------- карточки ---------- */
@@ -292,6 +338,22 @@ def qss(theme: str = "dark", font_kind: str = "pixel") -> str:
         border: none;
         max-height: 1px;
     }}
+
+    /* ---------- персонаж и панель реплики ---------- */
+    QFrame#speechBox {{
+        background-color: {c["bg_panel"]};
+        border: 1px solid {c["border_soft"]};
+        /* Акцентная кромка слева — как у реплики в визуальной новелле. */
+        border-left: 3px solid {c["accent"]};
+        border-radius: 10px;
+    }}
+    QLabel#speechName {{
+        color: {c["accent"]};
+        font-size: {size["small"]}{unit};
+        letter-spacing: 2px;
+    }}
+    QLabel#speechText {{ color: {c["text_primary"]}; }}
+    QLabel#speechCaret {{ color: {c["accent"]}; font-size: {size["small"]}{unit}; }}
 
     /* ---------- ввод ---------- */
     QLineEdit, QComboBox, QTextEdit, QSpinBox {{
