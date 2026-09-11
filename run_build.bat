@@ -1,56 +1,51 @@
 @echo off
-rem Сборка SWAGcleaner в один .exe
-rem Требуется: Python + venv с установленными requirements.txt и requirements-dev.txt
-rem Работает только в Windows с privileges для UPX (опционально).
+rem Сборка SWAGcleaner в Windows-приложение.
 rem
-rem Использование: call run_build.bat [build_dir]
+rem По умолчанию собирается один файл: dist\SWAGcleaner.exe
+rem Запуск оконный — без чёрного окна консоли.
 rem
-rem Если вы хотите собрать без UPX, установите переменную окружения
-rem PYINSTALLER_UPX=0
+rem Пока доводишь интерфейс, удобнее собирать папкой: она стартует заметно
+rem быстрее, а пересборка идёт по кэшу.
+rem     set SWAGCLEANER_ONEDIR=1
+rem     run_build.bat
 rem
-rem Пример:
-rem   call run_build.bat
-rem   call run_build.bat dist
+rem Если что-то не запускается — проверь сборку без показа окна:
+rem     dist\SWAGcleaner.exe --self-test
 
-setlocal EnableDelayedExpansion
-set BUILD_DIR=%1
-if "%BUILD_DIR%"=="" set BUILD_DIR=.
+setlocal
+cd /d "%~dp0"
 
-set SCRIPT_DIR=%~dp0
-set PROJECT_ROOT=%SCRIPT_DIR%
-if not exist "%PROJECT_ROOT%\venv\Scripts\python.exe" (
-    echo venv не найден. Создайте: python -m venv venv
-    echo Установите зависимости: venv\Scripts\pip install -r requirements.txt -r requirements-dev.txt
+if not exist "venv\Scripts\python.exe" (
+    echo venv не найден. Создай окружение:
+    echo     python -m venv venv
+    echo     venv\Scripts\pip install -r requirements.txt -r requirements-dev.txt
     pause
     exit /b 1
 )
 
-set PYTHON=%PROJECT_ROOT%\venv\Scripts\python.exe
+set PYTHON=%CD%\venv\Scripts\python.exe
 
-set UPX_FLAG=-
-echo === Building SWAGcleaner ===
-echo Using: %PYTHON%
-echo Project root: %PROJECT_ROOT%
-echo Build dir: %BUILD_DIR%
+echo === Сборка SWAGcleaner ===
+echo Python: %PYTHON%
+if "%SWAGCLEANER_ONEDIR%"=="1" (
+    echo Режим:  папка ^(быстрый запуск^)
+) else (
+    echo Режим:  один файл
+)
 echo.
 
-"%PYTHON%" -m PyInstaller --name SWAGcleaner --onefile --console --collect-all PySide6 --collect-all shiboken6 --collect-all core --collect-all ui --collect-all services %UPX_FLAG% --distpath "%BUILD_DIR%\dist" --workpath "%BUILD_DIR%\build" --specpath "%BUILD_DIR%" swagcleaner.py
-
-if %ERRORLEVEL% neq 0 (
-    echo Build failed with error code %ERRORLEVEL%
+"%PYTHON%" -m PyInstaller --noconfirm --distpath dist --workpath build SWAGcleaner.spec
+if errorlevel 1 (
+    echo.
+    echo Сборка упала с кодом %ERRORLEVEL%
     pause
     exit /b %ERRORLEVEL%
 )
 
 echo.
-echo === Build complete ===
-echo Exe: %BUILD_DIR%\dist\SWAGcleaner.exe
+if exist "dist\SWAGcleaner.exe" echo Готово: %CD%\dist\SWAGcleaner.exe
+if exist "dist\SWAGcleaner\SWAGcleaner.exe" echo Готово: %CD%\dist\SWAGcleaner\SWAGcleaner.exe
 echo.
-
-if exist "%BUILD_DIR%\dist\SWAGcleaner.exe" (
-    echo OK: exe найден.
-) else (
-    echo WARNING: exe не найден.
-)
+echo Проверка: запусти приложение или прогони dist\SWAGcleaner.exe --self-test
 
 endlocal

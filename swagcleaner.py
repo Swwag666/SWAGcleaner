@@ -17,6 +17,7 @@ import argparse
 import logging
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
@@ -40,8 +41,33 @@ def _resolve_project_root() -> Path:
     return here
 
 
+def _log_path() -> Path:
+    """Путь к файлу лога на случай, когда консоли нет."""
+    return Path(tempfile.gettempdir()) / "swagcleaner.log"
+
+
+def _log_unhandled(exc_type, exc_value, exc_tb) -> None:
+    """Записать необработанную ошибку в лог.
+
+    У оконного .exe нет консоли, поэтому лог — единственный след.
+    """
+    _logger.critical("Необработанная ошибка", exc_info=(exc_type, exc_value, exc_tb))
+
+
 def _setup_logging(level: int = logging.INFO) -> None:
-    logging.basicConfig(level=level, format=LOG_FORMAT)
+    """Настроить логирование и перехват необработанных ошибок."""
+    if sys.stderr is not None:
+        logging.basicConfig(level=level, format=LOG_FORMAT)
+    else:
+        # Оконная сборка запускается без консоли — пишем в файл,
+        # иначе ошибки старта пропадут молча.
+        logging.basicConfig(
+            level=level,
+            format=LOG_FORMAT,
+            filename=_log_path(),
+            encoding="utf-8",
+        )
+    sys.excepthook = _log_unhandled
 
 
 def _ensure_deps() -> None:
@@ -96,6 +122,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="показать версию",
     )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="проверить сборку: поднять окно без показа, отчитаться и выйти",
+    )
     return parser.parse_args(argv)
 
 
@@ -134,6 +165,64 @@ def _cli_advisor(installed_provider):
         print("  (база знаний пока демо-заглушка — это ожидаемо)")
 
 
+def _self_test() -> int:
+    """Проверить, что сборка рабочая: окно, вкладки, строки локализации.
+
+    Окно не показывается на экране (Qt поднимается в offscreen-режиме), а
+    отчёт пишется ещё и в файл: у оконного .exe нет консоли, и без отчёта
+    понять, что именно не так, невозможно. Возвращает 0, если всё хорошо.
+    """
+    lines: list[str] = []
+    code = 0
+    try:
+        # Платформу Qt нужно выставить до импорта PySide6.
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QApplication
+
+        from ui.context import init_context
+        from ui.main import MainWindow
+
+        app = QApplication([])
+        context = init_context(app)
+        window = MainWindow(app, context)
+        window.show()
+
+        tab_count = window._tab_widget.count()
+        title = context.tr("app.title")
+        advisor = context.tr("tabs.advisor")
+
+        lines.append(f"локаль: {context.locale()}")
+        lines.append(f"вкладок: {tab_count}")
+        lines.append(f"app.title: {title!r}")
+        lines.append(f"tabs.advisor: {advisor!r}")
+
+        if tab_count != 5:
+            lines.append(f"ОШИБКА: ожидалось 5 вкладок, получилось {tab_count}")
+            code = 1
+        if advisor == "tabs.advisor":
+            lines.append("ОШИБКА: строки локализации не загрузились")
+            code = 1
+
+        QTimer.singleShot(0, app.quit)
+        app.exec()
+    except Exception as exc:
+        lines.append(f"ИСКЛЮЧЕНИЕ: {exc!r}")
+        code = 1
+
+    lines.append("итог: " + ("OK" if code == 0 else "FAIL"))
+    report = "\n".join(lines)
+    try:
+        (Path(tempfile.gettempdir()) / "swagcleaner_selftest.txt").write_text(
+            report, encoding="utf-8"
+        )
+    except OSError:
+        pass
+    print(report)
+    return code
+
+
 def main(argv: list[str] | None = None) -> int:
     _logger.debug("swagcleaner starting")
 
@@ -149,6 +238,9 @@ def main(argv: list[str] | None = None) -> int:
     os.chdir(root)
 
     _ensure_deps()
+
+    if args.self_test:
+        return _self_test()
 
     from core.apps import KNOWN_APPS, WindowsInstalledProvider
     # KNOWN_APPS — только запасной демо-набор на случай, если реестр недоступен.
