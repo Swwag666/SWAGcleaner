@@ -183,6 +183,9 @@ class Sidebar(QFrame):
         self._expanded = True
         self._set_labels_visible(True)
         self._set_width(self.EXPANDED_WIDTH)
+        from ui import sounds as _sounds
+
+        _sounds.play("click")
 
     def collapse(self) -> None:
         """Свернуть меню в полоску с иконками."""

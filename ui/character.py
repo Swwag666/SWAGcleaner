@@ -100,12 +100,17 @@ class Mascot(QWidget):
     """Спрайт персонажа: рисует позу и чуть-чуть двигается, чтобы не быть фото."""
 
     TICK_MS = 70
+    # Выезд снизу при смене вкладки: длительность в секундах и высота подъёма.
+    ENTER_DURATION_S = 0.38
+    ENTER_LIFT_PX = 110.0
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._mood = "idle"
         self._speaking = False
         self._phase = 0.0
+        # Выезд снизу: None — стоит на месте, иначе 0..1 (доля подъёма).
+        self._enter_t: float | None = None
         self._cache: Dict[str, Optional[QPixmap]] = {}
         self._talk_frames: Optional[List[QPixmap]] = None
         # Минимальная ширина нулевая: колонку персонажа сворачивает окно,
@@ -175,28 +180,64 @@ class Mascot(QWidget):
 
     # ---------- анимация ----------
 
+    def enter_from_below(self) -> None:
+        """Начать выезд снизу (как появление в визуальной новелле)."""
+        self._enter_t = 0.0
+        self.update()
+
+    def is_entering(self) -> bool:
+        """Идёт ли сейчас выезд снизу."""
+        return self._enter_t is not None
+
     def _tick(self) -> None:
         self._phase += self.TICK_MS / 1000.0
+        if self._enter_t is not None:
+            self._enter_t += (self.TICK_MS / 1000.0) / self.ENTER_DURATION_S
+            if self._enter_t >= 1.0:
+                self._enter_t = None
         self.update()
 
     def _motion(self) -> Tuple[float, float, float]:
         """Смещение по X, по Y и масштаб для текущего кадра."""
         t = self._phase
         if self._speaking and self.has_talk_frames():
-            # Рот переключается кадрами, телу достаточно лёгкого покачивания.
-            return 0.0, math.sin(t * 6.0) * 1.5, 1.0
-        if self._speaking:
+            # Речь с потряхиванием: рот переключается кадрами, а тело мелко
+            # дрожит — два расстроенных синуса по X и Y плюс лёгкое дыхание.
+            shake_x = math.sin(t * 31.0) * 1.1 + math.sin(t * 17.3) * 0.8
+            shake_y = math.sin(t * 6.0) * 1.5 + math.sin(t * 23.0) * 0.7
+            zoom = 1.0 + 0.004 * math.sin(t * 12.0)
+            offset_x, offset_y = shake_x, shake_y
+        elif self._speaking:
             # Кадров рта нет: говорим всем корпусом — кивок и дыхание.
-            return 0.0, math.sin(t * 6.0) * 2.5, 1.0 + 0.008 * math.sin(t * 12.0)
-        if self._mood == "panic":
-            return math.sin(t * 14.0) * 2.5, math.sin(t * 9.0) * 1.5, 1.0
-        if self._mood == "scan":
-            return math.sin(t * 1.2) * 3.0, math.sin(t * 2.4) * 1.0, 1.0
-        if self._mood in ("calm", "idle"):
+            offset_x, offset_y, zoom = (
+                0.0,
+                math.sin(t * 6.0) * 2.5,
+                1.0 + 0.008 * math.sin(t * 12.0),
+            )
+        elif self._mood == "panic":
+            offset_x, offset_y, zoom = (
+                math.sin(t * 14.0) * 2.5,
+                math.sin(t * 9.0) * 1.5,
+                1.0,
+            )
+        elif self._mood == "scan":
+            offset_x, offset_y, zoom = (
+                math.sin(t * 1.2) * 3.0,
+                math.sin(t * 2.4) * 1.0,
+                1.0,
+            )
+        elif self._mood in ("calm", "idle"):
             # Выдох: медленно опускается и чуть сжимается, потом обратно.
             exhale = (1.0 - math.cos(t * 1.05)) / 2.0
-            return 0.0, exhale * 2.0, 1.0 - 0.012 * exhale
-        return 0.0, 0.0, 1.0
+            offset_x, offset_y, zoom = 0.0, exhale * 2.0, 1.0 - 0.012 * exhale
+        else:
+            offset_x, offset_y, zoom = 0.0, 0.0, 1.0
+        if self._enter_t is not None:
+            # Выезд снизу: старт на ENTER_LIFT_PX ниже, финиш ровно на месте.
+            progress = max(0.0, min(1.0, self._enter_t))
+            ease = 1.0 - (1.0 - progress) ** 3
+            offset_y += (1.0 - ease) * self.ENTER_LIFT_PX
+        return offset_x, offset_y, zoom
 
     def _talk_index(self) -> int:
         self._load_talk_frames()
@@ -328,6 +369,9 @@ class SpeechBox(QFrame):
 
     def advance(self) -> None:
         """Клик по панели: дописать реплику или попросить следующую."""
+        from ui import sounds as _sounds
+
+        _sounds.play("click")
         if self._typing:
             self.finish_typing()
         else:

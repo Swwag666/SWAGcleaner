@@ -532,20 +532,28 @@ class TestCharacterAssets:
         assert moods["calm"] != moods["scan"]
         assert moods["calm"].name == "calm.png"
 
-    def test_magnifier_stays_on_the_scanning_pose(self, qapp: t.Any) -> None:
-        # Поза с лупой — только у поиска мусора: покой и раздумья берут
-        # спокойную картинку, иначе лупа висела бы на главной странице.
+    def test_idle_pose_is_its_own_greeting_picture(self, qapp: t.Any) -> None:
+        # Новое спокойствие встречает пользователя: свой арт без лупы.
         moods = available_moods()
-        assert moods["idle"] == moods["calm"]
+        assert moods["idle"] is not None
+        assert moods["idle"].name == "idle.png"
+        assert moods["idle"] != moods["scan"]
+
+    def test_magnifier_stays_on_the_scanning_pose(self, qapp: t.Any) -> None:
+        # Поза с лупой — только у поиска мусора: раздумья берут спокойную
+        # картинку, а встречает пользователя отдельный idle-арт без лупы.
+        moods = available_moods()
         assert moods["think"] == moods["calm"]
         assert moods["scan"] != moods["calm"]
+        assert moods["idle"] != moods["scan"]
 
-    def test_main_page_does_not_rest_in_scanning_pose(self, qapp: t.Any) -> None:
+    def test_main_page_rests_in_idle_not_scanning_pose(self, qapp: t.Any) -> None:
         from ui.main import PAGES
 
         advisor_mood = PAGES[0][3]
+        assert advisor_mood == "idle"
         assert advisor_mood != "scan"
-        assert available_moods()[advisor_mood] == available_moods()["calm"]
+        assert available_moods()[advisor_mood].name == "idle.png"
 
     def test_every_pose_has_mouth_frames(self, qapp: t.Any) -> None:
         # Без кадров рта речь — только покачивание, и рот не открывается.
@@ -591,10 +599,11 @@ class TestCharacterAssets:
             box = (max(xs) - min(xs)) / closed.width(), (max(ys) - min(ys)) / closed.height()
             assert box[0] < 0.35, f"{mood}: разница по ширине {box}"
             assert box[1] < 0.35, f"{mood}: разница по высоте {box}"
-            # И это именно лицо, а не угол кадра.
+            # И это именно лицо, а не угол кадра. По X допускаем зеркало:
+            # паника и скан развёрнуты, поэтому рот может быть слева.
             center_x = (min(xs) + max(xs)) / 2 / closed.width()
             center_y = (min(ys) + max(ys)) / 2 / closed.height()
-            assert 0.35 < center_x < 0.85, f"{mood}: рот не там, где лицо ({center_x})"
+            assert 0.15 < center_x < 0.85, f"{mood}: рот не там, где лицо ({center_x})"
             assert center_y < 0.55, f"{mood}: рот ниже лица ({center_y})"
 
     def test_unknown_mood_has_no_file(self, qapp: t.Any) -> None:
@@ -647,6 +656,31 @@ class TestMascot:
             if image.pixelColor(x, y).alpha() > 0
         )
         assert ink > 0
+
+    def test_speaking_shakes_instead_of_swaying(self, qapp: t.Any) -> None:
+        # Речь с кадрами рта — мелкое потряхивание по X, а не покой.
+        mascot = Mascot()
+        mascot.set_mood("idle")
+        assert mascot.has_talk_frames()
+        mascot.set_speaking(True)
+        xs = {mascot._motion()[0] for _ in range(30) for _ in [mascot._tick()]}
+        assert any(abs(x) > 0.5 for x in xs)
+
+    def test_enter_from_below_lifts_and_settles(self, qapp: t.Any) -> None:
+        mascot = Mascot()
+        mascot.enter_from_below()
+        assert mascot.is_entering()
+        _, lift_y, _ = mascot._motion()
+        assert lift_y > 50.0
+        for _ in range(10):
+            mascot._tick()
+        assert not mascot.is_entering()
+        _, rest_y, _ = mascot._motion()
+        assert abs(rest_y) < 10.0
+
+    def test_page_change_triggers_entrance(self, win: t.Any) -> None:
+        win.go_to_page(1)
+        assert win._mascot.is_entering()
 
 
 class TestSpeechBox:
@@ -1042,7 +1076,7 @@ class TestSounds:
         assert player._cache == {}
 
     def test_every_event_has_a_tone(self, qapp: t.Any) -> None:
-        for name in ("click", "page", "done", "cancel"):
+        for name in ("click", "page", "done", "cancel", "error"):
             frequency, seconds = sounds.EVENTS[name]
             assert frequency > 0 and seconds > 0
 
@@ -1084,6 +1118,50 @@ class TestSounds:
         assert ctx().soundsEnabled()
         assert sounds.player().isEnabled()
         ctx().setSounds(False)
+
+    def test_speech_advance_clicks(self, qapp: t.Any, monkeypatch: t.Any) -> None:
+        from ui.character import SpeechBox
+
+        recorder = _RecordingPlayer()
+        monkeypatch.setattr(sounds, "_player", recorder)
+        box = SpeechBox()
+        box.say("Раз, два")
+        box.advance()
+        assert recorder.events == ["click"]
+
+    def test_confirm_and_cancel_have_own_sounds(
+        self, win: t.Any, monkeypatch: t.Any
+    ) -> None:
+        recorder = _RecordingPlayer()
+        monkeypatch.setattr(sounds, "_player", recorder)
+        dialog = ConfirmDialog(win, [("Действие", "low")])
+        dialog.confirm()
+        assert recorder.events[-1] == "done"
+        dialog = ConfirmDialog(win, [("Действие", "low")])
+        dialog.cancel()
+        assert recorder.events[-1] == "cancel"
+
+    def test_same_page_click_is_not_silent(
+        self, win: t.Any, monkeypatch: t.Any
+    ) -> None:
+        recorder = _RecordingPlayer()
+        monkeypatch.setattr(sounds, "_player", recorder)
+        win.go_to_page(1)
+        QTest.qWait(SceneStack.TRANSITION_MS + 120)
+        recorder.events.clear()
+        win.go_to_page(1)
+        assert recorder.events == ["click"]
+
+    def test_busy_action_plays_error(self, win: t.Any, monkeypatch: t.Any) -> None:
+        recorder = _RecordingPlayer()
+        monkeypatch.setattr(sounds, "_player", recorder)
+        win.go_to_page(1)
+        QTest.qWait(SceneStack.TRANSITION_MS + 120)
+        win._pages[1].scanRequested.emit()
+        assert win.is_busy()
+        win.run_demo_action(False)
+        assert recorder.events[-1] == "error"
+        QTest.qWait(MainWindow.DEMO_WORK_MS + 400)
 
 
 # ---------- показ работы на страницах ----------

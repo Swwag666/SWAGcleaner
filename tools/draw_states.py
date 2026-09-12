@@ -52,8 +52,25 @@ PANIC_FACE = {
     "lip_color": (150, 60, 62),
 }
 
+# Лицо в новом спокойном арте (cleaner-idle.png, 1254x1254).
+# Снято измерением по сетке поверх головы: глаза ~ (615,170) и (715,195),
+# рот — линия ~ (570..690, 220..250) с центром (635,235). Оси лица считаем
+# по линии глаз, как и для остальных поз.
+IDLE_FACE = {
+    "eyes": ((615, 170), (715, 195)),
+    "mouth": (635, 235),
+    "mouth_boxes": ((565, 213, 698, 262),),
+    "lip_color": (170, 80, 75),
+}
+
 # На сколько градусов выпрямить корпус спокойной позы (против часовой).
 CALM_TILT_DEGREES = 10.0
+
+# Паника и сканирование смотрят в другую сторону: зеркалим их по горизонтали.
+# Зеркалятся готовые кадры целиком (поза + оба кадра рта одним преобразованием),
+# поэтому открытый и закрытый рот остаются ровно друг на друге.
+MIRROR_SCAN = True
+MIRROR_PANIC = True
 
 # Масштаб и холст готовых картинок: scan.png — это сырьё 1254x1254,
 # уменьшенное до высоты 360, то есть ровно в 0.287 раза. Новые состояния
@@ -427,6 +444,34 @@ def panic_with_closed_mouth() -> Image.Image:
     return Image.fromarray(result)
 
 
+def idle_with_open_mouth(openness: float = 0.9) -> Image.Image:
+    """Новый спокойный арт с приоткрытым ртом: линию губ затираем, рисуем речь."""
+    source = Image.open(RAW / "cleaner-idle.png").convert("RGBA")
+    rgb = np.array(source)[..., :3]
+    axes = face_axes(IDLE_FACE["eyes"])
+    iod = eye_distance(IDLE_FACE["eyes"])
+    shape = rgb.shape
+
+    mouth_mask = np.zeros(shape[:2], dtype=np.float32)
+    for box in IDLE_FACE["mouth_boxes"]:
+        mouth_mask = np.maximum(mouth_mask, box_mask(shape, box, axes, grow=4, feather=2.5))
+
+    cleaned = fill_from_around(rgb, mouth_mask)
+    drawn = paint(
+        cleaned, open_mouth_shapes(shape, axes, IDLE_FACE["mouth"], iod, openness=openness)
+    )
+    result = np.array(source).copy()
+    result[..., :3] = drawn
+    return Image.fromarray(result)
+
+
+def maybe_mirror(image: Image.Image, enabled: bool) -> Image.Image:
+    """Отзеркалить кадр по горизонтали, если включён разворот позы."""
+    if not enabled:
+        return image
+    return image.transpose(Image.FLIP_LEFT_RIGHT)
+
+
 def report(path: Path, image: Image.Image) -> None:
     """Короткий отчёт по готовому файлу: размер и что вышло в области рта."""
     print(f"{path.name}: {image.width}x{image.height}")
@@ -455,20 +500,21 @@ def main() -> int:
 
     scan_source = Image.open(RAW / "cleaner-scan.png").convert("RGBA")
     panic_source = Image.open(RAW / "cleaner-panic.png").convert("RGBA")
+    idle_source = Image.open(RAW / "cleaner-idle.png").convert("RGBA")
     _, _, _, scan_bottom = content_bbox(scan_source)
     scan_bottom_margin = scan_source.height - scan_bottom
 
     # Все кадры проходят один и тот же пересчёт размера. Если открытый кадр
     # уменьшить отдельно от закрытого, при 9 кадрах в секунду фигура
     # подрагивала бы: разница в пересчёте видна глазом на краях.
-    save(OUT / "scan.png", resize_full(scan_source, scan_source.height, SCAN_CANVAS))
+    save(OUT / "scan.png", maybe_mirror(resize_full(scan_source, scan_source.height, SCAN_CANVAS), MIRROR_SCAN))
     save(
         OUT / "scan-talk-closed.png",
-        resize_full(scan_source, scan_source.height, SCAN_CANVAS),
+        maybe_mirror(resize_full(scan_source, scan_source.height, SCAN_CANVAS), MIRROR_SCAN),
     )
     save(
         OUT / "scan-talk-open.png",
-        resize_full(scan_with_open_mouth(), scan_source.height, SCAN_CANVAS),
+        maybe_mirror(resize_full(scan_with_open_mouth(), scan_source.height, SCAN_CANVAS), MIRROR_SCAN),
     )
 
     calm, calm_open = calm_from_scan()
@@ -487,15 +533,28 @@ def main() -> int:
 
     save(
         OUT / "panic.png",
-        resize_full(panic_source, panic_source.height, PANIC_CANVAS),
+        maybe_mirror(resize_full(panic_source, panic_source.height, PANIC_CANVAS), MIRROR_PANIC),
     )
     save(
         OUT / "panic-talk-open.png",
-        resize_full(panic_source, panic_source.height, PANIC_CANVAS),
+        maybe_mirror(resize_full(panic_source, panic_source.height, PANIC_CANVAS), MIRROR_PANIC),
     )
     save(
         OUT / "panic-talk-closed.png",
-        resize_full(panic_with_closed_mouth(), panic_source.height, PANIC_CANVAS),
+        maybe_mirror(resize_full(panic_with_closed_mouth(), panic_source.height, PANIC_CANVAS), MIRROR_PANIC),
+    )
+
+    # Новое спокойствие, которое встречает пользователя: живой рисунок idle.
+    # Тот же масштаб и холст, что у scan/calm — иначе прыгала бы при смене позы.
+    # Закрытый кадр = сама поза (рот-линия уже нарисован), открытый дорисован.
+    save(OUT / "idle.png", resize_full(idle_source, idle_source.height, SCAN_CANVAS))
+    save(
+        OUT / "idle-talk-closed.png",
+        resize_full(idle_source, idle_source.height, SCAN_CANVAS),
+    )
+    save(
+        OUT / "idle-talk-open.png",
+        resize_full(idle_with_open_mouth(), idle_source.height, SCAN_CANVAS),
     )
 
     print("\nготово. Приложение подхватит файлы само: настроение берёт позу")

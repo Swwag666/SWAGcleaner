@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ui import sounds
 from ui.context import ctx
 from ui.theme import palette
 from ui.widgets import AnimatedNumber
@@ -209,9 +210,11 @@ class ConfirmDialog(QDialog):
     # ---------- результат ----------
 
     def confirm(self) -> None:
+        sounds.play("done")
         self.accept()
 
     def cancel(self) -> None:
+        sounds.play("cancel")
         self.reject()
 
     @staticmethod

@@ -302,10 +302,12 @@ class MainWindow(QMainWindow):
     def _on_theme_changed(self, _theme: str) -> None:
         self._apply_visuals()
         self.retranslate()
+        sounds.play("page")
 
     def _on_font_changed(self, _font_kind: str) -> None:
         self._apply_visuals()
         self.retranslate()
+        sounds.play("page")
 
     def _on_speech_requested(self, text: str) -> None:
         """Реплика, заказанная через контекст (например, из ядра)."""
@@ -317,6 +319,7 @@ class MainWindow(QMainWindow):
 
     def _on_language_changed(self, _locale: str) -> None:
         """После смены языка уже напечатанная реплика устарела — говорим заново."""
+        sounds.play("page")
         self._assistant.say(self._context.tr("character.lines.hello"), "idle")
 
     # ---------- персонаж ----------
@@ -351,6 +354,7 @@ class MainWindow(QMainWindow):
         """Показать или скрыть помощницу вместе с панелью реплики."""
         self._assistant_visible = not self._assistant_visible
         self._refresh_assistant_button()
+        sounds.play("click")
 
         group = QParallelAnimationGroup(self)
         current_width = self._mascot.width()
@@ -398,15 +402,15 @@ class MainWindow(QMainWindow):
     def cycle_mood(self) -> str:
         """Показать по кругу позы помощницы (проверка арта без ядра).
 
-        Листаются только настроения со своей картинкой: idle, think и calm
-        сейчас рисуются одной и той же позой, и повторять её трижды подряд
-        в демонстрации незачем.
+        Листаются только настроения со своей картинкой, чтобы не показывать
+        одну и ту же картинку дважды подряд.
         """
         order = demo_moods() or list(MOODS)
         current = self._mascot.mood()
         index = (order.index(current) + 1) % len(order) if current in order else 0
         mood = order[index]
         self._mascot.set_mood(mood)
+        sounds.play("page")
         self.setStatus(
             f"{self._context.tr('character.mood_label')}: "
             f"{self._context.tr(f'character.moods.{mood}')}"
@@ -417,12 +421,18 @@ class MainWindow(QMainWindow):
 
     def go_to_page(self, index: int) -> None:
         if 0 <= index < len(self._pages):
+            if index == self._stack.currentIndex():
+                # Клик по уже активному пункту: перехода нет, но молчать незачем.
+                sounds.play("click")
+                self._sidebar.set_current(index)
+                return
             self._stack.setCurrentIndex(index)
             self._sidebar.set_current(index)
 
     def _on_page_changed(self, index: int) -> None:
         self._sidebar.set_current(index)
         sounds.play("page")
+        self._mascot.enter_from_below()
         self._sweep_accent()
         self._speak_page(index)
 
@@ -461,11 +471,14 @@ class MainWindow(QMainWindow):
     def run_demo_action(self, needs_confirm: bool = False) -> None:
         """Сценарий кнопки действия: подтверждение, работа, итог."""
         index = self._stack.currentIndex()
-        if not (0 <= index < len(PAGES)) or self._busy:
+        if not (0 <= index < len(PAGES)):
+            return
+        if self._busy:
+            sounds.play("error")
             return
         name, _key, _page_cls, _mood = PAGES[index]
         if needs_confirm and not self._ask_confirmation():
-            sounds.play("cancel")
+            # Звук отмены уже сыграл сам диалог — тут только реплика.
             self._assistant.say(self._context.tr("character.lines.cancelled"), "idle")
             return
         self._start_work(name, self._pages[index])
