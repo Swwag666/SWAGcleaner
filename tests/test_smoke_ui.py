@@ -540,12 +540,19 @@ class TestCharacterAssets:
         assert moods["idle"] != moods["scan"]
 
     def test_magnifier_stays_on_the_scanning_pose(self, qapp: t.Any) -> None:
-        # Поза с лупой — только у поиска мусора: раздумья берут спокойную
-        # картинку, а встречает пользователя отдельный idle-арт без лупы.
+        # Поза с лупой — только у поиска мусора: встреча и раздумья берут
+        # idle без лупы, иначе лупа висела бы на вкладках в покое.
         moods = available_moods()
-        assert moods["think"] == moods["calm"]
-        assert moods["scan"] != moods["calm"]
         assert moods["idle"] != moods["scan"]
+        assert moods["think"] == moods["idle"]
+        assert moods["scan"] != moods["idle"]
+
+    def test_no_resting_page_uses_the_loupe_pose(self, qapp: t.Any) -> None:
+        # На всех экранах в покое — idle без лупы.
+        from ui.main import PAGES
+
+        for _name, _key, _cls, mood in PAGES:
+            assert available_moods()[mood].name == "idle.png"
 
     def test_main_page_rests_in_idle_not_scanning_pose(self, qapp: t.Any) -> None:
         from ui.main import PAGES
@@ -1203,7 +1210,7 @@ class TestWorkFlow:
         assert page.stats().value("candidates") == MainWindow.DEMO_RESULTS["cleaner"]["candidates"]
         assert page.stats().value("size") == MainWindow.DEMO_RESULTS["cleaner"]["size"]
         assert page._status_label.text() == ctx().tr("cleaner.scan_done")
-        assert win._mascot.mood() == "calm"
+        assert win._mascot.mood() == "idle"
 
     def test_second_action_waits_while_busy(self, win: t.Any) -> None:
         win.go_to_page(1)

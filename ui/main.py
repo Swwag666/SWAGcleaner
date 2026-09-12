@@ -52,14 +52,14 @@ _LOGGER = logging.getLogger("swag.ui.main")
 
 # Разделы приложения: имя (оно же ключ реплики персонажа), ключ названия,
 # класс страницы и настроение помощницы на этом разделе.
-# В покое она не ищет мусор: лупа появляется только на время работы, позу
-# «scan» ставит _start_work.
+# В покое она стоит без лупы (idle): лупа появляется только на время работы,
+# позу «scan» ставит _start_work, а по окончании работы помощница возвращается в idle.
 PAGES = (
     ("advisor", "tabs.advisor", AdvisorTab, "idle"),
-    ("cleaner", "tabs.cleaner", CleanerTab, "think"),
-    ("dedup", "tabs.dedup", DedupTab, "think"),
+    ("cleaner", "tabs.cleaner", CleanerTab, "idle"),
+    ("dedup", "tabs.dedup", DedupTab, "idle"),
     ("tweaks", "tabs.tweaks", TweaksTab, "idle"),
-    ("settings", "tabs.settings", SettingsTab, "calm"),
+    ("settings", "tabs.settings", SettingsTab, "idle"),
 )
 
 
@@ -532,7 +532,7 @@ class MainWindow(QMainWindow):
         for key, value in self.DEMO_RESULTS.get(name, {}).items():
             page.setStats(key, value)
         sounds.play("done")
-        self._assistant.say(self._context.tr("character.lines.clean"), "calm")
+        self._assistant.say(self._context.tr("character.lines.clean"), "idle")
 
     def _sweep_accent(self) -> None:
         """Провести акцентную полоску под шапкой заново."""
