@@ -540,11 +540,12 @@ class TestCharacterAssets:
         assert moods["idle"] != moods["scan"]
 
     def test_magnifier_stays_on_the_scanning_pose(self, qapp: t.Any) -> None:
-        # Поза с лупой — только у поиска мусора: встреча и раздумья берут
-        # idle без лупы, иначе лупа висела бы на вкладках в покое.
+        # Поза с лупой — только у поиска мусора: встреча, раздумья и выдох
+        # идут своими живыми артами без лупы.
         moods = available_moods()
         assert moods["idle"] != moods["scan"]
-        assert moods["think"] == moods["idle"]
+        assert moods["think"] != moods["scan"]
+        assert moods["calm"] != moods["scan"]
         assert moods["scan"] != moods["idle"]
 
     def test_no_resting_page_uses_the_loupe_pose(self, qapp: t.Any) -> None:
@@ -835,8 +836,7 @@ class TestWindowAssistant:
         win.toggle_assistant()
 
     def test_cycle_mood_walks_through_every_drawn_pose(self, win: t.Any) -> None:
-        # Листаются только позы со своим артом: idle, think и calm рисуются
-        # одной картинкой, показывать её трижды подряд незачем.
+        # Листаются все позы со своим артом: idle, scan, think, calm, panic.
         order = demo_moods()
         assert order
         seen = {win.cycle_mood() for _ in range(len(order))}

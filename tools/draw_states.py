@@ -1,23 +1,17 @@
 #!/usr/bin/env python
-"""Дорисовка состояний помощницы из имеющихся картинок.
+"""Сборка состояний помощницы из живых рисунков.
 
-Персонаж пришёл двумя рисунками: она ищет мусор с лупой и она паникует.
-Остальные состояния делаются из них:
+Исходники лежат в assets/character/raw, готовые кадры — в assets/character.
+Живые позы (idle, calm, think, panic) идут как есть, кадры речи дорисовываются:
 
-    calm.png            — спокойная поза: корпус выпрямлен, лицо расслаблено;
-    scan-talk-open.png  — рабочая поза с приоткрытым ртом (кадр речи);
-    calm-talk-open.png  — спокойная поза с приоткрытым ртом;
-    panic-talk-closed.png — паника с закрытым ртом.
+    <поза>-talk-open.png — улыбка/крик затирается заливкой от границы, поверх
+        рисуется приоткрытый рот (губы с бликом, зубы с тенью, язык);
+    <поза>-talk-closed.png — сам рисунок (рот уже нарисован), кроме паники:
+        у неё базовый кадр — крик, поэтому закрытый рот рисуется отдельно.
 
-Как это делается без нейросетей, честно: лицо находится измерением (маска
-кожи и «дыры» внутри неё — глаза и губы), затем нужные места затираются
-заливкой от границы, а поверх рисуются расслабленные глаза и рот. Корпус
-спокойной позы поворачивается на несколько градусов — она перестаёт
-наклоняться вперёд.
-
-Это заготовка до отдельных рисунков: когда появятся настоящие состояния,
-положите их рядом с теми же именами — приложение подхватит их само, а этот
-скрипт можно удалить.
+Лица находятся измерением по сетке поверх голов (константы *_FACE), а не
+на глаз. Все кадры приводятся к одной высоте 360 — персонаж не прыгает
+в размере при смене настроения.
 
 Запуск из корня проекта:
     ./venv/Scripts/python.exe tools/draw_states.py
@@ -46,10 +40,28 @@ SCAN_FACE = {
     "lip_color": (177, 59, 63),
 }
 PANIC_FACE = {
-    "eyes": ((859, 209), (930, 233)),
-    "mouth": (860, 303),
-    "mouth_boxes": ((813, 272, 892, 336),),
+    "eyes": ((825, 210), (935, 255)),
+    "mouth": (815, 300),
+    "mouth_boxes": ((740, 250, 890, 350),),
     "lip_color": (150, 60, 62),
+}
+
+# Живой арт выдоха (cleaner-calm.png, 1024x1536): глаза закрыты, рот — улыбка.
+# Снято сеткой поверх лица.
+CALM_FACE = {
+    "eyes": ((475, 200), (590, 190)),
+    "mouth": (560, 240),
+    "mouth_boxes": ((495, 215, 625, 265),),
+    "lip_color": (170, 80, 75),
+}
+
+# Живой арт раздумий (cleaner-think.png, 1024x1536): палец у подбородка под губами,
+# поэтому рамка рта узкая — палец затирать нельзя.
+THINK_FACE = {
+    "eyes": ((430, 185), (560, 175)),
+    "mouth": (515, 232),
+    "mouth_boxes": ((465, 212, 560, 246),),
+    "lip_color": (170, 80, 75),
 }
 
 # Лицо в новом спокойном арте (cleaner-idle.png, 1254x1254).
@@ -79,6 +91,9 @@ MIRROR_PANIC = True
 REF_HEIGHT = 360
 SCAN_CANVAS = (360, 360)
 PANIC_CANVAS = (540, 360)
+# Портретные живые арты (1024x1536 при высоте 360 дают ширину ровно 240).
+CALM_CANVAS = (240, 360)
+THINK_CANVAS = (240, 360)
 
 
 # ---------- геометрия лица ----------
@@ -206,84 +221,52 @@ def eye_distance(eyes: tuple) -> float:
 
 
 def open_mouth_shapes(shape, axes, mouth, iod: float, openness: float = 1.0) -> list:
-    """Фигуры приоткрытого рта: губы, тень внутри, зубы, язык.
+    """Фигуры приоткрытого рта: губы с бликом, тёмное внутри, зубы с тенью, язык.
 
     Размер считаем от расстояния между глазами: у человека рот в ширину
-    примерно две трети этой величины, а приоткрытый при речи — на треть
-    меньше раскрытый, чем у крика.
+    примерно две трети этой величины. Губы рисуются в полный размер (форму рта
+    задают они), а внутренность масштабируется открытостью — так рот выглядит
+    аккуратнее и в едином стиле на всех позах.
     """
     _, down = axes
-    width = 0.44 * iod * openness
-    height = 0.27 * iod * openness
+    width = 0.44 * iod * (0.55 + 0.45 * openness)
+    height = 0.27 * iod * (0.55 + 0.45 * openness)
+    inner_height = height * openness
     lips = ellipse_mask(shape, mouth, axes, (width, height), feather=2.0)
-    inner_center = (mouth[0] + down[0] * height * 0.18, mouth[1] + down[1] * height * 0.18)
-    inner = ellipse_mask(shape, inner_center, axes, (width * 0.82, height * 0.74), feather=1.6)
-    teeth_center = (mouth[0] - down[0] * height * 0.34, mouth[1] - down[1] * height * 0.34)
-    teeth = ellipse_mask(shape, teeth_center, axes, (width * 0.68, height * 0.16), feather=1.0)
-    tongue_center = (mouth[0] + down[0] * height * 0.42, mouth[1] + down[1] * height * 0.42)
-    tongue = ellipse_mask(shape, tongue_center, axes, (width * 0.52, height * 0.26), feather=1.2)
+    lip_light_center = (
+        mouth[0] - down[0] * height * 0.52,
+        mouth[1] - down[1] * height * 0.52,
+    )
+    lip_light = ellipse_mask(shape, lip_light_center, axes, (width * 0.62, height * 0.20), feather=1.2)
+    inner_center = (mouth[0] + down[0] * inner_height * 0.20, mouth[1] + down[1] * inner_height * 0.20)
+    inner = ellipse_mask(shape, inner_center, axes, (width * 0.80, inner_height * 0.72), feather=1.6)
+    teeth_center = (mouth[0] - down[0] * inner_height * 0.30, mouth[1] - down[1] * inner_height * 0.30)
+    teeth = ellipse_mask(shape, teeth_center, axes, (width * 0.66, inner_height * 0.20), feather=1.0)
+    teeth_shade_center = (
+        mouth[0] - down[0] * inner_height * 0.14,
+        mouth[1] - down[1] * inner_height * 0.14,
+    )
+    teeth_shade = ellipse_mask(
+        shape, teeth_shade_center, axes, (width * 0.62, inner_height * 0.07), feather=0.9
+    )
+    tongue_center = (mouth[0] + down[0] * inner_height * 0.44, mouth[1] + down[1] * inner_height * 0.44)
+    tongue = ellipse_mask(shape, tongue_center, axes, (width * 0.50, inner_height * 0.28), feather=1.2)
+    tongue_light_center = (
+        mouth[0] + down[0] * inner_height * 0.38,
+        mouth[1] + down[1] * inner_height * 0.38,
+    )
+    tongue_light = ellipse_mask(
+        shape, tongue_light_center, axes, (width * 0.26, inner_height * 0.10), feather=1.0
+    )
     return [
         (lips, (150, 60, 62)),
-        (inner, (58, 21, 24)),
-        (teeth, (214, 204, 196)),
-        (tongue, (146, 66, 70)),
+        (lip_light, (205, 110, 100)),
+        (inner, (52, 19, 22)),
+        (teeth, (238, 232, 224)),
+        (teeth_shade, (196, 186, 178)),
+        (tongue, (148, 68, 72)),
+        (tongue_light, (202, 112, 116)),
     ]
-
-
-def relaxed_mouth_shapes(shape, axes, mouth, iod: float) -> list:
-    """Спокойный рот: мягкая линия с чуть поднятыми уголками."""
-    half = 0.26 * iod
-    thickness = 0.07 * iod
-    points = []
-    for step in range(-int(half), int(half) + 1, 2):
-        u = float(step)
-        v = -0.045 * iod * (u / half) ** 2    # уголки чуть выше середины
-        points.append((u, v, thickness * (1.0 - 0.45 * abs(u) / half)))
-    line = stroke_mask(shape, axes, mouth, points, radius=thickness, feather=0.9)
-    lower = []
-    for step in range(-int(half * 0.66), int(half * 0.66) + 1, 2):
-        u = float(step)
-        v = 0.10 * iod - 0.03 * iod * (u / (half * 0.66)) ** 2
-        lower.append((u, v, thickness * 0.55))
-    shadow = stroke_mask(shape, axes, mouth, lower, radius=thickness * 0.55, feather=1.1)
-    return [(line, (146, 64, 60)), (shadow, (196, 118, 92))]
-
-
-def calm_eye_shapes(shape, axes, eye_boxes) -> list:
-    """Расслабленные глаза: веко прикрывает верх, сверху тонкая линия ресниц."""
-    shapes = []
-    for box in eye_boxes:
-        x0, y0, x1, y1 = box
-        center = ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
-        width = (x1 - x0) / 2.0
-        height = (y1 - y0) / 2.0
-        lid_center = (
-            center[0] + axes[1][0] * (-height * 0.55),
-            center[1] + axes[1][1] * (-height * 0.55),
-        )
-        lid = ellipse_mask(shape, lid_center, axes, (width + 2.5, height * 0.95), feather=2.0)
-        shapes.append((lid, None))  # None — «затереть»: заливка от границы
-    return shapes
-
-
-def lash_shapes(shape, axes, eye_boxes) -> list:
-    """Тонкая линия века по нижнему краю прикрытого глаза."""
-    shapes = []
-    for box in eye_boxes:
-        x0, y0, x1, y1 = box
-        center = ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
-        width = (x1 - x0) / 2.0
-        height = (y1 - y0) / 2.0
-        points = []
-        radius = max(2.0, width * 0.12)
-        for step in range(-int(width), int(width) + 1, 2):
-            u = float(step)
-            v = -height * 0.1 + 2.2 * (u / width) ** 2
-            points.append((u, v, radius))
-        shapes.append(
-            (stroke_mask(shape, axes, center, points, radius=radius, feather=1.0), (74, 47, 44))
-        )
-    return shapes
 
 
 # ---------- сборка состояний ----------
@@ -359,53 +342,23 @@ def scan_with_open_mouth(openness: float = 1.0) -> Image.Image:
     return Image.fromarray(result)
 
 
-def rotate_pose(image: Image.Image) -> Image.Image:
-    """Выпрямить корпус: поворот вокруг низа фигуры, чтобы она осталась на месте."""
-    padded = Image.new(
-        "RGBA", (image.width + 400, image.height + 400), (0, 0, 0, 0)
-    )
-    padded.paste(image, (200, 200))
-    return padded.rotate(
-        CALM_TILT_DEGREES,
-        resample=Image.BICUBIC,
-        center=(padded.width / 2, padded.height - 200),
-    )
-
-
-def calm_from_scan() -> tuple:
-    """Спокойная поза: расслабить лицо и выпрямить корпус."""
-    source = Image.open(RAW / "cleaner-scan.png").convert("RGBA")
-    axes = face_axes(SCAN_FACE["eyes"])
-    iod = eye_distance(SCAN_FACE["eyes"])
-    shape = (source.height, source.width)
+def live_open_mouth(source_name: str, face: dict, openness: float) -> Image.Image:
+    """Живой арт с приоткрытым ртом: улыбку затираем, рисуем речь поверх."""
+    source = Image.open(RAW / source_name).convert("RGBA")
     rgb = np.array(source)[..., :3]
-    alpha = np.array(source)[..., 3]
+    axes = face_axes(face["eyes"])
+    iod = eye_distance(face["eyes"])
+    shape = rgb.shape
 
-    # 1. Лицо: затереть гримасу и прикрыть глаза.
     mouth_mask = np.zeros(shape[:2], dtype=np.float32)
-    for box in SCAN_FACE["mouth_boxes"]:
-        mouth_mask = np.maximum(mouth_mask, box_mask(shape, box, axes, grow=6, feather=3.0))
-    smoothed = fill_from_around(rgb, mouth_mask)
+    for box in face["mouth_boxes"]:
+        mouth_mask = np.maximum(mouth_mask, box_mask(shape, box, axes, grow=4, feather=2.5))
 
-    for mask, _ in calm_eye_shapes(shape, axes, SCAN_FACE["eye_boxes"]):
-        smoothed = fill_from_around(smoothed, mask)
-
-    # 2. Поверх — расслабленный рот и веки.
-    smoothed = paint(smoothed, relaxed_mouth_shapes(shape, axes, SCAN_FACE["mouth"], iod))
-    smoothed = paint(smoothed, lash_shapes(shape, axes, SCAN_FACE["eye_boxes"]))
-
-    calm_base = np.dstack([smoothed, alpha])
-    calm_image = Image.fromarray(calm_base, "RGBA")
-
-    # 3. Выпрямить корпус.
-    calm = rotate_pose(calm_image)
-
-    # 4. Тот же кадр с приоткрытым ртом: рисуем до поворота и повторяем путь.
-    opened = paint(
-        smoothed, open_mouth_shapes(shape, axes, SCAN_FACE["mouth"], iod, openness=0.85)
-    )
-    opened_image = Image.fromarray(np.dstack([opened, alpha]), "RGBA")
-    return calm, rotate_pose(opened_image)
+    cleaned = fill_from_around(rgb, mouth_mask)
+    drawn = paint(cleaned, open_mouth_shapes(shape, axes, face["mouth"], iod, openness=openness))
+    result = np.array(source).copy()
+    result[..., :3] = drawn
+    return Image.fromarray(result)
 
 
 def panic_with_closed_mouth() -> Image.Image:
@@ -414,31 +367,31 @@ def panic_with_closed_mouth() -> Image.Image:
     shape = np.array(source).shape[:2]
     rgb = np.array(source)[..., :3]
 
+    # Крик открыт широко: заливать его бессмысленно — заливка тянет тёмную
+    # красноту по всему пятну. Вместо этого кладём непрозрачные сомкнутые губы
+    # поверх крика: они целиком его перекрывают, затем щель и блик.
     iod = eye_distance(PANIC_FACE["eyes"])
-    mouth_mask = np.zeros(shape, dtype=np.float32)
-    for box in PANIC_FACE["mouth_boxes"]:
-        mouth_mask = np.maximum(mouth_mask, box_mask(shape, box, axes, grow=4, feather=3.0))
-    # Крик открыт широко: затираем впадину и рисуем спокойно закрытый рот.
-    cleaned = fill_from_around(rgb, mouth_mask)
-    half = 0.32 * iod
-    thickness = 0.085 * iod
+    mouth = PANIC_FACE["mouth"]
+    _, down = axes
+    lips = ellipse_mask(shape, mouth, axes, (0.46 * iod, 0.34 * iod), feather=2.5)
+    drawn = paint(rgb, [(lips, (150, 60, 62))])
+    half = 0.30 * iod
+    thickness = 0.055 * iod
     points = []
     for step in range(-int(half), int(half) + 1, 2):
         u = float(step)
-        v = -0.06 * iod * (u / half) ** 2
+        v = -0.05 * iod * (u / half) ** 2
         points.append((u, v, thickness * (1.0 - 0.4 * abs(u) / half)))
-    lower = []
-    for step in range(-int(half * 0.7), int(half * 0.7) + 1, 2):
-        u = float(step)
-        v = 0.13 * iod - 0.04 * iod * (u / (half * 0.7)) ** 2
-        lower.append((u, v, thickness * 0.5))
-    shapes = [
-        (stroke_mask(shape, axes, PANIC_FACE["mouth"], points, radius=thickness, feather=0.9),
-         (128, 52, 56)),
-        (stroke_mask(shape, axes, PANIC_FACE["mouth"], lower, radius=thickness * 0.5, feather=1.1),
-         (206, 126, 96)),
-    ]
-    drawn = paint(cleaned, shapes)
+    slit = stroke_mask(shape, axes, mouth, points, radius=thickness, feather=0.9)
+    glow_center = (mouth[0] + down[0] * 0.12 * iod, mouth[1] + down[1] * 0.12 * iod)
+    glow = ellipse_mask(shape, glow_center, axes, (0.20 * iod, 0.06 * iod), feather=1.1)
+    drawn = paint(
+        drawn,
+        [
+            (slit, (108, 44, 48)),
+            (glow, (205, 118, 104)),
+        ],
+    )
     result = np.array(source).copy()
     result[..., :3] = drawn
     return Image.fromarray(result)
@@ -504,8 +457,6 @@ def main() -> int:
     scan_source = Image.open(RAW / "cleaner-scan.png").convert("RGBA")
     panic_source = Image.open(RAW / "cleaner-panic.png").convert("RGBA")
     idle_source = Image.open(RAW / "cleaner-idle.png").convert("RGBA")
-    _, _, _, scan_bottom = content_bbox(scan_source)
-    scan_bottom_margin = scan_source.height - scan_bottom
 
     # Все кадры проходят один и тот же пересчёт размера. Если открытый кадр
     # уменьшить отдельно от закрытого, при 9 кадрах в секунду фигура
@@ -520,18 +471,38 @@ def main() -> int:
         maybe_mirror(resize_full(scan_with_open_mouth(), scan_source.height, SCAN_CANVAS), MIRROR_SCAN),
     )
 
-    calm, calm_open = calm_from_scan()
-    save(
-        OUT / "calm.png",
-        align_to_reference(calm, scan_source.height, scan_bottom_margin),
-    )
+    calm_source = Image.open(RAW / "cleaner-calm.png").convert("RGBA")
+    think_source = Image.open(RAW / "cleaner-think.png").convert("RGBA")
+
+    # Живой выдох вместо дорисованного из поиска: закрытый кадр = сам рисунок
+    # (улыбка уже нарисована), открытый дорисован тем же конвейером.
+    save(OUT / "calm.png", resize_full(calm_source, calm_source.height, CALM_CANVAS))
     save(
         OUT / "calm-talk-closed.png",
-        align_to_reference(calm, scan_source.height, scan_bottom_margin),
+        resize_full(calm_source, calm_source.height, CALM_CANVAS),
     )
     save(
         OUT / "calm-talk-open.png",
-        align_to_reference(calm_open, scan_source.height, scan_bottom_margin),
+        resize_full(
+            live_open_mouth("cleaner-calm.png", CALM_FACE, openness=0.7),
+            calm_source.height,
+            CALM_CANVAS,
+        ),
+    )
+
+    # Живые раздумья: палец у подбородка, поэтому рот узкий и маленький.
+    save(OUT / "think.png", resize_full(think_source, think_source.height, THINK_CANVAS))
+    save(
+        OUT / "think-talk-closed.png",
+        resize_full(think_source, think_source.height, THINK_CANVAS),
+    )
+    save(
+        OUT / "think-talk-open.png",
+        resize_full(
+            live_open_mouth("cleaner-think.png", THINK_FACE, openness=0.55),
+            think_source.height,
+            THINK_CANVAS,
+        ),
     )
 
     save(
