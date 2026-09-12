@@ -444,8 +444,11 @@ def panic_with_closed_mouth() -> Image.Image:
     return Image.fromarray(result)
 
 
-def idle_with_open_mouth(openness: float = 0.9) -> Image.Image:
-    """Новый спокойный арт с приоткрытым ртом: линию губ затираем, рисуем речь."""
+def idle_with_open_mouth(openness: float = 0.6) -> Image.Image:
+    """Новый спокойный арт с приоткрытым ртом: линию губ затираем, рисуем речь.
+
+    Рот держим небольшим (0.6): единый стиль со сдержанной мимикой остальных поз.
+    """
     source = Image.open(RAW / "cleaner-idle.png").convert("RGBA")
     rgb = np.array(source)[..., :3]
     axes = face_axes(IDLE_FACE["eyes"])

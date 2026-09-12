@@ -19,7 +19,7 @@ import math
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from PySide6.QtCore import QObject, QRect, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QElapsedTimer, QObject, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
@@ -100,8 +100,11 @@ class Mascot(QWidget):
     """Спрайт персонажа: рисует позу и чуть-чуть двигается, чтобы не быть фото."""
 
     TICK_MS = 70
-    # Выезд снизу при смене вкладки: длительность в секундах и высота подъёма.
-    ENTER_DURATION_S = 0.38
+    # Выезд снизу при смене вкладки: медленный подъём в стиле ВН. Тикает своим
+    # таймером на 60 кадрах в секунду — на общем тике (70 мс) подъём за 0.38 с
+    # давал пять рывков, отсюда и «быстро и не плавно».
+    ENTER_DURATION_S = 0.9
+    ENTER_FRAME_MS = 16
     ENTER_LIFT_PX = 110.0
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -111,6 +114,10 @@ class Mascot(QWidget):
         self._phase = 0.0
         # Выезд снизу: None — стоит на месте, иначе 0..1 (доля подъёма).
         self._enter_t: float | None = None
+        self._enter_clock = QElapsedTimer()
+        self._enter_timer = QTimer(self)
+        self._enter_timer.setInterval(self.ENTER_FRAME_MS)
+        self._enter_timer.timeout.connect(self._enter_tick)
         self._cache: Dict[str, Optional[QPixmap]] = {}
         self._talk_frames: Optional[List[QPixmap]] = None
         # Минимальная ширина нулевая: колонку персонажа сворачивает окно,
@@ -183,6 +190,9 @@ class Mascot(QWidget):
     def enter_from_below(self) -> None:
         """Начать выезд снизу (как появление в визуальной новелле)."""
         self._enter_t = 0.0
+        self._enter_clock.start()
+        if not self._enter_timer.isActive():
+            self._enter_timer.start()
         self.update()
 
     def is_entering(self) -> bool:
@@ -191,22 +201,29 @@ class Mascot(QWidget):
 
     def _tick(self) -> None:
         self._phase += self.TICK_MS / 1000.0
-        if self._enter_t is not None:
-            self._enter_t += (self.TICK_MS / 1000.0) / self.ENTER_DURATION_S
-            if self._enter_t >= 1.0:
-                self._enter_t = None
+        self.update()
+
+    def _enter_tick(self) -> None:
+        """Кадр выезда: доля подъёма считается по wall-clock, а не по тикам."""
+        if self._enter_t is None:
+            self._enter_timer.stop()
+            return
+        elapsed = self._enter_clock.elapsed() / 1000.0
+        progress = elapsed / self.ENTER_DURATION_S
+        if progress >= 1.0:
+            self._enter_t = None
+            self._enter_timer.stop()
+        else:
+            self._enter_t = progress
         self.update()
 
     def _motion(self) -> Tuple[float, float, float]:
         """Смещение по X, по Y и масштаб для текущего кадра."""
         t = self._phase
         if self._speaking and self.has_talk_frames():
-            # Речь с потряхиванием: рот переключается кадрами, а тело мелко
-            # дрожит — два расстроенных синуса по X и Y плюс лёгкое дыхание.
-            shake_x = math.sin(t * 31.0) * 1.1 + math.sin(t * 17.3) * 0.8
-            shake_y = math.sin(t * 6.0) * 1.5 + math.sin(t * 23.0) * 0.7
-            zoom = 1.0 + 0.004 * math.sin(t * 12.0)
-            offset_x, offset_y = shake_x, shake_y
+            # Речь как раньше: рот переключается кадрами, телу достаточно
+            # лёгкого покачивания — единый стиль со спокойным дыханием.
+            offset_x, offset_y, zoom = 0.0, math.sin(t * 6.0) * 1.5, 1.0
         elif self._speaking:
             # Кадров рта нет: говорим всем корпусом — кивок и дыхание.
             offset_x, offset_y, zoom = (

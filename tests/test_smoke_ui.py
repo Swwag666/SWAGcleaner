@@ -664,23 +664,28 @@ class TestMascot:
         )
         assert ink > 0
 
-    def test_speaking_shakes_instead_of_swaying(self, qapp: t.Any) -> None:
-        # Речь с кадрами рта — мелкое потряхивание по X, а не покой.
+    def test_speaking_sways_gently_like_before(self, qapp: t.Any) -> None:
+        # Речь с кадрами рта — лёгкое покачивание, как было: рот говорит
+        # кадрами, тело только дышит (единый стиль со спокойной позой).
         mascot = Mascot()
         mascot.set_mood("idle")
         assert mascot.has_talk_frames()
         mascot.set_speaking(True)
-        xs = {mascot._motion()[0] for _ in range(30) for _ in [mascot._tick()]}
-        assert any(abs(x) > 0.5 for x in xs)
+        for _ in range(30):
+            mascot._tick()
+            offset_x, offset_y, zoom = mascot._motion()
+            assert offset_x == 0.0
+            assert abs(offset_y) <= 1.6
+            assert zoom == 1.0
 
     def test_enter_from_below_lifts_and_settles(self, qapp: t.Any) -> None:
         mascot = Mascot()
+        mascot.show()
         mascot.enter_from_below()
         assert mascot.is_entering()
         _, lift_y, _ = mascot._motion()
         assert lift_y > 50.0
-        for _ in range(10):
-            mascot._tick()
+        QTest.qWait(int(Mascot.ENTER_DURATION_S * 1000) + 300)
         assert not mascot.is_entering()
         _, rest_y, _ = mascot._motion()
         assert abs(rest_y) < 10.0
