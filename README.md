@@ -1,89 +1,154 @@
 # SWAGcleaner
 
-Тулза для ПК. Локальная, без отправки данных в сеть, без регистраций, без слежения.
+Локальный клинер для Windows. Работает целиком на твоей машине: ни одного сетевого запроса,
+никаких аккаунтов, никакой телеметрии. Ни одно удаление и ни одно отключение не выполняется
+без подтверждения.
 
-SWAGcleaner — это программа для Windows, которая помогает разобраться с тем, что происходит на компьютере, и аккуратно его привести в порядок. Всё работает на вашем ПК, ничего не уходит куда-то ещё.
+Память проекта (честный аудит «что работает, а что заглушка», план внутрянки, история решений и
+промтов) — в [`context.md`](context.md). Если что-то расходится с этим README — прав `context.md`.
 
-Что внутри:
+## Что внутри
 
-- Сканер — показывает установленные программы, процессы, службы, элементы автозагрузки. Только чтение, без изменений.
-- Советник — на основе простых правил предлагает, что можно проверить или отключить (старт программ, ненужные службы, потенциально лишнее ПО). Не «решает за тебя», а выдаёт список с пояснениями, чтобы ты сам решил.
-- Оптимизация и твики — в будущем будут доступны отключение лишних служб, управление автозапуском, удаление встроенных приложений (UWP). Каждое действие требует подтверждения и делает бэкап перед этим.
-- Поиск дубликатов фото — находит одинаковые и похожие фотографии по хешам (точным и визуальным). Скрытое «умное» сравнение идёт через обычные алгоритмы, а не через интернет — всё на машине.
-- Чистка — ищет временные файлы, кэши, мусор и кидает их в корзину (не удаляет навсегда без спроса).
+- **Сканер системы** — установленные программы (реестр, HKLM 64/32 + HKCU), процессы, службы,
+  элементы автозагрузки. По умолчанию только чтение.
+- **Индекс диска** — один проход по файловой системе: что где лежит, сколько занимает, когда
+  менялось. Считается один раз, все дальнейшие вопросы идут к индексу, а не к диску заново.
+- **Советник** — набор правил вместо «умного решения за тебя»: каждая рекомендация с причиной,
+  риском и весом, итог сортируется по влиянию.
+- **Чистка** — временные файлы, кеши браузеров, эскизы, логи, отчёты об ошибках, дампы, остатки
+  установщиков и обновлений.
+- **Дубликаты фото** — точные хеши (SHA-256) и похожие (perceptual hashing через `imagehash`).
+- **Твики** — службы, автозагрузка, UWP (в планах; сначала чтение, запись — только со снапшотом).
 
-Главные принципы:
+## Как работает чистка (политика удаления)
 
-1. Только локально. Никаких запросов в интернет. Если в приложении появятся функции, связанные с моделями, они будут запускаться у вас дома, а не на чужом сервере.
-2. Ничего не Deleting'ится само. Удаление, отключение, удаление приложений — всё с подтверждением. Дефолт — только чтение.
-3. Бэкапы. Перед каждым важным изменением программа сохраняет состояние, чтобы можно было откатиться.
-4. Приватность по умолчанию. Сканируемые данные не собираются, не передаются, не оставляют логов в сети. Всё остаётся на машине.
+Клинер не решает за тебя, что мусор. Он находит, показывает объём и риск по каждому пункту и
+делает только то, что ты подтвердил. Способ удаления выбирает **категория**, а не путь: путь
+относит файл к категории, категория несёт способ удаления.
 
-Техническая часть (если интересно):
+- **В корзину** — всё, что человек может захотеть вернуть: личные файлы (загрузки, документы,
+  фото, видео), дубликаты фото, крупные и старые файлы. Откат полный: обычное «Восстановить»
+  в корзине.
+- **Сразу, мимо корзины** — только регенерируемое и только в известных системных местах:
+  `%TEMP%`, `%SystemRoot%\Temp`, кеши браузеров и приложений, эскизы, логи, отчёты об ошибках,
+  дампы, осиротевшие файлы установщиков и обновлений Windows. Такое содержимое создаётся заново
+  само, а корзина на десятки гигабайт — не откат, а второй мусор. В диалоге такие пункты помечены
+  **«без корзины — не восстановить»**, по умолчанию они не отмечены — их выбирают вручную.
+- **Никогда и ни при каких настройках** — то, что ломает систему или необратимо: `WinSxS`, точки
+  восстановления, `pagefile.sys`, `hiberfil.sys`, правки реестра «пакетом», содержимое папок
+  установленных программ, файлы вне белого списка мест, симлинки и junction-точки (по ним можно
+  снести чужие данные), любые личные файлы без явной галочки.
+- **Ничего без подтверждения.** Диалог показывает пункты, объём, риск и итог «освободится N».
+  По умолчанию отмечено только безопасное; опасное и необратимое — пустое.
+- **Сбой одного действия не роняет остальные.** Ошибки собираются списком и показываются в отчёте.
+- **Способ удаления выбирает категория, а не путь.** Путь только относит файл к категории;
+  категория знает, как её убирать и что будет с откатом.
 
-- Язык — Python.
-- UI — PySide6 (Qt).
-- Для поиска дубликатов фото — точные хеши и perceptual hashing через imagehash.
-- Для удаления в корзину — send2trash.
-- Для работы с системой — собственные модули, без лишних зависимостей.
-- Проект задуман как нарастающий: сначала ядро и сканер, потом советник, потом UI и твики, потом Can expand и всякое такое.
+### Как проходит сессия чистки
 
-Статус:
+1. **Индекс диска.** Один быстрый проход: где что лежит, сколько занимает, когда менялось.
+2. **Категории.** Индекс фильтруется правилами: временное, кеши, логи, обновления, эскизы,
+   корзина, дампы, брошенные установщики, дубликаты фото, крупные и старые файлы. У каждой
+   категории есть причина, риск и способ удаления («вернётся само» / «только вручную»).
+3. **Показ.** Пункты с галочками и объёмом по каждому, итог «освободится N», а дерево по объёму
+   отвечает на главный вопрос забитого диска — «куда вообще ушло место».
+4. **Подтверждение.** Лишние галочки снимаются в диалоге; про необходимость прав администратора
+   предупреждение появляется сразу, а не системным окном посередине работы.
+5. **Выполнение.** Пакетными операциями, с прогрессом по категориям и возможностью отменить.
+6. **Отчёт.** Сколько освободилось, сколько файлов, что можно вернуть из корзины и что удалено
+   без возможности восстановления. Строка в журнале — на каждое действие.
 
-Это каркас и первая рабочая часть — ядро. Пока нет готового десктопного интерфейса с кнопками, но логика соображений уже есть: сканер, правила, чистка, бэкапы, поиск дубликатов. Всё это можно тестировать, развивать и доделывать.
+Полное описание конвейера (индекс, категории, дубликаты, службы, откат, план по Rust) —
+разделы 8 и 9 в [`context.md`](context.md).
 
-Сборка:
+## Статус на 13.09.2026 (честно)
 
-Для запуска нужен Python и зависимости из requirements.txt. Виртуальное окружение создаётся через venv. Запуск — через run.bat (для Windows) или python -m swagcleaner (когда entry point готов).
+Интерфейс — настоящий: боковое меню, пять страниц, две темы, ru/en, пиксельный шрифт Handjet,
+звуки, помощница в стиле визуальной новеллы, диалог подтверждения, живые счётчики, фоновые
+задачи, 170 тестов.
 
-Почему так:
+Ядро — частично: чтение установленных программ из реестра работает по-настоящему, правила
+советника и хеши дубликатов написаны и покрыты тестами, обход путей чистильщиком реален.
+Процессы, службы и автозагрузка пока заглушки; удаления, твики, бэкапы на диск и исполнение
+действий ещё не подключены, а числа на экране двигает демо-слой. Это не «почти готово» —
+это осознанный следующий большой этап: M1–M6 из раздела 8 `context.md`.
 
-Задумка — дать человеку инструмент, который разбирается в системе без лишних разговоров с серверами. Без облачного анализа, без передачи списка программ, без скрытых зависимостей. Утилита, которая работает у вас на машине и не требует «входа», «аккаунта» и прочей музики.
+## Как запустить
 
-MIT License.
+```bash
+python -m venv venv
+./venv/Scripts/python.exe -m pip install -r requirements.txt
+./venv/Scripts/python.exe -m pip install -r requirements-dev.txt
+./venv/Scripts/python.exe swagcleaner.py
+```
+
+CLI-режимы (без Qt):
+
+```bash
+./venv/Scripts/python.exe swagcleaner.py --scan
+./venv/Scripts/python.exe swagcleaner.py --advisor
+./venv/Scripts/python.exe swagcleaner.py --self-test
+```
+
+## Тесты
+
+```bash
+# весь набор (170 тестов: модели, ядро, smoke UI)
+./venv/Scripts/python.exe -m pytest -o addopts="" -q -p no:cacheprovider
+```
+
+## Сборка
+
+```bash
+run_build.bat                        # один файл (--onefile)
+set SWAGCLEANER_ONEDIR=1 && run_build.bat   # папкой — стартует быстрее, удобнее при доводке UI
+dist/SWAGcleaner.exe --self-test
+```
+
+## Принципы
+
+1. **Только локально.** Ни одного запроса в сеть, ни аккаунтов, ни слежки.
+2. **Ничего не удаляется само.** Дефолт — только чтение; любое изменение после подтверждения.
+3. **Удаление — в корзину**, кроме регенерируемого мусора в известных системных местах
+   (правило выше), и никогда — восстановимо ценой поломки системы.
+4. **Откат там, где он честный.** Перед изменением системы сохраняется снапшот; если откат для
+   действия невозможен — об этом говорится в диалоге заранее, а не после.
+5. **Права — по кнопке и с объяснением**, а не при старте приложения.
+
+## Лицензия
+
+MIT.
 
 ---
 
-# SWAGcleaner
+# SWAGcleaner (EN)
 
-A local PC tool. Runs on your machine, sends nothing online, no accounts, no tracking.
+A local Windows cleaner. Everything runs on your machine: no network calls, no accounts,
+no telemetry, no tracking. Nothing is deleted or disabled without your confirmation.
 
-SWAGcleaner is a Windows utility that helps you understand what's going on in your system and tidy it up — safely and quietly. Everything stays on your PC.
+Project memory (honest audit of what actually works, internal wiring plan, decision history) lives
+in [`context.md`](context.md).
 
-What it does:
+What's inside: system scanner (installed apps from the registry, processes, services, startup
+items; read-only by default), a one-pass disk index, a rule-based advisor, junk cleanup, exact and
+perceptual photo-duplicate detection, and tweaks (services, startup, UWP — planned).
 
-- Scanner — shows installed apps, running processes, services, startup items. Read-only by default.
-- Advisor — based on simple rules, it suggests what's worth checking or disabling (startup programs, unnecessary services, likely bloatware). It doesn't decide for you; it hands you a list with explanations so you choose.
-- Tweaks & optimization — future functions will include disabling extra services, managing startup, removing built-in apps (UWP). Every action needs confirmation and is done with a backup first.
-- Photo duplicate finder — detects identical and visually similar photos using hashes (exact + perceptual via imagehash). Comparison runs locally, no cloud involved.
-- Cleaner — finds temp files, caches and junk, and sends them to the Recycle Bin (not permanent deletion without asking).
+## Deletion policy
 
-Core principles:
+- **To the Recycle Bin** — anything a person may want back: personal files, photo duplicates,
+  large and old files. Full undo via "Restore".
+- **Immediately, bypassing the Bin** — only regenerable content in known system locations:
+  `%TEMP%`, `%SystemRoot%\Temp`, browser and app caches, thumbnails, logs, crash reports, dumps,
+  orphaned installer and Windows-update leftovers. Such items are explicitly marked
+  "no Recycle Bin — cannot be undone" and are never pre-checked.
+- **Never** — `WinSxS`, restore points, `pagefile.sys`, `hiberfil.sys`, bulk registry edits,
+  installed program folders, files outside the whitelist, symlinks and junctions, and any personal
+  file without an explicit checkbox.
+- Every deletion and every disable requires confirmation; the dialog shows items, size, risk and
+  the total. Failures never abort the whole run — they are collected into the report.
 
-1. Fully local. No internet calls. If any model-based feature is added later, it will run on your own machine.
-2. Nothing gets deleted by itself. Removals and disables need your confirmation. Default mode is read-only.
-3. Backups. Before any meaningful change, the app saves the current state so you can roll back.
-4. Privacy by default. Scanned data is not collected, never sent anywhere, and doesn't leave logs on the network. Everything stays on your device.
-
-Under the hood:
-
-- Python.
-- UI via PySide6 (Qt).
-- Duplicate photo detection via exact hashes and perceptual hashing (imagehash).
-- Recycle Bin deletion via send2trash.
-- Custom system modules, keeping dependencies minimal.
-- Designed to grow in layers: core and scanner first, then advisor, UI, tweaks, and more over time.
-
-Status:
-
-This is the core layer — the foundation. The desktop interface isn't finished yet, but the reasoning pieces are already here: scanning, rules, cleaning, backups, duplicate finding. It's ready to be tested, extended, and shaped into the full app.
-
-Running it:
-
-You need Python and the dependencies listed in requirements.txt. Use a venv. On Windows, run.bat starts it (once the entry point is ready). For now the core can also be exercised directly from code or CLI when the entry point exists.
-
-Why it's built this way:
-
-The goal is a tool that understands your system without phoning home. No cloud analysis, no app lists sent anywhere, no hidden dependencies. A utility that lives on your machine and doesn't ask for a login, an account, or anything else along those lines.
+Status (13 Sep 2026): the interface is real (two themes, ru/en, mascot, confirm dialog, workers,
+170 tests); the core is partial — app enumeration from the registry works, advisor rules and
+duplicate hashes exist, processes/services/startup are still stubs and cleanup is not wired yet.
 
 MIT License.
