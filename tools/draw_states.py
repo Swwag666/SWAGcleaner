@@ -91,9 +91,6 @@ MIRROR_PANIC = True
 REF_HEIGHT = 360
 SCAN_CANVAS = (360, 360)
 PANIC_CANVAS = (540, 360)
-# Портретные живые арты (1024x1536 при высоте 360 дают ширину ровно 240).
-CALM_CANVAS = (240, 360)
-THINK_CANVAS = (240, 360)
 
 
 # ---------- геометрия лица ----------
@@ -303,10 +300,7 @@ def align_to_reference(
 ) -> Image.Image:
     """Поставить повёрнутую фигуру на такой же холст в том же масштабе.
 
-    Кадр после поворота уже другой, поэтому берём фигуру по содержимому,
-    уменьшаем её тем же множителем, что и исходники, и ставим на холст так,
-    чтобы низ фигуры оказался на той же высоте, что и раньше: иначе она
-    «висит» над панелью реплики.
+    Оставлена для совместимости, новые позы идут через normalize_pose.
     """
     scale = REF_HEIGHT / source_height
     content = image.crop(content_bbox(image))
@@ -319,6 +313,57 @@ def align_to_reference(
     y = canvas[1] - scaled.height - max(0, round(source_bottom_margin * scale))
     out.paste(scaled, (x, max(0, y)), scaled)
     return out
+
+
+# Целевой рост фигуры на холсте: все позы стоят одинаково, иначе на экране
+# одна выше другой (холсты разного формата масштабируются по минимуму).
+TARGET_CONTENT_H = 340
+
+
+def normalize_pose(
+    frames: list, canvas: tuple, ref_box: tuple | None = None
+) -> list:
+    """Привести кадры позы к одному росту и поставить на общий холст.
+
+    Рамка содержимого берётся по базовому кадру и применяется ко всем кадрам
+    позы одинаково: иначе открытый рот прыгал бы относительно закрытого.
+    Фигура стоит низом на одной линии — ноги не висят.
+    """
+    base = frames[0]
+    # Рамку берём по плотным пикселям (порог 64): слабый ореол по краю иначе
+    # входит в размер, и рост гуляет на несколько пикселей между позами.
+    box = ref_box or content_bbox(base, threshold=64)
+    content0 = base.crop(box)
+    # Доводка в два прохода: после пересчёта полутона оседают, и замер по
+    # плотным пикселям может дать на пару пикселей меньше — поправляем масштаб.
+    scale = TARGET_CONTENT_H / content0.height
+    for _ in range(2):
+        probe = content0.resize(
+            (max(1, round(content0.width * scale)), max(1, round(content0.height * scale))),
+            Image.LANCZOS,
+        )
+        solid = np.array(probe)[..., 3] > 64
+        ys, _xs = np.nonzero(solid)
+        got = int(ys.max() - ys.min() + 1)
+        if abs(got - TARGET_CONTENT_H) <= 1 or got <= 0:
+            break
+        scale *= TARGET_CONTENT_H / got
+    out_frames = []
+    for frame in frames:
+        content = frame.crop(box)
+        scaled = content.resize(
+            (
+                max(1, round(content.width * scale)),
+                max(1, round(content.height * scale)),
+            ),
+            Image.LANCZOS,
+        )
+        out = Image.new("RGBA", canvas, (0, 0, 0, 0))
+        x = (canvas[0] - scaled.width) // 2
+        y = canvas[1] - scaled.height
+        out.paste(scaled, (x, max(0, y)), scaled)
+        out_frames.append(out)
+    return out_frames
 
 
 def scan_with_open_mouth(openness: float = 1.0) -> Image.Image:
@@ -457,79 +502,67 @@ def main() -> int:
     scan_source = Image.open(RAW / "cleaner-scan.png").convert("RGBA")
     panic_source = Image.open(RAW / "cleaner-panic.png").convert("RGBA")
     idle_source = Image.open(RAW / "cleaner-idle.png").convert("RGBA")
-
-    # Все кадры проходят один и тот же пересчёт размера. Если открытый кадр
-    # уменьшить отдельно от закрытого, при 9 кадрах в секунду фигура
-    # подрагивала бы: разница в пересчёте видна глазом на краях.
-    save(OUT / "scan.png", maybe_mirror(resize_full(scan_source, scan_source.height, SCAN_CANVAS), MIRROR_SCAN))
-    save(
-        OUT / "scan-talk-closed.png",
-        maybe_mirror(resize_full(scan_source, scan_source.height, SCAN_CANVAS), MIRROR_SCAN),
-    )
-    save(
-        OUT / "scan-talk-open.png",
-        maybe_mirror(resize_full(scan_with_open_mouth(), scan_source.height, SCAN_CANVAS), MIRROR_SCAN),
-    )
-
     calm_source = Image.open(RAW / "cleaner-calm.png").convert("RGBA")
     think_source = Image.open(RAW / "cleaner-think.png").convert("RGBA")
 
-    # Живой выдох вместо дорисованного из поиска: закрытый кадр = сам рисунок
-    # (улыбка уже нарисована), открытый дорисован тем же конвейером.
-    save(OUT / "calm.png", resize_full(calm_source, calm_source.height, CALM_CANVAS))
-    save(
-        OUT / "calm-talk-closed.png",
-        resize_full(calm_source, calm_source.height, CALM_CANVAS),
+    # Все позы — один рост фигуры и низ на одной линии: на экране персонаж
+    # не прыгает в размере при смене настроения. Кадры одной позы делят рамку
+    # базового кадра: иначе открытый рот дрожал бы относительно закрытого.
+    # Стоячие позы стоят на общем холсте 360x360 — масштаб на экране у них
+    # получается одинаковый при любом размере окна.
+    scan_frames = normalize_pose(
+        [scan_source, scan_source, scan_with_open_mouth()], SCAN_CANVAS
     )
-    save(
-        OUT / "calm-talk-open.png",
-        resize_full(
+    scan_frames = [maybe_mirror(frame, MIRROR_SCAN) for frame in scan_frames]
+    save(OUT / "scan.png", scan_frames[0])
+    save(OUT / "scan-talk-closed.png", scan_frames[1])
+    save(OUT / "scan-talk-open.png", scan_frames[2])
+
+    # Живой выдох: закрытый кадр = сам рисунок (улыбка уже нарисована),
+    # открытый дорисован тем же конвейером.
+    calm_frames = normalize_pose(
+        [
+            calm_source,
+            calm_source,
             live_open_mouth("cleaner-calm.png", CALM_FACE, openness=0.7),
-            calm_source.height,
-            CALM_CANVAS,
-        ),
+        ],
+        SCAN_CANVAS,
     )
+    save(OUT / "calm.png", calm_frames[0])
+    save(OUT / "calm-talk-closed.png", calm_frames[1])
+    save(OUT / "calm-talk-open.png", calm_frames[2])
 
     # Живые раздумья: палец у подбородка, поэтому рот узкий и маленький.
-    save(OUT / "think.png", resize_full(think_source, think_source.height, THINK_CANVAS))
-    save(
-        OUT / "think-talk-closed.png",
-        resize_full(think_source, think_source.height, THINK_CANVAS),
-    )
-    save(
-        OUT / "think-talk-open.png",
-        resize_full(
+    think_frames = normalize_pose(
+        [
+            think_source,
+            think_source,
             live_open_mouth("cleaner-think.png", THINK_FACE, openness=0.55),
-            think_source.height,
-            THINK_CANVAS,
-        ),
+        ],
+        SCAN_CANVAS,
     )
+    save(OUT / "think.png", think_frames[0])
+    save(OUT / "think-talk-closed.png", think_frames[1])
+    save(OUT / "think-talk-open.png", think_frames[2])
 
-    save(
-        OUT / "panic.png",
-        maybe_mirror(resize_full(panic_source, panic_source.height, PANIC_CANVAS), MIRROR_PANIC),
+    # Паника на коленях — поза широкая, поэтому холст шире, но рост фигуры
+    # тот же: на экране она ниже только из-за ширины (так и задумано позой).
+    panic_frames = normalize_pose(
+        [panic_source, panic_source, panic_with_closed_mouth()], PANIC_CANVAS
     )
-    save(
-        OUT / "panic-talk-open.png",
-        maybe_mirror(resize_full(panic_source, panic_source.height, PANIC_CANVAS), MIRROR_PANIC),
-    )
-    save(
-        OUT / "panic-talk-closed.png",
-        maybe_mirror(resize_full(panic_with_closed_mouth(), panic_source.height, PANIC_CANVAS), MIRROR_PANIC),
-    )
+    panic_frames = [maybe_mirror(frame, MIRROR_PANIC) for frame in panic_frames]
+    save(OUT / "panic.png", panic_frames[0])
+    save(OUT / "panic-talk-open.png", panic_frames[1])
+    save(OUT / "panic-talk-closed.png", panic_frames[2])
 
     # Новое спокойствие, которое встречает пользователя: живой рисунок idle.
-    # Тот же масштаб и холст, что у scan/calm — иначе прыгала бы при смене позы.
     # Закрытый кадр = сама поза (рот-линия уже нарисован), открытый дорисован.
-    save(OUT / "idle.png", resize_full(idle_source, idle_source.height, SCAN_CANVAS))
-    save(
-        OUT / "idle-talk-closed.png",
-        resize_full(idle_source, idle_source.height, SCAN_CANVAS),
+    idle_frames = normalize_pose(
+        [idle_source, idle_source, idle_with_open_mouth()], SCAN_CANVAS
     )
-    save(
-        OUT / "idle-talk-open.png",
-        resize_full(idle_with_open_mouth(), idle_source.height, SCAN_CANVAS),
-    )
+    save(OUT / "idle.png", idle_frames[0])
+    save(OUT / "idle-talk-closed.png", idle_frames[1])
+    save(OUT / "idle-talk-open.png", idle_frames[2])
 
     print("\nготово. Приложение подхватит файлы само: настроение берёт позу")
     print("по имени, а кадры речи — «<поза>-talk-open/closed.png».")

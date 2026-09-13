@@ -539,6 +539,86 @@ class TestCharacterAssets:
         assert moods["idle"].name == "idle.png"
         assert moods["idle"] != moods["scan"]
 
+    def test_standing_poses_share_canvas_and_height(self, qapp: t.Any) -> None:
+        # Стоячие позы стоят на одном холсте с одним ростом фигуры: на экране
+        # персонаж одинаковый при любом размере окна. Паника на коленях —
+        # шире холст, но рост фигуры тот же.
+        import numpy as np
+        from PIL import Image
+
+        def content_height(name: str) -> tuple:
+            pixels = np.array(Image.open(f"assets/character/{name}.png"))
+            assert pixels.shape[2] == 4
+            alpha = pixels[..., 3] > 16
+            ys, _xs = np.nonzero(alpha)
+            return pixels.shape[1], pixels.shape[0], int(ys.max() - ys.min() + 1)
+
+        heights = {}
+        for mood in ("idle", "scan", "think", "calm"):
+            width, height, content = content_height(mood)
+            assert (width, height) == (360, 360)
+            heights[mood] = content
+        assert max(heights.values()) - min(heights.values()) <= 12
+        _w, _h, panic_content = content_height("panic")
+        assert abs(panic_content - 340) <= 12
+
+    def test_cut_out_poses_have_no_light_rim(self, qapp: t.Any) -> None:
+        # По краю силуэта не должно быть светлой каймы: она оставалась, когда фон
+        # вырезали заливкой и по контуру задерживались светлые куски, — на тёмной
+        # теме это ореол вокруг персонажа. Проверяем сырые арты: именно их готовит
+        # tools/cutout_bg.py, а готовые кадры из них только уменьшаются.
+        import numpy as np
+        from PIL import Image
+        from pathlib import Path
+
+        raws = sorted(Path("assets/character/raw").glob("cleaner-*.png"))
+        assert raws, "сырых артов нет"
+        for path in raws:
+            pixels = np.array(Image.open(path).convert("RGBA")).astype(float)
+            body = pixels[..., 3] > 200
+            inner = body.copy()
+            inner[1:, :] &= body[:-1, :]
+            inner[:-1, :] &= body[1:, :]
+            inner[:, 1:] &= body[:, :-1]
+            inner[:, :-1] &= body[:, 1:]
+            rim, lum = body & ~inner, pixels[..., :3].mean(axis=2)
+            # Контур рисунка тёмный, поэтому кайма обычно темнее тела;
+            # светлее — уже беда.
+            assert lum[rim].mean() - lum[inner].mean() < 30, (
+                f"{path.name}: кайма светлее тела на {lum[rim].mean() - lum[inner].mean():.0f}"
+            )
+
+    def test_poses_have_no_see_through_areas(self, qapp: t.Any) -> None:
+        # Вырезание не должно прорубать в персонаже дыры: тёмная одежда похожа
+        # на тёмный фон, и заливка однажды съела фартук и штаны — они выцвели
+        # пятнами. Считаем прозрачные пиксели, до которых нельзя дойти от края
+        # кадра (это внутренние щели, между рукой и телом например).
+        import numpy as np
+        from PIL import Image
+
+        for mood in demo_moods():
+            alpha = np.array(Image.open(available_moods()[mood]).convert("RGBA"))[..., 3]
+            transparent = alpha == 0
+            outside = np.zeros_like(transparent)
+            outside[0, :] = transparent[0, :]
+            outside[-1, :] = transparent[-1, :]
+            outside[:, 0] = transparent[:, 0]
+            outside[:, -1] = transparent[:, -1]
+            for _ in range(transparent.shape[0] + transparent.shape[1]):
+                grown = outside.copy()
+                grown[1:, :] |= outside[:-1, :]
+                grown[:-1, :] |= outside[1:, :]
+                grown[:, 1:] |= outside[:, :-1]
+                grown[:, :-1] |= outside[:, 1:]
+                grown &= transparent
+                if np.array_equal(grown, outside):
+                    break
+                outside = grown
+            enclosed = int((transparent & ~outside).sum())
+            # Замер 13.09.2026: у здоровых кадров до 274 px (щели), у кадров
+            # со съеденной одеждой — от 1348 px.
+            assert enclosed < 800, f"{mood}: прозрачных дыр внутри силуэта {enclosed} px"
+
     def test_magnifier_stays_on_the_scanning_pose(self, qapp: t.Any) -> None:
         # Поза с лупой — только у поиска мусора: встреча, раздумья и выдох
         # идут своими живыми артами без лупы.
