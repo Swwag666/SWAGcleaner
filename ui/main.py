@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QStatusBar,
     QVBoxLayout,
@@ -109,6 +110,7 @@ class MainWindow(QMainWindow):
         self._work_elapsed = 0
         self._work_page: QWidget | None = None
         self._work_name = ""
+        self._stub_after_work = True
         self._work_timer = QTimer(self)
         self._work_timer.setInterval(self.WORK_TICK_MS)
         self._work_timer.timeout.connect(self._on_work_tick)
@@ -533,6 +535,36 @@ class MainWindow(QMainWindow):
             page.setStats(key, value)
         sounds.play("done")
         self._assistant.say(self._context.tr("character.lines.clean"), "idle")
+        if name == "cleaner" and self._stub_after_work:
+            self._show_categories_stub()
+
+    def _show_categories_stub(self) -> None:
+        """ВРЕМЕННАЯ ЗАГЛУШКА: итог скана стандартным окном Windows.
+
+        Экран категорий по-настоящему делает не эта модель — см. context.md,
+        раздел 2, «по промту №17». Здесь только placeholder, чтобы было видно
+        место в потоке: после скана показываем сводку и «галочки» из Box.
+        Под offscreen (тесты) не показываем: модальное окно заблокировало бы
+        headless-прогон.
+        """
+        if QApplication.instance() is not None and \
+                QApplication.instance().platformName() == "offscreen":
+            return
+        data = self.DEMO_RESULTS.get("cleaner", {})
+        count = data.get("candidates", 0)
+        size = data.get("size", 0.0)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(self._context.tr("cleaner.candidates_title"))
+        box.setText(f"Найдено {count:,} объектов на {size:,.0f} МБ.")
+        box.setInformativeText(
+            "Временная заглушка вместо экрана категорий:\n"
+            "Временные файлы (кеш, temp) — безвозвратно\n"
+            "Старые установщики, крупные файлы — в корзину\n\n"
+            "Настоящий выбор по категориям и галочкам появится следующим заходом."
+        )
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()
 
     def _sweep_accent(self) -> None:
         """Провести акцентную полоску под шапкой заново."""

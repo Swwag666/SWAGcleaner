@@ -9,16 +9,39 @@
 
 ## Что внутри
 
+- **Rust-ядро сканирования** — `rust/swagscan/`: многопоточный обход, агрегаты «куда ушло место»,
+  стрим кандидатов, дубликаты по BLAKE3 в три стадии, удаление в две дорожки, отмена. Отдельный
+  бинарь `swagscan.exe` (~0.8 МБ), говорит с оболочкой NDJSON-протоколом; в 2–2.5 раза быстрее
+  Python-обхода на равных данных, суммы сверяются до байта.
+- **Мост Python→Rust** — `core/swagscan.py`: один живой процесс ядра, сериализация команд,
+  отмена через stdin, поиск бинаря (env → сборка → dev-пути).
 - **Сканер системы** — установленные программы (реестр, HKLM 64/32 + HKCU), процессы, службы,
   элементы автозагрузки. По умолчанию только чтение.
-- **Индекс диска** — один проход по файловой системе: что где лежит, сколько занимает, когда
-  менялось. Считается один раз, все дальнейшие вопросы идут к индексу, а не к диску заново.
+- **Категории мусора** — девять правил в ядре: temp, кеши браузеров и приложений, дампы, логи,
+  остатки обновлений, старые установщики, крупные старые файлы. У каждой — дорожка удаления,
+  риск и «вернётся ли само».
 - **Советник** — набор правил вместо «умного решения за тебя»: каждая рекомендация с причиной,
   риском и весом, итог сортируется по влиянию.
-- **Чистка** — временные файлы, кеши браузеров, эскизы, логи, отчёты об ошибках, дампы, остатки
-  установщиков и обновлений.
-- **Дубликаты фото** — точные хеши (SHA-256) и похожие (perceptual hashing через `imagehash`).
+- **AI-слой (опционально)** — `ai/`: помощница-объяснитель поверх результатов. По умолчанию
+  **выключен**; работает через локальный Ollama или OpenAI-совместимый эндпоинт, который
+  настраиваешь сам. Ни одного запроса без явного включения.
+- **CLI** — `--disk` (куда ушло место), `--candidates` (мусор по категориям), `--explain`
+  (пояснение AI), `--json`.
+- **Дубликаты фото** — точные хеши (SHA-256 в Python-слое, BLAKE3 в ядре) и похожие
+  (perceptual hashing через `imagehash`).
 - **Твики** — службы, автозагрузка, UWP (в планах; сначала чтение, запись — только со снапшотом).
+
+## Стек
+
+| Слой | Технология |
+|---|---|
+| Ядро сканирования/удаления | Rust (stable GNU-toolchain, `rayon`, `blake3`, Win32 API напрямую) |
+| Оболочка | Python 3.12 + PySide6 (Qt widgets), без веб-технологий |
+| Мост | NDJSON-протокол поверх stdin/stdout, один долгоживущий процесс |
+| AI (опция) | stdlib `urllib` → Ollama / OpenAI-совместимый API |
+| Сборка | PyInstaller (spec подкладывает `swagscan.exe`) |
+| Тесты | pytest (223) + `cargo test` (38) |
+| Полигон | VirtualBox + Windows 11 24H2 (тесты удаления не на живом железе) |
 
 ## Как работает чистка (политика удаления)
 
@@ -61,17 +84,21 @@
 Полное описание конвейера (индекс, категории, дубликаты, службы, откат, план по Rust) —
 разделы 8 и 9 в [`context.md`](context.md).
 
-## Статус на 13.09.2026 (честно)
+## Статус на 14.09.2026 (честно)
 
 Интерфейс — настоящий: боковое меню, пять страниц, две темы, ru/en, пиксельный шрифт Handjet,
 звуки, помощница в стиле визуальной новеллы, диалог подтверждения, живые счётчики, фоновые
-задачи, 170 тестов.
+задачи, 223 + 38 тестов.
 
-Ядро — частично: чтение установленных программ из реестра работает по-настоящему, правила
-советника и хеши дубликатов написаны и покрыты тестами, обход путей чистильщиком реален.
-Процессы, службы и автозагрузка пока заглушки; удаления, твики, бэкапы на диск и исполнение
-действий ещё не подключены, а числа на экране двигает демо-слой. Это не «почти готово» —
-это осознанный следующий большой этап: M1–M6 из раздела 8 `context.md`.
+Ядро сканирования — настоящее и проверенное: Rust-обход, категории, дубликаты BLAKE3, удаление
+в две дорожки, dry-run, отмена; мост и протокол покрыты интеграционными тестами; на живой машине
+сверка Rust/Python до байта. **Но интерфейс к ядру ещё не подключён**: кнопки двигает демо-слой,
+после скана показывается временное окно-заглушка вместо экрана категорий. Полный реестр заглушек —
+раздел 7.1 в `context.md`.
+
+Python-слой `core/` (процессы, службы, автозагрузка, исполнитель, бэкапы) — по-прежнему заглушки
+из ранних итераций; реальную работу делает Rust-ядро. Это осознанный следующий этап: M1–M6 из
+раздела 8 `context.md`, плюс полигон на VirtualBox для тестов удаления.
 
 ## Как запустить
 
@@ -88,13 +115,28 @@ CLI-режимы (без Qt):
 ./venv/Scripts/python.exe swagcleaner.py --scan
 ./venv/Scripts/python.exe swagcleaner.py --advisor
 ./venv/Scripts/python.exe swagcleaner.py --self-test
+./venv/Scripts/python.exe swagcleaner.py --disk            # куда ушло место (Rust-ядро)
+./venv/Scripts/python.exe swagcleaner.py --disk --candidates
+./venv/Scripts/python.exe swagcleaner.py --disk --explain  # с включённым AI
+```
+
+## Сборка Rust-ядра
+
+```bash
+rustup toolchain install stable-x86_64-pc-windows-gnu
+# нужен MinGW-w64 (D:\mingw64) в PATH
+cd rust/swagscan
+cargo +stable-x86_64-pc-windows-gnu build --release    # target/release/swagscan.exe
+cargo +stable-x86_64-pc-windows-gnu test               # 38 тестов
 ```
 
 ## Тесты
 
 ```bash
-# весь набор (170 тестов: модели, ядро, smoke UI)
+# весь набор Python (223 теста: модели, ядро, UI, AI, мост до Rust)
 ./venv/Scripts/python.exe -m pytest -o addopts="" -q -p no:cacheprovider
+# Rust-ядро (38 тестов)
+cd rust/swagscan && cargo +stable-x86_64-pc-windows-gnu test
 ```
 
 ## Сборка
@@ -147,8 +189,11 @@ perceptual photo-duplicate detection, and tweaks (services, startup, UWP — pla
 - Every deletion and every disable requires confirmation; the dialog shows items, size, risk and
   the total. Failures never abort the whole run — they are collected into the report.
 
-Status (13 Sep 2026): the interface is real (two themes, ru/en, mascot, confirm dialog, workers,
-170 tests); the core is partial — app enumeration from the registry works, advisor rules and
-duplicate hashes exist, processes/services/startup are still stubs and cleanup is not wired yet.
+Status (14 Sep 2026): the interface is real (two themes, ru/en, mascot, confirm dialog, workers);
+the scan core is real too — Rust scanner with categories, BLAKE3 duplicates, two-lane deletion,
+dry-run and cancellation, covered by 38 Rust + 11 bridge tests, byte-exact against the Python
+reference. What is NOT wired yet: the UI still runs on a demo layer (a temporary stub dialog shows
+where the category screen will be), and the old Python `core/` modules (processes, services,
+startup, executor, backups) remain stubs. Full stub registry: section 7.1 in `context.md`.
 
 MIT License.
