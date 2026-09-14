@@ -17,6 +17,19 @@ ui/i18n/*.json: без них интерфейс остался бы без ст
 """
 
 import os
+from pathlib import Path
+
+# Rust-ядро кладём рядом с приложением: Python-мост ищет его в bin/ и в корне
+# сборки. Без него приложение остаётся на Python-обходе — мост это переживёт.
+_rust_binaries = []
+for _p in (
+    Path("rust/swagscan/target/release/swagscan.exe"),
+    Path("rust/swagscan/target/x86_64-pc-windows-gnu/release/swagscan.exe"),
+    Path("bin/swagscan.exe"),
+):
+    if _p.exists():
+        _rust_binaries.append((str(_p), "."))
+        break
 
 # Строки локализации и пиксельный шрифт кладём явно: это не модули,
 # автоматически они в сборку не попадут (и молча отвалятся).
@@ -43,6 +56,7 @@ hiddenimports = [
     "ui.widgets",
     "ui.workers",
     "core",
+    "core.swagscan",
 ]
 
 onedir = os.environ.get("SWAGCLEANER_ONEDIR") == "1"
@@ -50,7 +64,7 @@ onedir = os.environ.get("SWAGCLEANER_ONEDIR") == "1"
 a = Analysis(
     ["swagcleaner.py"],
     pathex=["."],
-    binaries=[],
+    binaries=_rust_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

@@ -112,6 +112,28 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="запустить советника в консоли (без UI)",
     )
     parser.add_argument(
+        "--disk",
+        nargs="*",
+        metavar="ПУТЬ",
+        default=None,
+        help="быстрый индекс диска через Rust-ядро (без UI); без путей — свои корни",
+    )
+    parser.add_argument(
+        "--candidates",
+        action="store_true",
+        help="вместе с --disk: пройтись по мусорным корням и показать категории",
+    )
+    parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="вместе с --disk/--candidates: объяснить находки человеческим языком (AI)",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="сырой JSON от ядра вместо красивого отчёта",
+    )
+    parser.add_argument(
         "--gui",
         action="store_true",
         default=True,
@@ -163,6 +185,106 @@ def _cli_advisor(installed_provider):
         print(f"  - {p.get('type')} | {p.get('name')} | {p.get('risk')} | {p.get('reason')}")
     if not plan:
         print("  (база знаний пока демо-заглушка — это ожидаемо)")
+
+
+def _human(n: int) -> str:
+    v = float(n)
+    for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
+        if v < 1024 or unit == "ТБ":
+            return f"{v:.1f} {unit}" if unit != "Б" else f"{int(v)} Б"
+        v /= 1024
+    return f"{n} Б"
+
+
+def _cli_disk(roots: list[str], candidates: bool, explain: bool, as_json: bool) -> int:
+    """Прогнать Rust-ядро в консоли: индекс диска или кандидаты на чистку."""
+    from core.swagscan import SwagscanClient, SwagscanError
+
+    try:
+        client = SwagscanClient()
+    except SwagscanError as e:
+        print(f"Rust-ядро недоступно: {e}")
+        return 2
+
+    last_pct = {"v": -1}
+
+    def on_progress(ev: dict) -> None:
+        pct = int(ev.get("done", 0))
+        if pct // 5000 != last_pct["v"] // 5000:
+            last_pct["v"] = pct
+            print(f"  ...{pct} файлов, {_human(int(ev.get('bytes', 0)))}", flush=True)
+
+    try:
+        with client:
+            if candidates:
+                print("Кандидаты на чистку (мусорные корни, Rust-ядро):")
+                agg: dict[str, dict] = {}
+
+                def on_file(fe) -> None:
+                    for cat in fe.categories or ["(без категории)"]:
+                        slot = agg.setdefault(
+                            cat, {"category": cat, "files": 0, "bytes": 0, "lane": "?", "risk": "?"}
+                        )
+                        slot["files"] += 1
+                        slot["bytes"] += fe.size
+
+                data = client.candidates(roots or [], cat_roots=not roots,
+                                         on_progress=on_progress, on_file=on_file)
+                meta = client.cat_meta()
+                for slot in agg.values():
+                    m = meta.get(slot["category"])
+                    if m:
+                        slot["risk"] = m.get("risk", "?")
+                        slot["lane"] = m.get("lane", "?")
+                by_cat = sorted(agg.values(), key=lambda x: -x["bytes"])
+                counts = {"files": data.get("files", 0), "bytes": data.get("bytes", 0)}
+                report = {"candidates": data, "by_category": by_cat}
+                data = {**data, "by_category": by_cat}
+            else:
+                print("Индекс диска (Rust-ядро):")
+                data = client.index(roots or [], top=15, on_progress=on_progress)
+                res = data["result"]
+                counts = {"files": res["files"], "bytes": res["bytes"]}
+                report = data
+
+            if as_json:
+                import json
+
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+                return 0
+
+            print(f"файлов: {counts['files']}, размер: {_human(counts['bytes'])}")
+            if not candidates:
+                for f in data["top_folders"][:10]:
+                    print(f"  папка {_human(f['bytes']):>10}  {f['path']}")
+                print("самые крупные файлы:")
+                for f in data["top_files"][:10]:
+                    print(f"  файл  {_human(f['size']):>10}  {f['path']}")
+                print("по расширениям:")
+                for e in data["by_ext"][:8]:
+                    print(f"  {e['ext'] or '(без расширения)':<12} {e['files']:>8}  {_human(e['bytes'])}")
+            else:
+                print("по категориям:")
+                by_cat = {c["category"]: c for c in data.get("by_category", [])}
+                if not by_cat:
+                    print("  пусто")
+                for c in sorted(by_cat.values(), key=lambda x: -x["bytes"])[:15]:
+                    print(f"  {c['category']:<24} {c['files']:>8}  {_human(c['bytes']):>10}  {c['risk']}")
+
+            if explain:
+                from ai import AiAssistant, load_settings
+
+                assistant = AiAssistant(load_settings())
+                if not assistant.available():
+                    print("\nAI: недоступен (выключен в настройках или сервер не отвечает) — объясняю молчанием.")
+                    return 0
+                text = assistant.explain(report)
+                print("\nКлини объясняет:")
+                print(f"  {text}" if text else "  (пусто)")
+        return 0
+    except SwagscanError as e:
+        print(f"ядро сообщило об ошибке: {e}")
+        return 1
 
 
 def _self_test() -> int:
@@ -316,6 +438,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.advisor:
         _cli_advisor(installed_provider)
         return 0
+
+    if args.disk is not None:
+        roots = [str(Path(p).resolve()) for p in args.disk] if args.disk else []
+        return _cli_disk(roots, args.candidates, args.explain, args.json)
 
     if not args.gui:
         print("Графический режим отключён. Запустите --gui для включения.")
