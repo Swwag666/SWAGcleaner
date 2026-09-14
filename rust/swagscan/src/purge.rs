@@ -64,7 +64,7 @@ fn subtree_size(dir_norm: &str, cancel: &Arc<AtomicBool>, budget: &mut u64) -> u
             if is_dir {
                 if !reparse {
                     *budget -= 1;
-                    total += subtree_size(&format!("{dir_norm}/{name}"), cancel, budget);
+                    total += subtree_size(&crate::agg::join(dir_norm, &name), cancel, budget);
                 }
             } else {
                 total += wapi::find_size(&data);

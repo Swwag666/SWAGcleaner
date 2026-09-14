@@ -76,6 +76,18 @@ fn default_roots(env: &Env) -> Vec<String> {
     out
 }
 
+fn dedup_roots(mut roots: Vec<String>) -> Vec<String> {
+    roots.sort_by_key(|r| r.len());
+    let mut kept: Vec<String> = Vec::with_capacity(roots.len());
+    for r in roots {
+        if kept.iter().any(|k| crate::pathx::starts_with_path(&r, k)) {
+            continue;
+        }
+        kept.push(r);
+    }
+    kept
+}
+
 fn resolve_roots(v: &serde_json::Value, env: &Env) -> Vec<String> {
     let roots = str_array(v, "roots");
     if !roots.is_empty() {
@@ -198,7 +210,7 @@ fn handle(
         }
         "duplicates" => {
             let mut dp = hash::DupPlan::default();
-            dp.roots = resolve_roots(cmd, env);
+            dp.roots = dedup_roots(resolve_roots(cmd, env));
             dp.min_size = u64_field(cmd, "min_size", 1024 * 1024);
             dp.exts = str_array(cmd, "exts");
             dp.threads = usize_field(cmd, "threads", 0);

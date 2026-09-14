@@ -75,7 +75,7 @@ fn walk_collect(
             let attrs = data.dw_file_attributes;
             let is_dir = attrs & wapi::FA_DIRECTORY != 0;
             let reparse = attrs & wapi::FA_REPARSE != 0;
-            let child = format!("{dir_norm}/{name}");
+            let child = crate::agg::join(dir_norm, &name);
             let lower = name.to_lowercase();
             if is_dir {
                 if !reparse

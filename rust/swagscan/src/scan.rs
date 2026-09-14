@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use crate::agg::{self, join};
 use crate::cats::{self, Cat, Env, Lane, Matcher};
 use crate::emit::{self, Events};
-use crate::pathx::{extension, norm, parent, q, root_of, win, now_unix};
+use crate::pathx::{extension, norm, parent, q, root_of, starts_with_path, win, now_unix};
 use crate::win as wapi;
 
 pub struct Counters {
@@ -71,7 +71,38 @@ impl Default for Plan {
             mode: Mode::Aggregates,
             min_size: 0,
         }
+    }
+}
+
+/// Корни обхода: каждый файл обходится ровно один раз.
+/// Если один корень лежит внутри другого (USERPROFILE и USERPROFILE\Temp),
+/// родитель останавливается на входе в дочерний — дочерний обходится сам.
+/// Иначе одни и те же файлы классифицируются и считаются дважды.
+struct RootIndex {
+    sorted: Vec<(String, usize)>,
+}
+
+impl RootIndex {
+    fn build(roots: &[String]) -> RootIndex {
+        let mut pairs: Vec<(String, usize)> =
+            roots.iter().cloned().enumerate().map(|(i, r)| (r, i)).collect();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        pairs.dedup_by(|a, b| a.0 == b.0);
+        RootIndex { sorted: pairs }
+    }
+
+    /// true, если dir_norm покрыт чьим-то другим корнем (не моим).
+    fn covered_by_other(&self, dir_norm: &str, my_root: usize) -> bool {
+        let i = match self.sorted.binary_search_by(|(r, _)| r.as_str().cmp(dir_norm)) {
+            Ok(i) => return self.sorted[i].1 != my_root,
+            Err(i) => i,
+        };
+        if i == 0 {
+            return false;
         }
+        let (r, j) = &self.sorted[i - 1];
+        *j != my_root && starts_with_path(dir_norm, r)
+    }
 }
 
 const SKIP_DIRS: &[&str] = &["$Recycle.Bin", "System Volume Information"];
@@ -84,7 +115,7 @@ fn skip_dir_name(name: &str) -> bool {
 }
 
 struct Queue {
-    items: Mutex<VecDeque<(String, usize)>>,
+    items: Mutex<VecDeque<(String, usize, usize)>>,
 }
 
 impl Queue {
@@ -93,11 +124,11 @@ impl Queue {
             items: Mutex::new(VecDeque::new()),
         }
     }
-    fn push(&self, v: Vec<(String, usize)>, c: &Counters) {
+    fn push(&self, v: Vec<(String, usize, usize)>, c: &Counters) {
         c.pending.fetch_add(v.len(), Ordering::SeqCst);
         self.items.lock().unwrap().extend(v);
     }
-    fn pop(&self) -> Option<(String, usize)> {
+    fn pop(&self) -> Option<(String, usize, usize)> {
         self.items.lock().unwrap().pop_back()
     }
     fn empty(&self) -> bool {
@@ -209,7 +240,9 @@ fn stream_file(ev: &Events, path_norm: &str, size: u64, mtime: i64, cats: &[&'st
 fn walk_one(
     dir_norm: &str,
     depth: usize,
+    my_root: usize,
     plan: &Plan,
+    ridx: &RootIndex,
     matcher: &Matcher,
     counters: &Arc<Counters>,
     queue: &Arc<Queue>,
@@ -243,8 +276,11 @@ fn walk_one(
                 local.own.entry(child.clone()).or_insert((0, 0)).1 += 1;
                 if reparse && !plan.follow_reparse {
                     counters.reparse.fetch_add(1, Ordering::Relaxed);
-                } else if depth < plan.max_depth && !skip_dir_name(&name) {
-                    queue.push(vec![(child, depth + 1)], counters);
+                } else if depth < plan.max_depth
+                    && !skip_dir_name(&name)
+                    && !ridx.covered_by_other(&child, my_root)
+                {
+                    queue.push(vec![(child, depth + 1, my_root)], counters);
                 }
             } else if plan.include_hidden || !(hidden || system) {
                 let size = wapi::find_size(&data);
@@ -354,9 +390,23 @@ pub fn run(plan: &Plan, env: &Env, ev: &Events, cancel: &Arc<AtomicBool>, job: &
     let now = now_unix();
     let matcher = Matcher::build(env);
     let counters = Counters::new();
-    let roots: Vec<String> = plan.roots.iter().map(|r| norm(r)).filter(|r| !r.is_empty()).collect();
+    let mut seen_roots: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let roots: Vec<String> = plan
+        .roots
+        .iter()
+        .map(|r| norm(r))
+        .filter(|r| !r.is_empty() && seen_roots.insert(r.clone()))
+        .collect();
+    let ridx = RootIndex::build(&roots);
     let queue = Arc::new(Queue::new());
-    queue.push(roots.iter().map(|r| (r.clone(), 0usize)).collect(), &counters);
+    queue.push(
+        roots
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (r.clone(), 0usize, i))
+            .collect(),
+        &counters,
+    );
 
     let nthreads = if plan.threads > 0 {
         plan.threads
@@ -374,6 +424,7 @@ pub fn run(plan: &Plan, env: &Env, ev: &Events, cancel: &Arc<AtomicBool>, job: &
     let mut locals: Vec<Local> = Vec::with_capacity(nthreads);
     {
         let plan_r: &Plan = plan;
+        let ri_r: &RootIndex = &ridx;
         let m_r: &Matcher = &matcher;
         let c_r: &Arc<Counters> = &counters;
         let q_r: &Arc<Queue> = &queue;
@@ -392,11 +443,13 @@ pub fn run(plan: &Plan, env: &Env, ev: &Events, cancel: &Arc<AtomicBool>, job: &
                                 break;
                             }
                             match q_r.pop() {
-                                Some((dir, depth)) => {
+                                Some((dir, depth, my_root)) => {
                                     walk_one(
                                         &dir,
                                         depth,
+                                        my_root,
                                         plan_r,
+                                        ri_r,
                                         m_r,
                                         c_r,
                                         q_r,
@@ -601,4 +654,37 @@ pub fn cat_roots(env: &Env) -> Vec<(String, &'static str)> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn idx(v: &[&str]) -> RootIndex {
+        RootIndex::build(&v.iter().map(|s| s.to_string()).collect::<Vec<String>>())
+    }
+
+    #[test]
+    fn roditel_ne_zahodit_v_dochniy_koren() {
+        let r = idx(&["c:/users/atiun", "c:/users/atiun/downloads"]);
+        assert!(r.covered_by_other("c:/users/atiun/downloads/foo", 0));
+        assert!(!r.covered_by_other("c:/users/atiun/appdata", 0));
+        assert!(!r.covered_by_other("c:/users/atiun/downloads/x/y", 1));
+        assert!(!r.covered_by_other("c:/users/other", 0));
+    }
+
+    #[test]
+    fn granica_segmenta_a_ne_prosto_prefiks() {
+        let r = idx(&["c:/a", "c:/ab"]);
+        assert!(!r.covered_by_other("c:/abc/x", 0));
+        assert!(r.covered_by_other("c:/ab/c/x", 0));
+        assert!(!r.covered_by_other("c:/ab/c/x", 1));
+    }
+
+    #[test]
+    fn odinakovie_korni_slivayutsya() {
+        let r = idx(&["c:/a", "c:/a"]);
+        assert_eq!(r.sorted.len(), 1);
+        assert!(!r.covered_by_other("c:/a/b", 0));
+    }
 }

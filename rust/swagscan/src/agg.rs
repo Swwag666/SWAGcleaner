@@ -3,7 +3,15 @@ use std::collections::HashMap;
 use crate::pathx::{parent, q, win};
 
 pub fn join(dir_norm: &str, name: &str) -> String {
-    format!("{dir_norm}/{name}")
+    // dir_norm всегда lowercase; имя из ФС приходит в реальном регистре
+    // («Downloads»). Без приведения child-путь смешивает регистры, и сравнения
+    // с lowercase-префиксами (правила категорий, корни обхода) врут:
+    // «.../Downloads» не совпадёт с «.../downloads», а между собой это один путь.
+    let mut s = String::with_capacity(dir_norm.len() + 1 + name.len());
+    s.push_str(dir_norm);
+    s.push('/');
+    s.extend(name.chars().flat_map(|c| c.to_lowercase()));
+    s
 }
 
 pub fn age_bucket(secs_ago: i64) -> &'static str {
@@ -161,6 +169,12 @@ pub fn build_json(a: &Aggregates, top_n: usize, ext_top_n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prisoedinyaet_imya_v_nizhnem_registre() {
+        assert_eq!(join("c:/users", "Downloads"), "c:/users/downloads");
+        assert_eq!(join("c:/a", "B.C"), "c:/a/b.c");
+    }
 
     #[test]
     fn rollup_summiruet_vverh() {
