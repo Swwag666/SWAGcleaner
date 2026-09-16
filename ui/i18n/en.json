@@ -166,5 +166,27 @@
     "close": "Close",
     "confirm": "Confirm",
     "back": "Back"
+  },
+  "session": {
+    "core_missing": "Scan core not found: build rust/swagscan or place swagscan.exe next to the app.",
+    "lane_trash": "to the Recycle Bin",
+    "lane_direct": "no Recycle Bin, cannot be undone",
+    "purge_plan": "Dry run: {count} items, {size} would be removed",
+    "purge_done": "Removed {count}, freed {size}",
+    "purge_trash": "{count} to the Recycle Bin",
+    "purge_direct": "{count} without the Bin",
+    "purge_refused": "{count} refused",
+    "purge_failed": "{count} failed",
+    "scan_cancelled": "Scan stopped: showing what was covered",
+    "core_error": "The core returned an error: {error}",
+    "candidates_more": "Showing the first {count} of {total} items - the category screen comes next",
+    "dup_groups": "Duplicate groups: {count}, wasted {size}",
+    "dup_none": "No exact duplicates found",
+    "advisor_apps": "Installed apps: {count}",
+    "advisor_recs": "Recommendations: {count}",
+    "nothing_to_clean": "Scan first to find what to clean.",
+    "need_rescan": "Too many items for one run - rescan; the category screen will show the choice.",
+    "dup_keep_note": "The newest copy of each group is kept.",
+    "purge_real": "Will delete {count} items, {size}. Lanes are decided by the core: some to the Recycle Bin, some permanently."
   }
 }

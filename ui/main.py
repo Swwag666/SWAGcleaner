@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import List
 
 from PySide6.QtCore import (
@@ -24,7 +25,6 @@ from PySide6.QtCore import (
     QPropertyAnimation,
     QSize,
     Qt,
-    QTimer,
     Signal,
 )
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -45,6 +45,7 @@ from ui.character import MOODS, Assistant, Mascot, SpeechBox, demo_moods
 from ui.context import Context
 from ui.dialog import ConfirmDialog
 from ui.scene import SceneStack
+from ui.session import Session, get_session, human_size
 from ui.sidebar import Sidebar
 from ui.tabs import AdvisorTab, CleanerTab, DedupTab, SettingsTab, TweaksTab
 from ui.widgets import AccentBar
@@ -75,48 +76,26 @@ class MainWindow(QMainWindow):
     ASSISTANT_MAX_WIDTH = 320
     ASSISTANT_ANIMATION_MS = 220
 
-    # ДЕМО: пока ядро не подключено, кнопки действий показывают весь конвейер
-    # интерфейса — работу, прогресс, подтверждение, звуки и набегающие цифры.
-    # Числа выдуманные; убрать это можно вместе с _connect_pages().
-    DEMO_RESULTS = {
-        "advisor": {"apps": 36, "recs": 3},
-        "cleaner": {"candidates": 1284, "size": 2412.0},
-        "dedup": {"groups": 17, "dupes": 63},
-    }
-    DEMO_WORK_MS = 1600
-    WORK_TICK_MS = 60
-    # Действия, которые перед показом работы спрашивают подтверждение.
-    DEMO_SIGNALS = (
-        ("scanRequested", False),
-        ("chooseFolderRequested", False),
-        ("applyRequested", True),
-        ("cleanRequested", True),
-        ("deleteRequested", True),
-        ("startupRequested", True),
-        ("servicesRequested", True),
-        ("uwpRequested", True),
-        ("restoreRequested", True),
-    )
+    # Действия страниц, которые требуют подтверждения пользователя ДО работы.
+    # Чистка и удаление — всегда с диалогом; сканы и чтение — без него.
+    CONFIRM_SIGNALS = frozenset({"cleanRequested", "deleteRequested"})
 
-    def __init__(self, app: QApplication, context: Context) -> None:
+    def __init__(self, app: QApplication, context: Context,
+                 session: Session | None = None) -> None:
         super().__init__()
         self._app = app
         self._context = context
+        self._session = session if session is not None else get_session()
         self._status = "ready"
         self._pages: List[QWidget] = []
         self._assistant_visible = True
         self._assistant_animation: QParallelAnimationGroup | None = None
-        self._busy = False
-        self._work_elapsed = 0
         self._work_page: QWidget | None = None
-        self._work_name = ""
         self._stub_after_work = True
-        self._work_timer = QTimer(self)
-        self._work_timer.setInterval(self.WORK_TICK_MS)
-        self._work_timer.timeout.connect(self._on_work_tick)
 
         self._build_ui()
         self._connect_context()
+        self._connect_session()
         self._apply_visuals()
         self.retranslate()
         self.go_to_page(0)
@@ -179,7 +158,6 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self._build_status_bar()
         self._apply_assistant_width()
-        self._connect_pages()
 
     def _bind_shortcuts(self) -> None:
         """Горячие клавиши окна.
@@ -445,59 +423,145 @@ class MainWindow(QMainWindow):
         name, _key, _page_cls, mood = PAGES[index]
         self._assistant.say(self._context.tr(f"character.lines.{name}"), mood)
 
-    # ---------- занятость и демонстрация ----------
+    # ---------- связь с сессией (ядро) ----------
 
-    def _connect_pages(self) -> None:
-        """Подключить кнопки страниц к общему сценарию работы.
+    def session(self) -> Session:
+        return self._session
 
-        ДЕМО: ядро ещё не подключено, поэтому кнопки показывают весь конвейер
-        интерфейса на выдуманных цифрах: занятость в шапке, прогресс, диалог
-        подтверждения, звуки и набегающие показатели. Убрать — вместе с
-        DEMO_RESULTS.
+    def _connect_session(self) -> None:
+        """Кнопки страниц → задачи сессии; занятость, итоги и ошибки → окно.
+
+        Итоги приходят сигналом taskFinished из рабочего потока: Qt сам
+        переносит их в поток окна, поэтому виджеты трогаются только там.
         """
+        self._session.busyChanged.connect(self.set_busy)
+        self._session.errorOccurred.connect(self._on_core_error)
+        self._session.progressTick.connect(self._on_progress_tick)
+        self._session.taskFinished.connect(self._on_task_finished)
+        self._session.taskFailed.connect(lambda _name, _msg: None)
         for page in self._pages:
-            for signal_name, needs_confirm in self.DEMO_SIGNALS:
+            for signal_name in ("scanRequested", "chooseFolderRequested",
+                                "applyRequested", "cleanRequested",
+                                "deleteRequested"):
                 signal = getattr(page, signal_name, None)
                 if signal is None:
                     continue
-                signal.connect(lambda confirm=needs_confirm: self.run_demo_action(confirm))
+                needs_confirm = signal_name in self.CONFIRM_SIGNALS
+                signal.connect(
+                    lambda confirm=needs_confirm: self.run_action(confirm))
+
+    def _on_progress_tick(self, percent: int) -> None:
+        page = self._work_page
+        if page is not None and hasattr(page, "set_progress"):
+            page.set_progress(percent)
+
+    def _on_task_finished(self, name: str, result: object) -> None:
+        """Итог задачи уже в главном потоке: раскладываем по странице."""
+        page = self._work_page or self._current_page()
+        if name == "advisor":
+            self._finish_advisor(result, page)
+        elif name == "cleaner_scan":
+            self._finish_cleaner(result, page)
+        elif name == "dedup":
+            self._finish_dedup(result, page)
+        elif name == "purge":
+            self._finish_purge(result, page)
+
+    def _on_core_error(self, message: str) -> None:
+        """Ошибка ядра: статус страницы, реплика персонажа, звук."""
+        page = self._work_page or self._current_page()
+        self._work_page = None
+        text = self._context.tr("session.core_error").format(error=message)
+        if page is not None and hasattr(page, "setStatus"):
+            page.setStatus(text)
+        if page is not None and hasattr(page, "set_progress"):
+            page.set_progress(None)
+        sounds.play("error")
+        self._assistant.say(text, "panic")
+
+    def _current_page(self) -> QWidget | None:
+        index = self._stack.currentIndex()
+        if 0 <= index < len(self._pages):
+            return self._pages[index]
+        return None
 
     def is_busy(self) -> bool:
-        return self._busy
+        return self._session.is_busy()
 
     def set_busy(self, busy: bool) -> None:
         """Показать, что идёт работа: по полоске в шапке бежит сегмент."""
-        self._busy = busy
         self._accent_bar.set_busy(busy)
 
-    def run_demo_action(self, needs_confirm: bool = False) -> None:
-        """Сценарий кнопки действия: подтверждение, работа, итог."""
-        index = self._stack.currentIndex()
-        if not (0 <= index < len(PAGES)):
+    def run_action(self, needs_confirm: bool = False) -> None:
+        """Кнопка действия: подтверждение (если нужно) → задача сессии."""
+        page = self._current_page()
+        if page is None:
             return
-        if self._busy:
+        if self.is_busy():
             sounds.play("error")
             return
-        name, _key, _page_cls, _mood = PAGES[index]
-        if needs_confirm and not self._ask_confirmation():
-            # Звук отмены уже сыграл сам диалог — тут только реплика.
-            self._assistant.say(self._context.tr("character.lines.cancelled"), "idle")
-            return
-        self._start_work(name, self._pages[index])
+        name = PAGES[self._stack.currentIndex()][0]
+        if needs_confirm:
+            if not self._confirmable(name):
+                sounds.play("error")
+                if hasattr(page, "setStatus"):
+                    page.setStatus(self._context.tr("session.nothing_to_clean"))
+                self._assistant.say(
+                    self._context.tr("session.nothing_to_clean"), "idle")
+                return
+            if not self._ask_confirmation(name):
+                # Звук отмены уже сыграл сам диалог — тут только реплика.
+                self._assistant.say(self._context.tr("character.lines.cancelled"), "idle")
+                return
+            if name == "cleaner":
+                self._start_purge_cleaner(page)
+                return
+            if name == "dedup":
+                self._start_purge_dedup(page)
+                return
+        self._start_work(name, page)
 
-    def _ask_confirmation(self) -> bool:
-        """Спросить подтверждение в стиле визуальной новеллы."""
+    def _confirmable(self, name: str) -> bool:
+        """Есть ли что подтверждать: чистке нужен скан, дублям — группы."""
+        if name == "cleaner":
+            return bool(self._session.last_scan().summaries)
+        if name == "dedup":
+            return bool(self._session.last_groups())
+        return False
+
+    def _ask_confirmation(self, name: str) -> bool:
+        """Спросить подтверждение в стиле визуальной новеллы.
+
+        Пока экран категорий не построен, диалог показывает сводку последнего
+        скана: категории, объём, дорожку удаления и риск. Удаление применится
+        ко всем найденным пунктам этих категорий — это сказано в примечании.
+        """
+        if name == "dedup":
+            groups = self._session.last_groups()
+            items = [
+                (f"{human_size(g.size)} × {len(g.paths)}: "
+                 f"{g.paths[0].split(chr(92))[-1]}", "medium")
+                for g in groups[:12]
+            ]
+            wasted = sum(g.wasted() for g in groups)
+            note = (self._context.tr("session.dup_keep_note") + " "
+                    + self._context.tr("session.purge_real").format(
+                        count=sum(len(g.paths) - 1 for g in groups),
+                        size=human_size(wasted)))
+            return ConfirmDialog.ask(self, items, note=note)
+        scan = self._session.last_scan()
         items = [
-            (self._context.tr(f"demo.items.{key}"), risk)
-            for key, risk in (("tmp", "low"), ("startup", "medium"), ("photo", "high"))
+            (self._session.describe_summary(summary, with_risk=False),
+             summary.risk)
+            for summary in scan.summaries[:12]
         ]
-        return ConfirmDialog.ask(self, items)
+        note = self._context.tr("session.purge_real").format(
+            count=scan.files, size=human_size(scan.bytes))
+        return ConfirmDialog.ask(self, items, note=note)
 
     def _start_work(self, name: str, page: QWidget) -> None:
-        """Начать работу: занятость, прогресс, реплика и звук."""
-        self._work_name = name
+        """Начать настоящую работу: задача сессии, занятость, прогресс."""
         self._work_page = page
-        self._work_elapsed = 0
         self.set_busy(True)
         sounds.play("click")
         self._assistant.say(self._context.tr("character.lines.scan"), "scan")
@@ -505,63 +569,197 @@ class MainWindow(QMainWindow):
             page.setStatus(self._context.tr("status.scanning"))
         if hasattr(page, "set_progress"):
             page.set_progress(0)
-        self._work_timer.start()
 
-    def _on_work_tick(self) -> None:
-        page = self._work_page
-        if page is None:
-            self._work_timer.stop()
+        if name == "advisor":
+            self._session.scan_advisor()
+        elif name == "cleaner":
+            self._session.scan_candidates([], True)
+        elif name == "dedup":
+            self._session.scan_duplicates([str(Path.home())])
+        else:
+            # Твики и настройки: своих задач у сессии пока нет (M4/M5).
+            self._work_page = None
+            self.set_busy(False)
+            if hasattr(page, "setStatus"):
+                page.setStatus(self._context.tr("status.idle"))
+
+    # ---------- итоги настоящих задач ----------
+
+    def _start_purge_cleaner(self, page: QWidget) -> None:
+        """Удаление по категориям последнего скана: дорожки решает ядро."""
+        scan = self._session.last_scan()
+        if scan.truncated:
+            # Подтверждение было по полной сводке, а стрим донёс не всё:
+            # удалять часть — обман. Ждём экран категорий (этап 2).
+            sounds.play("error")
+            if hasattr(page, "setStatus"):
+                page.setStatus(self._context.tr("session.need_rescan"))
+            self._assistant.say(self._context.tr("session.need_rescan"), "idle")
             return
-        self._work_elapsed += self.WORK_TICK_MS
-        percent = min(100, round(100 * self._work_elapsed / self.DEMO_WORK_MS))
-        page.set_progress(percent)
-        if percent >= 100:
-            self._work_timer.stop()
-            self._finish_work()
+        items = [
+            {"path": item.path, "category": item.primary_category()}
+            for item in scan.items
+        ]
+        if not items:
+            # Пункты не стримились (слишком много): удалять «вслепую» нельзя —
+            # просим пересканировать, экран категорий решит это по-человечески.
+            sounds.play("error")
+            if hasattr(page, "setStatus"):
+                page.setStatus(self._context.tr("session.need_rescan"))
+            self._assistant.say(self._context.tr("session.need_rescan"), "idle")
+            return
+        self._work_page = page
+        self.set_busy(True)
+        sounds.play("click")
+        self._assistant.say(self._context.tr("character.lines.scan"), "scan")
+        if hasattr(page, "setStatus"):
+            page.setStatus(self._context.tr("status.processing"))
+        if hasattr(page, "set_progress"):
+            page.set_progress(0)
 
-    def _finish_work(self) -> None:
-        """Закончить работу: показать числа, звук готовности, реплика."""
-        page, name = self._work_page, self._work_name
+        self._session.purge_items(items, False)
+
+    def _start_purge_dedup(self, page: QWidget) -> None:
+        """Удаление дубликатов фото: из каждой группы живёт свежая копия."""
+        groups = self._session.last_groups()
+        items: List[dict] = []
+        for group in groups:
+            if len(group.paths) < 2:
+                continue
+            keep = max(group.paths, key=lambda p: Path(p).stat().st_mtime
+                       if Path(p).exists() else 0)
+            items.extend(
+                {"path": p, "category": "dupes.photo"}
+                for p in group.paths if p != keep
+            )
+        if not items:
+            sounds.play("error")
+            return
+        self._work_page = page
+        self.set_busy(True)
+        sounds.play("click")
+        if hasattr(page, "setStatus"):
+            page.setStatus(self._context.tr("status.processing"))
+        if hasattr(page, "set_progress"):
+            page.set_progress(0)
+
+        self._session.purge_items(items, False)
+
+    def _finish_purge(self, report, page: QWidget) -> None:
         self._work_page = None
         self.set_busy(False)
-        if page is None:
-            return
-        page.set_progress(None)
-        done_key = f"{name}.scan_done"
-        done_text = self._context.tr(done_key)
-        if done_text != done_key:
-            page.setStatus(done_text)
-        for key, value in self.DEMO_RESULTS.get(name, {}).items():
-            page.setStats(key, value)
-        sounds.play("done")
-        self._assistant.say(self._context.tr("character.lines.clean"), "idle")
-        if name == "cleaner" and self._stub_after_work:
-            self._show_categories_stub()
+        if hasattr(page, "set_progress"):
+            page.set_progress(None)
+        text = self._session.describe_purge(report)
+        if hasattr(page, "setStatus"):
+            page.setStatus(text)
+        sounds.play("done" if not report.failures else "error")
+        self._assistant.say(text, "calm" if not report.failures else "panic")
 
-    def _show_categories_stub(self) -> None:
+    def _finish_advisor(self, result: dict, page: QWidget) -> None:
+        self._work_page = None
+        self.set_busy(False)
+        if hasattr(page, "set_progress"):
+            page.set_progress(None)
+        page.setStats("apps", result["apps"])
+        page.setStats("recs", len(result["recs"]))
+        if hasattr(page, "setStatus"):
+            page.setStatus(self._context.tr("advisor.scan_done"))
+        if hasattr(page, "setPlan"):
+            if result["recs"]:
+                lines = [
+                    f"{r.get('display_name', r.get('name', '?'))}: "
+                    f"{r.get('description', '')}"
+                    for r in result["recs"][:10]
+                ]
+                page.setPlan("\n".join(lines))
+            else:
+                page.setPlan(self._context.tr("advisor.no_plan"))
+        sounds.play("done")
+        self._assistant.say(
+            self._context.tr("session.advisor_apps").format(count=result["apps"])
+            + " " + self._context.tr("session.advisor_recs").format(
+                count=len(result["recs"])),
+            "idle",
+        )
+
+    def _finish_cleaner(self, scan, page: QWidget) -> None:
+        self._work_page = None
+        self.set_busy(False)
+        if hasattr(page, "set_progress"):
+            page.set_progress(None)
+        page.setStats("candidates", scan.files)
+        page.setStats("size", round(scan.bytes / (1024 * 1024), 1))
+        if hasattr(page, "setStatus"):
+            status = self._context.tr("cleaner.scan_done")
+            if scan.cancelled:
+                status = self._context.tr("session.scan_cancelled")
+            page.setStatus(status)
+        if hasattr(page, "setCandidates"):
+            lines = [self._session.describe_summary(s) for s in scan.summaries[:10]]
+            if scan.truncated:
+                lines.append(self._context.tr("session.candidates_more").format(
+                    count=len(scan.items), total=scan.files))
+            page.setCandidates("\n".join(lines) or self._context.tr(
+                "cleaner.candidates_empty"))
+        sounds.play("done")
+        self._assistant.say(
+            self._context.tr("character.lines.clean"), "idle")
+        if self._stub_after_work:
+            self._show_categories_stub(scan)
+
+    def _finish_dedup(self, result: dict, page: QWidget) -> None:
+        self._work_page = None
+        self.set_busy(False)
+        if hasattr(page, "set_progress"):
+            page.set_progress(None)
+        groups = result["groups"]
+        wasted = sum(g.wasted() for g in groups)
+        dupes = sum(len(g.paths) for g in groups)
+        page.setStats("groups", len(groups))
+        page.setStats("dupes", dupes)
+        if hasattr(page, "setStatus"):
+            page.setStatus(self._context.tr("dedup.scan_done"))
+        if hasattr(page, "setGroups"):
+            if groups:
+                lines = [
+                    f"{human_size(g.size)} × {len(g.paths)}: "
+                    f"{g.paths[0].split(chr(92))[-1]}"
+                    for g in groups[:10]
+                ]
+                page.setGroups("\n".join(lines))
+            else:
+                page.setGroups(self._context.tr("session.dup_none"))
+        sounds.play("done")
+        self._assistant.say(
+            self._context.tr("session.dup_groups").format(
+                count=len(groups), size=human_size(wasted)),
+            "idle",
+        )
+
+    def _show_categories_stub(self, scan) -> None:
         """ВРЕМЕННАЯ ЗАГЛУШКА: итог скана стандартным окном Windows.
 
         Экран категорий по-настоящему делает не эта модель — см. context.md,
         раздел 2, «по промту №17». Здесь только placeholder, чтобы было видно
-        место в потоке: после скана показываем сводку и «галочки» из Box.
+        место в потоке: после скана показываем сводку РЕАЛЬНЫХ категорий ядра.
         Под offscreen (тесты) не показываем: модальное окно заблокировало бы
         headless-прогон.
         """
         if QApplication.instance() is not None and \
                 QApplication.instance().platformName() == "offscreen":
             return
-        data = self.DEMO_RESULTS.get("cleaner", {})
-        count = data.get("candidates", 0)
-        size = data.get("size", 0.0)
+        lines = [self._session.describe_summary(s) for s in scan.summaries[:12]]
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Information)
         box.setWindowTitle(self._context.tr("cleaner.candidates_title"))
-        box.setText(f"Найдено {count:,} объектов на {size:,.0f} МБ.")
+        box.setText(
+            f"Найдено {scan.files:,} объектов на {human_size(scan.bytes)}."
+            .replace(",", " "))
         box.setInformativeText(
-            "Временная заглушка вместо экрана категорий:\n"
-            "Временные файлы (кеш, temp) — безвозвратно\n"
-            "Старые установщики, крупные файлы — в корзину\n\n"
-            "Настоящий выбор по категориям и галочкам появится следующим заходом."
+            "\n".join(lines)
+            + "\n\nВременная заглушка вместо экрана категорий:\n"
+              "настоящий выбор по категориям и галочкам появится следующим заходом."
         )
         box.setStandardButtons(QMessageBox.StandardButton.Ok)
         box.exec()

@@ -190,6 +190,24 @@ const OLD_LARGE: &Cat = &Cat {
     path_must_contain: "",
 };
 
+// Точные дубликаты фото приходят в purge из Python-слоя (хеши считает он же),
+// а не из обхода: пустые patterns означают, что в скане категория не участвует
+// и не даёт правил, но purge принимает её с дорожкой «в корзину».
+const DUPES_PHOTO: &Cat = &Cat {
+    id: "dupes.photo",
+    title: "Exact photo duplicates",
+    lane: Lane::Trash,
+    risk: "medium",
+    regrows: false,
+    admin: false,
+    by_ext: &[],
+    age_days: 0,
+    min_size: 0,
+    patterns: &[],
+    name_prefix: "",
+    path_must_contain: "",
+};
+
 pub fn categories() -> Vec<&'static Cat> {
     vec![
         TEMP_APP,
@@ -201,6 +219,7 @@ pub fn categories() -> Vec<&'static Cat> {
         WIN_UPDATES,
         INSTALLERS,
         OLD_LARGE,
+        DUPES_PHOTO,
     ]
 }
 
@@ -426,6 +445,18 @@ mod tests {
     fn temp_popadaet_v_temp_app() {
         let c = m().classify("c:/users/one/appdata/local/temp/abc.tmp", 1000, 0, 100);
         assert!(c.iter().any(|x| x.id == "temp.app"));
+    }
+
+    #[test]
+    fn dupes_photo_ne_uchastvuet_v_skane_no_dostupna_purge() {
+        // Пустые patterns: категория не даёт правил обхода — скан её не видит.
+        let c = m().classify("c:/users/one/pictures/img_0001.jpg", 5_000_000, 0, 100);
+        assert!(!c.iter().any(|x| x.id == "dupes.photo"));
+        // Но purge принимает её и ведёт в корзину, а не мимо неё.
+        let cat = find("dupes.photo").expect("категория обязана существовать");
+        assert_eq!(cat.lane, Lane::Trash);
+        assert!(!cat.regrows);
+        assert!(!cat.admin);
     }
 
     #[test]

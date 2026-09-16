@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from typing import List, Optional, Sequence, Tuple
 
-from PySide6.QtCore import QEvent, QEasingCurve, QObject, QPropertyAnimation, QPoint, Qt
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtCore import QEvent, QEasingCurve, QObject, QPropertyAnimation, QPoint, Qt, QTimer
+from PySide6.QtGui import QColor, QPainter, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
@@ -54,6 +54,9 @@ class ConfirmDialog(QDialog):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setModal(True)
+        # Диалог сам держит фокус и ловит Enter/Escape: иначе фокус случайно
+        # остаётся на «Отмене», и Enter жмёт её вместо подтверждения.
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setObjectName("confirmDialog")
 
         self._items = [(text, risk) for text, risk in items]
@@ -124,6 +127,18 @@ class ConfirmDialog(QDialog):
         buttons.addWidget(self._confirm_button)
         layout.addLayout(buttons)
 
+        # Enter/Escape работают из любого фокуса: шорткат окна перехватывает
+        # клавишу раньше кнопки, поэтому «случайный» фокус не может подтвердить
+        # или отменить диалог вопреки намерению клавиши.
+        for key, slot in (
+            (Qt.Key.Key_Return, self.confirm),
+            (Qt.Key.Key_Enter, self.confirm),
+            (Qt.Key.Key_Escape, self.cancel),
+        ):
+            shortcut = QShortcut(QKeySequence(key), self,
+                                 context=Qt.ShortcutContext.WindowShortcut)
+            shortcut.activated.connect(slot)
+
     def _build_item(self, text: str, risk: str) -> QFrame:
         """Строка списка: пометка риска слева, само действие справа."""
         risk = risk if risk in RISK_KEYS else "low"
@@ -168,6 +183,16 @@ class ConfirmDialog(QDialog):
     def showEvent(self, event) -> None:  # noqa: ANN001
         self._fit_to_parent()
         super().showEvent(event)
+        # Диалог обязан забрать активацию сам: без неё клавиатура остаётся у
+        # главного окна и Enter/Escape до подтверждения не доходят.
+        self.activateWindow()
+        self.raise_()
+        # Фокус на самом диалоге: Enter и Escape обрабатывает keyPressEvent
+        # (подтвердить/отменить), а не кнопка, которой фокус достался случайно.
+        # Кнопки по-прежнему достижимы Tab-ом и кликом. Активация окна приходит
+        # асинхронно и может отдать фокус первой кнопке — перехватываем снова.
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
+        QTimer.singleShot(0, self._take_focus)
         # Панель поднимается снизу — как диалог в визуальной новелле.
         final = self._panel.pos()
         self._slide = QPropertyAnimation(self._panel, b"pos", self)
@@ -176,6 +201,11 @@ class ConfirmDialog(QDialog):
         self._slide.setEndValue(final)
         self._slide.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._slide.start()
+
+    def _take_focus(self) -> None:
+        """Забрать фокус у кнопки, если активация окна отдала его ей."""
+        if self.focusWidget() is not self:
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _fit_to_parent(self) -> None:
         parent = self.parentWidget()

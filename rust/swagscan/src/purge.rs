@@ -418,6 +418,29 @@ mod tests {
     }
 
     #[test]
+    fn dupes_photo_idet_v_korzinu_iz_lyubogo_nesistemnogo_puti() {
+        let dir = std::env::temp_dir().join(format!("swagscan_d_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("photo copy.jpg");
+        std::fs::write(&f, b"jpeg").unwrap();
+        let e = env();
+        let m = Matcher::build(&e);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let plan = PurgePlan {
+            items: vec![Item {
+                path_win: f.to_string_lossy().to_string(),
+                category: "dupes.photo".into(),
+            }],
+            dry_run: true,
+        };
+        let (ok, bad) = resolve(&plan, &e, &m, &cancel);
+        assert!(bad.is_empty(), "{:?}", bad);
+        assert_eq!(ok.len(), 1);
+        assert_eq!(ok[0].lane, Lane::Trash);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn drop_covered_ubyraet_potomkov() {
         let mut v = vec![
             Resolved { path_norm: "c:/a/b".into(), path_win: "C:\\a\\b".into(), category: "temp.app", lane: Lane::Direct, size: 1 },

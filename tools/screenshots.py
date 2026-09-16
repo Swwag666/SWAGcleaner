@@ -37,6 +37,7 @@ from ui.character import MOODS, Mascot, demo_moods, pose_path, talk_frame_paths 
 from ui.context import Context, init_context  # noqa: E402
 from ui.dialog import ConfirmDialog  # noqa: E402
 from ui.main import MainWindow  # noqa: E402
+from tests.fakes import FakeCoreSession, make_scan  # noqa: E402
 
 SHOTS_DIR = _ROOT / "shots"
 # Сколько ждать, пока реплика допечатается (по 24 мс на букву плюс запас).
@@ -44,6 +45,10 @@ TYPE_WAIT_MS = 2600
 
 
 def shot(widget, name: str) -> None:  # noqa: ANN001
+    # Кадр снимаем после применения разметки: числа, доехавшие мгновенно
+    # (finish()), меняют sizeHint лейблов, и без processEvents grab() рисует
+    # их обрезанными по старой ширине.
+    QApplication.processEvents()
     SHOTS_DIR.mkdir(exist_ok=True)
     widget.grab().save(str(SHOTS_DIR / f"{name}.png"))
     print("сняли", name)
@@ -132,7 +137,9 @@ def main() -> int:
     context = init_context(app)
     # Звук при съёмке выключен: скриншоты не должны пищать на машине.
     context.setSounds(False)
-    win = MainWindow(app, context)
+    # Сессия фейковая: съёмка не дёргает ядро и не ходит по диску.
+    session = FakeCoreSession()
+    win = MainWindow(app, context, session)
     win.resize(1100, 700)
     win.show()
 
@@ -174,9 +181,9 @@ def main() -> int:
     # Работа: бегунок в шапке, прогресс и растущие показатели.
     win.go_to_page(1)
     win._pages[1].scanRequested.emit()
-    QTest.qWait(MainWindow.DEMO_WORK_MS // 2)
+    QTest.qWait(300)
     shot(win, "08-busy-progress")
-    QTest.qWait(MainWindow.DEMO_WORK_MS + 300)
+    session.finish_candidates(make_scan())
     win._pages[1].stats().finish()
     shot(win, "09-results-counters")
 

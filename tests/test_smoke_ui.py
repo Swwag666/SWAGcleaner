@@ -20,6 +20,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QPushButton, QWidget
 
 from ui import sounds, theme
+from tests.fakes import FakeCoreSession, make_scan
 from ui.character import (
     MOODS,
     Assistant,
@@ -51,9 +52,10 @@ def win(qapp: t.Any) -> t.Any:
 
     Окно показывается: под offscreen-платформой его никто не увидит, зато
     становится осмысленным isVisible() у страниц и по-настоящему считается
-    разметка — именно это и проверяет часть тестов.
+    разметка — именно это и проверяет часть тестов. Сессия — фейковая:
+    тесты интерфейса не должны дёргать настоящее ядро и диск.
     """
-    window = MainWindow(qapp, ctx())
+    window = MainWindow(qapp, ctx(), FakeCoreSession())
     window.resize(1100, 700)
     window.show()
     QTest.qWait(80)
@@ -62,6 +64,23 @@ def win(qapp: t.Any) -> t.Any:
     window.deleteLater()
     qapp.processEvents()
     # Вернуть состояние в исходное, чтобы тесты не влияли друг на друга.
+    ctx().setLocale("ru")
+    ctx().setTheme("dark")
+    ctx().setFontKind("pixel")
+
+
+@pytest.fixture
+def win_fake(qapp: t.Any) -> t.Tuple[t.Any, t.Any]:
+    """Окно вместе с его фейковой сессией: тест сам завершает задачи."""
+    session = FakeCoreSession()
+    window = MainWindow(qapp, ctx(), session)
+    window.resize(1100, 700)
+    window.show()
+    QTest.qWait(80)
+    yield window, session
+    window.close()
+    window.deleteLater()
+    qapp.processEvents()
     ctx().setLocale("ru")
     ctx().setTheme("dark")
     ctx().setFontKind("pixel")
@@ -1251,9 +1270,9 @@ class TestSounds:
         QTest.qWait(SceneStack.TRANSITION_MS + 120)
         win._pages[1].scanRequested.emit()
         assert win.is_busy()
-        win.run_demo_action(False)
+        win.run_action(False)
         assert recorder.events[-1] == "error"
-        QTest.qWait(MainWindow.DEMO_WORK_MS + 400)
+        win.session().finish_candidates()
 
 
 # ---------- показ работы на страницах ----------
@@ -1269,17 +1288,25 @@ class TestWorkFlow:
         assert win._pages[3].stats().keys() == ()
         assert win._pages[4].stats().keys() == ()
 
-    def test_demo_numbers_match_the_tiles(self, win: t.Any) -> None:
-        for index, (name, _key, _cls, _mood) in enumerate(PAGES):
-            page = win._pages[index]
-            for key in MainWindow.DEMO_RESULTS.get(name, {}):
-                assert key in page.stats().keys()
+    def test_scan_result_lands_in_the_tiles(self, win_fake: t.Any) -> None:
+        """Числа на странице — из сессии, а не из выдуманной таблицы."""
+        win, session = win_fake
+        scan = make_scan(files=42, size=7 * 1024 * 1024)
+        win.go_to_page(1)
+        page = win._pages[1]
+        page.scanRequested.emit()
+        assert win.is_busy()
+        session.finish_candidates(scan)
+        assert not win.is_busy()
+        assert page.stats().value("candidates") == 42
+        assert page.stats().value("size") == 7.0
 
     def test_progress_hides_by_default(self, win: t.Any) -> None:
         for page in win._pages:
             assert not page.progress().isVisible()
 
-    def test_scan_button_runs_the_whole_pipeline(self, win: t.Any) -> None:
+    def test_scan_button_runs_the_whole_pipeline(self, win_fake: t.Any) -> None:
+        win, session = win_fake
         win.go_to_page(1)
         page = win._pages[1]
         page.scanRequested.emit()
@@ -1289,15 +1316,16 @@ class TestWorkFlow:
         assert page.progress().value() == 0
         assert win._speech.full_text() == ctx().tr("character.lines.scan")
 
-        QTest.qWait(MainWindow.DEMO_WORK_MS + 400)
+        session.finish_candidates(make_scan())
         assert not win.is_busy()
         assert not page.progress().isVisible()
-        assert page.stats().value("candidates") == MainWindow.DEMO_RESULTS["cleaner"]["candidates"]
-        assert page.stats().value("size") == MainWindow.DEMO_RESULTS["cleaner"]["size"]
+        assert page.stats().value("candidates") == 1284
+        assert page.stats().value("size") == 2412.0
         assert page._status_label.text() == ctx().tr("cleaner.scan_done")
         assert win._mascot.mood() == "idle"
 
-    def test_second_action_waits_while_busy(self, win: t.Any) -> None:
+    def test_second_action_waits_while_busy(self, win_fake: t.Any) -> None:
+        win, session = win_fake
         win.go_to_page(1)
         page = win._pages[1]
         page.scanRequested.emit()
@@ -1305,11 +1333,15 @@ class TestWorkFlow:
         progress = page.progress().value()
         page.scanRequested.emit()
         assert page.progress().value() == progress
-        QTest.qWait(MainWindow.DEMO_WORK_MS + 400)
+        session.finish_candidates(make_scan())
 
-    def test_action_button_asks_for_confirmation(self, win: t.Any) -> None:
+    def test_action_button_asks_for_confirmation(self, win_fake: t.Any) -> None:
+        win, session = win_fake
         win.go_to_page(1)
         page = win._pages[1]
+        # Скан даёт данные: без них подтверждать нечего и диалог не появится.
+        page.scanRequested.emit()
+        session.finish_candidates(make_scan())
 
         def answer(confirm: bool) -> None:
             for widget in QApplication.topLevelWidgets():
@@ -1322,13 +1354,37 @@ class TestWorkFlow:
         assert not win.is_busy()
         assert win._speech.full_text() == ctx().tr("character.lines.cancelled")
 
-        # Подтверждение: начинается работа и заполняются показатели.
+        # Подтверждение: начинается удаление и страница получает отчёт.
         QTimer.singleShot(60, lambda: answer(True))
         page.cleanRequested.emit()
         assert win.is_busy()
-        QTest.qWait(MainWindow.DEMO_WORK_MS + 400)
+        assert session.purge_calls, "подтверждённая чистка обязана дойти до purge"
+        items, dry_run = session.purge_calls[-1]
+        assert dry_run is False
+        assert items and all(i["category"] for i in items)
+        session.finish_purge()
         assert not win.is_busy()
-        assert page.stats().value("candidates") == MainWindow.DEMO_RESULTS["cleaner"]["candidates"]
+        assert "Удалено" in page._status_label.text()
+
+    def test_core_error_reaches_the_page_and_the_mascot(
+        self, win_fake: t.Any
+    ) -> None:
+        win, session = win_fake
+        win.go_to_page(1)
+        page = win._pages[1]
+        page.scanRequested.emit()
+        session.raise_error("ядро умерло")
+        assert not win.is_busy()
+        assert "ядро умерло" in page._status_label.text()
+        assert win._mascot.mood() == "panic"
+
+    def test_clean_without_scan_shows_no_dialog(self, win_fake: t.Any) -> None:
+        """Без данных скана подтверждать нечего: диалог не показывается."""
+        win, session = win_fake
+        win.go_to_page(1)
+        win._pages[1].cleanRequested.emit()
+        assert not win.is_busy()
+        assert session.purge_calls == []
 
 
 # ---------- воркеры ----------
