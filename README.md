@@ -40,7 +40,7 @@
 | Мост | NDJSON-протокол поверх stdin/stdout, один долгоживущий процесс |
 | AI (опция) | stdlib `urllib` → Ollama / OpenAI-совместимый API |
 | Сборка | PyInstaller (spec подкладывает `swagscan.exe`) |
-| Тесты | pytest (223) + `cargo test` (38) |
+| Тесты | pytest (225) + `cargo test` (38) |
 | Полигон | VirtualBox + Windows 11 24H2 (тесты удаления не на живом железе) |
 
 ## Как работает чистка (политика удаления)
@@ -84,17 +84,21 @@
 Полное описание конвейера (индекс, категории, дубликаты, службы, откат, план по Rust) —
 разделы 8 и 9 в [`context.md`](context.md).
 
-## Статус на 14.09.2026 (честно)
+## Статус на 16.09.2026 (честно)
 
 Интерфейс — настоящий: боковое меню, пять страниц, две темы, ru/en, пиксельный шрифт Handjet,
 звуки, помощница в стиле визуальной новеллы, диалог подтверждения, живые счётчики, фоновые
-задачи, 223 + 38 тестов.
+задачи, 225 + 38 тестов.
 
 Ядро сканирования — настоящее и проверенное: Rust-обход, категории, дубликаты BLAKE3, удаление
 в две дорожки, dry-run, отмена; мост и протокол покрыты интеграционными тестами; на живой машине
-сверка Rust/Python до байта. **Но интерфейс к ядру ещё не подключён**: кнопки двигает демо-слой,
-после скана показывается временное окно-заглушка вместо экрана категорий. Полный реестр заглушек —
-раздел 7.1 в `context.md`.
+сверка Rust/Python до байта. Полигон VirtualBox (Win11 24H2) прогоняет ядро целиком: посев
+реальных файлов → сверка категорий → реальное удаление → CRC32-сверка; с 16.09 весь бандл живёт
+на общих папках хоста, в госте копий нет. Собранный `.exe` проверен внутри VM: `--self-test` и
+`--disk --candidates` работают, скриншоты GUI — в `shots/polygon-2026-09-16/`.
+**Но интерфейс к ядру ещё не подключён**: кнопки двигает демо-слой, после скана показывается
+временное окно-заглушка вместо экрана категорий. Полный реестр заглушек — раздел 7.1 в
+`context.md`.
 
 Python-слой `core/` (процессы, службы, автозагрузка, исполнитель, бэкапы) — по-прежнему заглушки
 из ранних итераций; реальную работу делает Rust-ядро. Это осознанный следующий этап: M1–M6 из
@@ -133,7 +137,7 @@ cargo +stable-x86_64-pc-windows-gnu test               # 38 тестов
 ## Тесты
 
 ```bash
-# весь набор Python (223 теста: модели, ядро, UI, AI, мост до Rust)
+# весь набор Python (225 тестов: модели, ядро, UI, AI, мост до Rust)
 ./venv/Scripts/python.exe -m pytest -o addopts="" -q -p no:cacheprovider
 # Rust-ядро (38 тестов)
 cd rust/swagscan && cargo +stable-x86_64-pc-windows-gnu test
@@ -189,11 +193,14 @@ perceptual photo-duplicate detection, and tweaks (services, startup, UWP — pla
 - Every deletion and every disable requires confirmation; the dialog shows items, size, risk and
   the total. Failures never abort the whole run — they are collected into the report.
 
-Status (14 Sep 2026): the interface is real (two themes, ru/en, mascot, confirm dialog, workers);
+Status (16 Sep 2026): the interface is real (two themes, ru/en, mascot, confirm dialog, workers);
 the scan core is real too — Rust scanner with categories, BLAKE3 duplicates, two-lane deletion,
 dry-run and cancellation, covered by 38 Rust + 11 bridge tests, byte-exact against the Python
-reference. What is NOT wired yet: the UI still runs on a demo layer (a temporary stub dialog shows
-where the category screen will be), and the old Python `core/` modules (processes, services,
-startup, executor, backups) remain stubs. Full stub registry: section 7.1 in `context.md`.
+reference. The VirtualBox polygon (Win11 24H2) runs the core end to end from host shared folders;
+the built `.exe` was verified inside the VM (`--self-test`, `--disk --candidates`, GUI
+screenshots in `shots/polygon-2026-09-16/`). What is NOT wired yet: the UI still runs on a demo
+layer (a temporary stub dialog shows where the category screen will be), and the old Python
+`core/` modules (processes, services, startup, executor, backups) remain stubs. Full stub
+registry: section 7.1 in `context.md`.
 
 MIT License.

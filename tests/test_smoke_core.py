@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import typing as t
 
+import pytest
 from PIL import Image
 
 from core.advisor import (
@@ -188,3 +189,58 @@ class TestDuplicateScanner:
     def test_perceptual_scan_skips_non_images(self, tmp_path: t.Any) -> None:
         (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
         assert DuplicateScanner().scan_perceptual_duplicates(list(tmp_path.iterdir())) == []
+
+
+class TestConsoleEncoding:
+    """Регресс на краш .exe в консоли с нерусской кодовой страницей.
+
+    Найдено прогоном собранного приложения в гостевой Win11 (консоль cp437):
+    print кириллицы обрывался UnicodeEncodeError и ронял процесс с кодом 20.
+    """
+
+    def test_fix_console_encoding_survives_cyrillic_in_cp1252_console(
+        self, monkeypatch: t.Any
+    ) -> None:
+        import io
+
+        import swagcleaner
+
+        # Воспроизводим «английскую» консоль: cp1252 + строгие ошибки.
+        raw_out = io.BytesIO()
+        raw_err = io.BytesIO()
+        out = io.TextIOWrapper(raw_out, encoding="cp1252", errors="strict")
+        err = io.TextIOWrapper(raw_err, encoding="cp1252", errors="strict")
+        monkeypatch.setattr(swagcleaner.sys, "stdout", out)
+        monkeypatch.setattr(swagcleaner.sys, "stderr", err)
+
+        # До фикса: кириллица в такой поток — это гарантированный UnicodeEncodeError.
+        with pytest.raises(UnicodeEncodeError):
+            out.write("Освобождено 2441.7 МБ\n")
+            out.flush()
+
+        swagcleaner._fix_console_encoding()
+
+        # После фикса: тот же текст кодируется без исключения.
+        out.write("Освобождено 2441.7 МБ, корзина\n")
+        out.flush()
+        err.write("итог: OK\n")
+        err.flush()
+
+        assert "2441.7" in raw_out.getvalue().decode("utf-8")
+        assert out.encoding.lower() == "utf-8"
+
+    def test_fix_console_encoding_tolerates_unwritable_streams(
+        self, monkeypatch: t.Any
+    ) -> None:
+        import swagcleaner
+
+        class BrokenStream:
+            encoding = "cp1252"
+
+            def reconfigure(self, *a: t.Any, **k: t.Any) -> None:
+                raise OSError("поток нельзя перенастроить")
+
+        monkeypatch.setattr(swagcleaner.sys, "stdout", BrokenStream())
+        monkeypatch.setattr(swagcleaner.sys, "stderr", None)
+        # Не должно бросить: оконная сборка живёт без консоли.
+        swagcleaner._fix_console_encoding()

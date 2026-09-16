@@ -54,6 +54,37 @@ def _log_unhandled(exc_type, exc_value, exc_tb) -> None:
     _logger.critical("Необработанная ошибка", exc_info=(exc_type, exc_value, exc_tb))
 
 
+def _fix_console_encoding() -> None:
+    """Не падать на кириллице в консоли с нерусской кодовой страницей.
+
+    Windows-консоль по умолчанию пишет в cp437/cp1252, а приложение говорит
+    по-русски: любой print() обрывался UnicodeEncodeError и ронял процесс
+    (найдено прогоном собранного .exe в гостевой Win11 с английской консолью).
+    Переводим потоки в UTF-8, а что не кодируется — заменяем, но не падаем.
+    Оконная сборка запускается без консоли: там потоков нет, делать нечего.
+    """
+    # Консоль Windows тоже переводим в UTF-8: иначе байты, записанные потоком
+    # в utf-8, отрисуются кракозябрами. Без консоли вызов просто вернёт 0.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+            ctypes.windll.kernel32.SetConsoleCP(65001)
+        except Exception:  # noqa: BLE001 - косметика, падать из-за неё нельзя
+            pass
+
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None:
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            # Поток не перенастраивается (перехвачен, закрыт, не текстовый) —
+            # оставляем как есть: лучше mojibake, чем падение.
+            pass
+
+
 def _setup_logging(level: int = logging.INFO) -> None:
     """Настроить логирование и перехват необработанных ошибок."""
     if sys.stderr is not None:
@@ -409,6 +440,7 @@ def _self_test() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _fix_console_encoding()
     _logger.debug("swagcleaner starting")
 
     args = _parse_args(argv)

@@ -8,3 +8,6 @@ dist/
 shots/
 rust/swagscan/target/
 tmp-pytest/
+tmp-pytest2/
+basetmp-0/
+tmp-polygon/
