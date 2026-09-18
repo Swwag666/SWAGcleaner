@@ -29,7 +29,8 @@
   (пояснение AI), `--json`.
 - **Дубликаты фото** — точные хеши (SHA-256 в Python-слое, BLAKE3 в ядре) и похожие
   (perceptual hashing через `imagehash`).
-- **Твики** — службы, автозагрузка, UWP (в планах; сначала чтение, запись — только со снапшотом).
+- **Твики** — автозагрузка и службы читаются по-настоящему; запись автозагрузки отключается
+  со снапшотом и кнопкой «Вернуть» (UWP и отключение служб — в планах).
 
 ## Стек
 
@@ -40,7 +41,7 @@
 | Мост | NDJSON-протокол поверх stdin/stdout, один долгоживущий процесс |
 | AI (опция) | stdlib `urllib` → Ollama / OpenAI-совместимый API |
 | Сборка | PyInstaller (spec подкладывает `swagscan.exe`) |
-| Тесты | pytest (225) + `cargo test` (38) |
+| Тесты | pytest (263) + `cargo test` (40) |
 | Полигон | VirtualBox + Windows 11 24H2 (тесты удаления не на живом железе) |
 
 ## Как работает чистка (политика удаления)
@@ -84,11 +85,11 @@
 Полное описание конвейера (индекс, категории, дубликаты, службы, откат, план по Rust) —
 разделы 8 и 9 в [`context.md`](context.md).
 
-## Статус на 16.09.2026 (честно)
+## Статус на 17.09.2026 (честно)
 
 Интерфейс — настоящий: боковое меню, пять страниц, две темы, ru/en, пиксельный шрифт Handjet,
 звуки, помощница в стиле визуальной новеллы, диалог подтверждения, живые счётчики, фоновые
-задачи, 239 + 40 тестов.
+задачи, 263 + 40 тестов.
 
 Ядро сканирования — настоящее и проверенное: Rust-обход, категории, дубликаты BLAKE3, удаление
 в две дорожки, dry-run, отмена; мост и протокол покрыты интеграционными тестами; на живой машине
@@ -99,12 +100,16 @@
 Интерфейс подключён к ядру через слой-сессию: скан и удаление идут в настоящее ядро, числа на
 плитках — из `ScanResult`, прогресс — из событий ядра (включая живой прогресс удаления). После
 скана открывается **экран категорий**: карточки с галочками, объёмами, дорожками и риском;
-удаляются только выбранные категории, диалог подтверждения показывает именно их. Полный реестр
+удаляются только выбранные категории, диалог подтверждения показывает именно их. После удаления
+открывается **экран журнала**: что ушло, по каким дорожкам, что отказало и почему; каждое
+действие пишется в журнал в профиле. Страница **твиков** настоящая: автозагрузка читается из
+реестра и папок Startup, отключение идёт со снапшотом на диск (переживает перезапуск) и
+возвращается кнопкой «Вернуть»; службы пока читаются списком. Полный реестр
 заглушек — раздел 7.1 в `context.md`.
 
-Python-слой `core/` (процессы, службы, автозагрузка, исполнитель, бэкапы) — по-прежнему заглушки
-из ранних итераций; реальную работу делает Rust-ядро. Это осознанный следующий этап: M1–M6 из
-раздела 8 `context.md`, плюс полигон на VirtualBox для тестов удаления.
+Python-слой `core/`: журнал, дисковые бэкапы, автозагрузка и службы — настоящие (этап 3);
+процессы и Python-чистильщик остаются заглушками ранних итераций — реальную работу делает
+Rust-ядро. Дальше по плану: запись для служб со снапшотом, UWP, MFT, полигон на VirtualBox.
 
 ## Как запустить
 
@@ -133,15 +138,15 @@ rustup toolchain install stable-x86_64-pc-windows-gnu
 # нужен MinGW-w64 (D:\mingw64) в PATH
 cd rust/swagscan
 cargo +stable-x86_64-pc-windows-gnu build --release    # target/release/swagscan.exe
-cargo +stable-x86_64-pc-windows-gnu test               # 38 тестов
+cargo +stable-x86_64-pc-windows-gnu test               # 40 тестов
 ```
 
 ## Тесты
 
 ```bash
-# весь набор Python (225 тестов: модели, ядро, UI, AI, мост до Rust)
+# весь набор Python (263 теста: модели, ядро, UI, AI, мост до Rust)
 ./venv/Scripts/python.exe -m pytest -o addopts="" -q -p no:cacheprovider
-# Rust-ядро (38 тестов)
+# Rust-ядро (40 тестов)
 cd rust/swagscan && cargo +stable-x86_64-pc-windows-gnu test
 ```
 
@@ -179,7 +184,8 @@ in [`context.md`](context.md).
 
 What's inside: system scanner (installed apps from the registry, processes, services, startup
 items; read-only by default), a one-pass disk index, a rule-based advisor, junk cleanup, exact and
-perceptual photo-duplicate detection, and tweaks (services, startup, UWP — planned).
+perceptual photo-duplicate detection, and tweaks (startup items and services are real: read,
+disable with a disk snapshot, restore; UWP and service disabling are planned).
 
 ## Deletion policy
 
@@ -199,12 +205,17 @@ Status (17 Sep 2026): the interface is real (two themes, ru/en, mascot, confirm 
 and is wired to the core through a session layer: scan and purge run against the real engine,
 tiles show real numbers, progress comes from core events (including live purge progress). After
 a scan the **category screen** opens: cards with checkboxes, sizes, lanes and risk — only the
-selected categories are deleted, and the confirm dialog lists exactly them. The scan core itself
+selected categories are deleted, and the confirm dialog lists exactly them. After a purge a
+**journal screen** shows what was removed, per lane, and what was refused with reasons; every
+action is logged. The **tweaks page** is real: startup items are read from the registry and
+Startup folders, disabling saves an on-disk snapshot (survives restarts) and a "Restore" button
+brings the entry back; services are listed read-only. The scan core itself
 is real too — Rust scanner with categories, BLAKE3 duplicates, two-lane deletion, dry-run and
-cancellation, covered by 239 pytest + 40 cargo tests, byte-exact against the Python reference.
+cancellation, covered by 263 pytest + 40 cargo tests, byte-exact against the Python reference.
 The VirtualBox polygon (Win11 24H2) runs the core end to end from host shared folders; the built
 `.exe` was verified inside the VM (`--self-test`, `--disk --candidates`, GUI screenshots in
-`shots/polygon-2026-09-16/`). The old Python `core/` modules (processes, services, startup,
-executor, backups) remain stubs. Full stub registry: section 7.1 in `context.md`.
+`shots/polygon-2026-09-16/`). Of the old Python `core/` modules, processes and the Python
+cleaner remain stubs; journal, disk backups, startup and services are real (stage 3).
+Full stub registry: section 7.1 in `context.md`.
 
 MIT License.
