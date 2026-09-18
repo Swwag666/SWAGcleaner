@@ -11,3 +11,8 @@ tmp-pytest/
 tmp-pytest2/
 basetmp-0/
 tmp-polygon/
+# служебные папки тестовых заходов (битые ACL, песочницы)
+nest/
+probe-*/
+py-probe-*/
+root700again/
