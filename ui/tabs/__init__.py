@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -358,6 +359,121 @@ class CategoryCard(QFrame):
         self._note_label.setText(" · ".join(notes))
 
 
+class JournalPanel(QFrame):
+    """Экран журнала после удаления: что ушло, по каким дорожкам, что отказало.
+
+    Показывает ПОСЛЕДНИЙ отчёт об удалении (PurgeReport): итоговую строку,
+    разбивку по дорожкам, отказы и ошибки с причинами. История между запусками
+    живёт отдельно — в файле журнала (core/journal.py).
+    """
+
+    _MAX_ROWS = 12
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("categoryCard")
+        self._report = None
+        self._summary_text = ""
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(6)
+        self._title_label = section(ctx().tr("journal.title"), self)
+        layout.addWidget(self._title_label)
+        self._summary_label = body("", self)
+        self._summary_label.setWordWrap(True)
+        layout.addWidget(self._summary_label)
+        self._cancelled_label = hint(ctx().tr("journal.cancelled"), self)
+        layout.addWidget(self._cancelled_label)
+        self._lanes_label = body("", self)
+        self._lanes_label.setProperty("role", "secondary")
+        layout.addWidget(self._lanes_label)
+
+        scroll = QScrollArea(self)
+        scroll.setObjectName("categoryScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setMinimumHeight(90)
+        host = QWidget(scroll)
+        self._rows_layout = QVBoxLayout(host)
+        self._rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._rows_layout.setSpacing(4)
+        self._rows_layout.addStretch(1)
+        scroll.setWidget(host)
+        layout.addWidget(scroll, 1)
+
+        self._hint_label = hint(ctx().tr("journal.hint"), self)
+        layout.addWidget(self._hint_label)
+        self.setVisible(False)
+
+    def _clear_rows(self) -> None:
+        while self._rows_layout.count() > 1:
+            item = self._rows_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _add_row(self, text: str, role: str = "secondary") -> None:
+        label = body(text, self)
+        label.setProperty("role", role)
+        label.setWordWrap(True)
+        self._rows_layout.insertWidget(self._rows_layout.count() - 1, label)
+
+    def show_report(self, report, summary: str) -> None:
+        """Показать отчёт об удалении; summary — готовая итоговая строка."""
+        self._report = report
+        self._summary_text = summary
+        self._render()
+        self.setVisible(True)
+
+    def _render(self) -> None:
+        report = self._report
+        self._title_label.setText(ctx().tr("journal.title"))
+        self._hint_label.setText(ctx().tr("journal.hint"))
+        self._cancelled_label.setText(ctx().tr("journal.cancelled"))
+        if report is None:
+            return
+        self._summary_label.setText(self._summary_text)
+        self._cancelled_label.setVisible(bool(report.cancelled))
+        lanes = getattr(report, "lanes", {}) or {}
+        lane_parts = []
+        if lanes.get("trash"):
+            lane_parts.append(ctx().tr("journal.lane_trash").format(
+                count=lanes["trash"]))
+        if lanes.get("direct"):
+            lane_parts.append(ctx().tr("journal.lane_direct").format(
+                count=lanes["direct"]))
+        self._lanes_label.setText(" · ".join(lane_parts))
+        self._lanes_label.setVisible(bool(lane_parts))
+
+        self._clear_rows()
+        rejects = list(getattr(report, "rejects", []) or [])
+        failures = list(getattr(report, "failures", []) or [])
+        if rejects:
+            self._add_row(ctx().tr("journal.rejects").format(count=len(rejects)),
+                          role="section")
+            for item in rejects[:self._MAX_ROWS]:
+                self._add_row(f"{item.get('path', '?')} — {item.get('reason', '')}")
+            if len(rejects) > self._MAX_ROWS:
+                self._add_row(ctx().tr("journal.more").format(
+                    count=len(rejects) - self._MAX_ROWS), role="hint")
+        if failures:
+            self._add_row(ctx().tr("journal.failures").format(count=len(failures)),
+                          role="section")
+            for item in failures[:self._MAX_ROWS]:
+                self._add_row(f"{item.get('path', '?')} — {item.get('reason', '')}")
+            if len(failures) > self._MAX_ROWS:
+                self._add_row(ctx().tr("journal.more").format(
+                    count=len(failures) - self._MAX_ROWS), role="hint")
+
+    def retranslate(self) -> None:
+        if self.isVisible():
+            self._render()
+        else:
+            self._title_label.setText(ctx().tr("journal.title"))
+            self._hint_label.setText(ctx().tr("journal.hint"))
+
+
 class CleanerTab(EmptyTab):
     """Чистка: скан → категории карточками с галочками → удаление выбранного.
 
@@ -378,6 +494,7 @@ class CleanerTab(EmptyTab):
         self._selection_label: Optional[QLabel] = None
         self._select_all_button: Optional[QPushButton] = None
         self._select_none_button: Optional[QPushButton] = None
+        self._journal: Optional[JournalPanel] = None
         super().__init__(parent)
 
     def _result_expands(self) -> bool:
@@ -422,6 +539,11 @@ class CleanerTab(EmptyTab):
         self._empty_label.setProperty("role", "secondary")
         layout.addWidget(self._empty_label)
 
+        # Журнал после удаления живёт в той же карточке: отчёт заменяет
+        # карточки категорий до следующего скана.
+        self._journal = JournalPanel(self)
+        layout.addWidget(self._journal, 1)
+
         self._layout.addWidget(frame)
         self._refresh_selection_view()
 
@@ -449,7 +571,26 @@ class CleanerTab(EmptyTab):
             self._cards_layout.insertWidget(self._cards_layout.count() - 1,
                                             card_widget)
             self._cards.append(card_widget)
+        # Новый скан сменяет журнал прошлого удаления.
+        if self._journal is not None:
+            self._journal.setVisible(False)
+        for widget in (self._select_all_button, self._select_none_button):
+            if widget is not None:
+                widget.setVisible(True)
         self._refresh_selection_view()
+
+    def show_journal(self, report, summary: str) -> None:
+        """После удаления: карточки уступают место журналу до нового скана."""
+        if self._journal is None:
+            return
+        self._journal.show_report(report, summary)
+        for widget in (self._scroll, self._empty_label, self._selection_label,
+                       self._select_all_button, self._select_none_button):
+            if widget is not None:
+                widget.setVisible(False)
+
+    def journal_panel(self) -> Optional[JournalPanel]:
+        return self._journal
 
     def selected_ids(self) -> List[str]:
         """Id отмеченных категорий — именно они поедут в удаление."""
@@ -466,6 +607,9 @@ class CleanerTab(EmptyTab):
         self._refresh_selection_view()
 
     def _refresh_selection_view(self) -> None:
+        # Пока виден журнал удаления, карточная вёрстка не трогается.
+        if self._journal is not None and self._journal.isVisible():
+            return
         has_cards = bool(self._cards)
         if self._scroll is not None:
             self._scroll.setVisible(has_cards)
@@ -492,6 +636,8 @@ class CleanerTab(EmptyTab):
             self._empty_label.setText(self._candidates_text())
         for card_widget in self._cards:
             card_widget.retranslate()
+        if self._journal is not None:
+            self._journal.retranslate()
         self._refresh_selection_view()
 
     def _status_text(self) -> str:
@@ -530,6 +676,7 @@ class DedupTab(EmptyTab):
     def __init__(self, parent: QWidget | None = None) -> None:
         self._status_label: Optional[QLabel] = None
         self._groups_area: Optional[QLabel] = None
+        self._journal: Optional[JournalPanel] = None
         super().__init__(parent)
 
     def _add_result_area(self) -> None:
@@ -542,6 +689,8 @@ class DedupTab(EmptyTab):
         self._groups_area.setProperty("role", "secondary")
         layout.addWidget(self._status_label)
         layout.addWidget(self._groups_area)
+        self._journal = JournalPanel(self)
+        layout.addWidget(self._journal, 1)
         self._layout.addWidget(frame)
 
     def _add_buttons(self) -> None:
@@ -573,6 +722,24 @@ class DedupTab(EmptyTab):
     def setGroups(self, text: str) -> None:
         if self._groups_area is not None:
             self._groups_area.setText(text)
+        # Новый скан сменяет журнал прошлого удаления.
+        if self._journal is not None:
+            self._journal.setVisible(False)
+        if self._groups_area is not None:
+            self._groups_area.setVisible(True)
+
+    def show_journal(self, report, summary: str) -> None:
+        """После удаления дублей: журнал вместо списка групп до нового скана."""
+        if self._journal is None:
+            return
+        self._journal.show_report(report, summary)
+        if self._groups_area is not None:
+            self._groups_area.setVisible(False)
+
+    def retranslate(self) -> None:
+        super().retranslate()
+        if self._journal is not None:
+            self._journal.retranslate()
 
     def _title(self) -> str:
         return ctx().tr("dedup.title")
@@ -585,31 +752,210 @@ class DedupTab(EmptyTab):
 
 
 class TweaksTab(EmptyTab):
-    """Твики: автозагрузка, службы, встроенные приложения, точка восстановления."""
+    """Твики: автозагрузка и службы — чтение, отключение со снапшотом, откат.
 
-    startupRequested = Signal()
-    servicesRequested = Signal()
-    uwpRequested = Signal()
-    restoreRequested = Signal()
+    M4/M5: списки читаются из реестра и SCM по-настоящему; отключение записи
+    автозагрузки идёт со снапшотом на диск (раздел «Можно вернуть» переживает
+    перезапуски). Службы пока только читаются — их отключение следующим заходом.
+    """
+
+    refreshRequested = Signal()
+    disableStartupRequested = Signal(object)   # StartupEntry
+    restoreSnapshotRequested = Signal(str)     # имя снапшота
+
+    _MAX_SERVICES = 60
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        self._status_label: Optional[QLabel] = None
+        self._scroll: Optional[QScrollArea] = None
+        self._rows_layout: Optional[QVBoxLayout] = None
+        self._startup: List[object] = []
+        self._services: List[object] = []
+        self._backups: List[Dict[str, object]] = []
+        super().__init__(parent)
+
+    def _result_expands(self) -> bool:
+        return True
+
+    def _add_result_area(self) -> None:
+        frame, layout = self._make_card()
+        self._result_frame = frame
+        self._add_section_label("tweaks.startup_section", layout)
+        self._status_label = body(self._status_text(), self)
+        self._status_label.setProperty("role", "secondary")
+        layout.addWidget(self._status_label)
+
+        self._scroll = QScrollArea(self)
+        self._scroll.setObjectName("categoryScroll")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setMinimumHeight(150)
+        host = QWidget(self._scroll)
+        self._rows_layout = QVBoxLayout(host)
+        self._rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._rows_layout.setSpacing(6)
+        self._rows_layout.addStretch(1)
+        self._scroll.setWidget(host)
+        layout.addWidget(self._scroll, 1)
+        self._layout.addWidget(frame)
 
     def _add_buttons(self) -> None:
-        startup = self._add_button("tweaks.startup_button")
-        startup.clicked.connect(self.startupRequested.emit)
-        services = self._add_button("tweaks.services_button")
-        services.clicked.connect(self.servicesRequested.emit)
-        uwp = self._add_button("tweaks.uwp_button")
-        uwp.clicked.connect(self.uwpRequested.emit)
-        restore = self._add_button("tweaks.restore_button")
-        restore.clicked.connect(self.restoreRequested.emit)
-        self._add_row(startup, services)
-        self._add_row(uwp, restore)
-        self._layout.addStretch(1)
+        refresh = self._add_button("tweaks.refresh_button", primary=True)
+        refresh.clicked.connect(self.refreshRequested.emit)
+        self._add_row(refresh)
+
+    # ---------- данные ----------
+
+    def set_tweaks(self, startup: List[object], services: List[object],
+                   backups: List[Dict[str, object]]) -> None:
+        """Показать списки: автозагрузка, службы, снапшоты для отката."""
+        self._startup = list(startup)
+        self._services = list(services)
+        self._backups = list(backups)
+        self._render_rows()
+        self.setStats("startup", len(self._startup))
+        self.setStats("services", len(self._services))
+        self.setStats("backups", len(self._backups))
+        self.setStatus(ctx().tr("tweaks.loaded_status").format(
+            startup=len(self._startup), services=len(self._services),
+            backups=len(self._backups)))
+
+    def _render_rows(self) -> None:
+        assert self._rows_layout is not None
+        while self._rows_layout.count() > 1:
+            item = self._rows_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        def put(widget: QWidget) -> None:
+            # Строчки идут до растяжки: стрейч всегда последний.
+            self._rows_layout.insertWidget(self._rows_layout.count() - 1, widget)
+
+        put(section(ctx().tr("tweaks.startup_section"), self))
+        if not self._startup:
+            put(hint(ctx().tr("tweaks.empty_startup"), self))
+        for entry in self._startup:
+            put(self._startup_row(entry))
+
+        put(section(ctx().tr("tweaks.backups_section"), self))
+        if not self._backups:
+            put(hint(ctx().tr("tweaks.empty_backups"), self))
+        for info in self._backups:
+            put(self._backup_row(info))
+
+        put(section(ctx().tr("tweaks.services_section"), self))
+        put(hint(ctx().tr("tweaks.services_hint"), self))
+        for service in self._services[:self._MAX_SERVICES]:
+            put(self._service_row(service))
+        if len(self._services) > self._MAX_SERVICES:
+            put(hint(ctx().tr("journal.more").format(
+                count=len(self._services) - self._MAX_SERVICES), self))
+
+    def _startup_row(self, entry) -> QFrame:
+        row = QFrame(self)
+        row.setObjectName("categoryCard")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(10)
+        # QSizePolicy.Ignored: у wordWrap-лейбла minimumSizeHint = ширина
+        # самого длинного слова (путь!), и layout раздувает строку шире
+        # вьюпорта. Ignored обнуляет этот минимум — сжиматься можно.
+        name = body(entry.name, row)
+        name.setSizePolicy(QSizePolicy.Policy.Ignored,
+                           QSizePolicy.Policy.Preferred)
+        layout.addWidget(name, 2)
+        path = hint(entry.path, row)
+        path.setSizePolicy(QSizePolicy.Policy.Ignored,
+                           QSizePolicy.Policy.Preferred)
+        layout.addWidget(path, 3)
+        source_key = ("tweaks.source_registry" if entry.source == "registry"
+                      else "tweaks.source_folder")
+        layout.addWidget(hint(ctx().tr(source_key), row))
+        disable = button(ctx().tr("tweaks.disable_button"), row)
+        disable.setMinimumHeight(30)
+        disable.clicked.connect(
+            lambda _checked=False, e=entry: self.disableStartupRequested.emit(e))
+        layout.addWidget(disable)
+        return row
+
+    def _backup_row(self, info: Dict[str, object]) -> QFrame:
+        import time as _time
+
+        row = QFrame(self)
+        row.setObjectName("categoryCard")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(10)
+        name = str(info.get("name", ""))
+        shown = name
+        for prefix in ("startup-HKCU-", "startup-HKLM-"):
+            if shown.startswith(prefix):
+                shown = shown[len(prefix):]
+        ts = float(info.get("ts", 0.0))
+        when = _time.strftime("%d.%m %H:%M", _time.localtime(ts)) if ts else ""
+        label = body(f"{shown} · {when}", row)
+        label.setSizePolicy(QSizePolicy.Policy.Ignored,
+                            QSizePolicy.Policy.Preferred)
+        layout.addWidget(label, 1)
+        restore = button(ctx().tr("tweaks.restore_button"), row)
+        restore.setMinimumHeight(30)
+        restore.clicked.connect(
+            lambda _checked=False, n=name: self.restoreSnapshotRequested.emit(n))
+        layout.addWidget(restore)
+        return row
+
+    def _service_row(self, service) -> QFrame:
+        row = QFrame(self)
+        row.setObjectName("categoryCard")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(10)
+        name = body(service.name, row)
+        name.setSizePolicy(QSizePolicy.Policy.Ignored,
+                           QSizePolicy.Policy.Preferred)
+        layout.addWidget(name, 2)
+        state_key = f"tweaks.svc_{service.state}" \
+            if service.state in ("running", "stopped", "paused") \
+            else "tweaks.svc_other"
+        mode_key = f"tweaks.mode_{service.start_mode}" \
+            if service.start_mode in ("automatic", "manual", "disabled") \
+            else "tweaks.mode_manual"
+        layout.addWidget(hint(ctx().tr(state_key), row))
+        layout.addWidget(hint(ctx().tr(mode_key), row))
+        return row
+
+    # ---------- тексты ----------
+
+    def _status_text(self) -> str:
+        return ctx().tr("tweaks.status_hint")
+
+    def setStatus(self, text: str) -> None:
+        if self._status_label is not None:
+            self._status_label.setText(text)
+
+    def _stat_tiles(self) -> Tuple[Tuple[str, str, Optional[str], int], ...]:
+        return (
+            ("startup", "tweaks.stats_startup", None, 0),
+            ("services", "tweaks.stats_services", None, 0),
+            ("backups", "tweaks.stats_backups", None, 0),
+        )
+
+    def retranslate(self) -> None:
+        super().retranslate()
+        if self._status_label is not None:
+            self._status_label.setText(self._status_text())
+        if self._rows_layout is not None:
+            self._render_rows()
 
     def _title(self) -> str:
         return ctx().tr("tweaks.title")
 
+    def _subheading(self) -> str:
+        return ctx().tr("tweaks.subtitle")
+
     def _description(self) -> str:
-        return ctx().tr("tweaks.running")
+        return ctx().tr("tweaks.status_hint")
 
 
 class SettingsTab(EmptyTab):

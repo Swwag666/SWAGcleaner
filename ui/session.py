@@ -161,6 +161,24 @@ class Session(QObject):
         self._last_scan = ScanResult()
         self._last_groups: t.List[DupGroup] = []
         self._last_purge: t.Optional[PurgeReport] = None
+        # Журнал и бэкапы ленивые: папки создаются при первом действии,
+        # а не при старте окна.
+        self._journal: t.Any = None
+        self._store: t.Any = None
+
+    # ---------- журнал и бэкапы (правило 8.4: след на каждое действие) ----------
+
+    def journal(self) -> t.Any:
+        if self._journal is None:
+            from core.journal import Journal
+            self._journal = Journal()
+        return self._journal
+
+    def backups(self) -> t.Any:
+        if self._store is None:
+            from core.backup import BackupStore
+            self._store = BackupStore.disk()
+        return self._store
 
     # ---------- состояние ----------
 
@@ -341,9 +359,75 @@ class Session(QObject):
                                       on_progress=on_progress)
             report = PurgeReport.from_core(data, dry_run)
             self._last_purge = report
+            try:
+                self.journal().log(
+                    "purge", self.describe_purge(report),
+                    outcome="error" if report.failures else "ok",
+                    dry_run=report.dry_run, planned=report.planned,
+                    removed=report.removed, freed_bytes=report.freed_bytes,
+                    refused=report.refused, failures=len(report.failures))
+            except Exception:  # noqa: BLE001 — журнал не должен ронять удаление
+                _LOGGER.warning("строка журнала не записана", exc_info=True)
             return report
 
         self._run("purge", work)
+
+    # ---------- твики: автозагрузка и службы (M4), бэкапы на диске (M5) ----------
+
+    def load_tweaks(self) -> None:
+        """Прочитать автозагрузку, службы и список снапшотов для страницы."""
+
+        def work() -> t.Dict[str, t.Any]:
+            from core.services import WindowsServiceController
+            from core.startup import read_startup
+
+            entries = read_startup()
+            services = WindowsServiceController().list_services()
+            store = self.backups()
+            backups = [info for name in store.list()
+                       if (info := store.info(name)) is not None]
+            return {"startup": entries, "services": services,
+                    "backups": backups}
+
+        self._run("tweaks_load", work)
+
+    def disable_startup(self, entry: t.Any) -> None:
+        """Отключить запись автозагрузки: снапшот → удаление → журнал."""
+
+        def work() -> t.Dict[str, t.Any]:
+            from core.executor import Executor
+
+            executor = Executor(store=self.backups(), journal=self.journal())
+            result = executor.execute_actions([{
+                "type": "startup_disable",
+                "name": entry.name,
+                "value": entry.path,
+                "hive": entry.hive,
+                "key_path": entry.key_path,
+            }])[0]
+            if not result.success:
+                raise RuntimeError(result.message)
+            return {"action": "disable", "target": entry.name,
+                    "snapshot": result.snapshot}
+
+        self._run("tweaks_action", work)
+
+    def restore_backup(self, snapshot: str) -> None:
+        """Вернуть запись автозагрузки из снапшота; снапшот после удалить."""
+
+        def work() -> t.Dict[str, t.Any]:
+            from core.executor import Executor
+
+            executor = Executor(store=self.backups(), journal=self.journal())
+            result = executor.execute_actions([{
+                "type": "startup_restore",
+                "snapshot": snapshot,
+            }])[0]
+            if not result.success:
+                raise RuntimeError(result.message)
+            return {"action": "restore", "target": snapshot, "snapshot": ""}
+
+        self._run("tweaks_action", work)
 
     # ---------- дубликаты ----------
 

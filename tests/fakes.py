@@ -44,6 +44,7 @@ class FakeCoreSession(QObject):
         self._error = error
         self._pending: t.List[str] = []
         self.purge_calls: t.List[t.Tuple[t.Any, bool]] = []
+        self.tweak_calls: t.List[t.Tuple[str, t.Any]] = []
         self.cancel_requests = 0
 
     # ---------- контракт сессии ----------
@@ -83,7 +84,11 @@ class FakeCoreSession(QObject):
         return text
 
     def describe_purge(self, report: PurgeReport) -> str:
-        return f"Удалено {report.removed}, освобождено {report.freed_bytes} Б"
+        # Тот же формат, что у настоящей сессии, — иначе журнал в тестах
+        # показывает сырые байты и врёт глазам.
+        from ui.session import human_size
+        return (f"Удалено {report.removed}, освобождено "
+                f"{human_size(report.freed_bytes)}")
 
     # ---------- задачи: стартуют «занято», завершаются вручную ----------
 
@@ -113,6 +118,17 @@ class FakeCoreSession(QObject):
         self.purge_calls.append((list(items), dry_run))
         self._start("purge")
 
+    def load_tweaks(self) -> None:
+        self._start("tweaks_load")
+
+    def disable_startup(self, entry) -> None:
+        self.tweak_calls.append(("disable", entry))
+        self._start("tweaks_action")
+
+    def restore_backup(self, snapshot: str) -> None:
+        self.tweak_calls.append(("restore", snapshot))
+        self._start("tweaks_action")
+
     # ---------- ручное завершение ----------
 
     def finish_advisor(self, result: t.Optional[dict] = None) -> None:
@@ -130,6 +146,14 @@ class FakeCoreSession(QObject):
     def finish_purge(self, report: t.Optional[PurgeReport] = None) -> None:
         self._finish("purge", report if report is not None
                      else PurgeReport(dry_run=False, removed=3, freed_bytes=1024))
+
+    def finish_tweaks(self, payload: t.Optional[dict] = None) -> None:
+        self._finish("tweaks_load", payload if payload is not None
+                     else {"startup": [], "services": [], "backups": []})
+
+    def finish_tweaks_action(self, payload: t.Optional[dict] = None) -> None:
+        self._finish("tweaks_action", payload if payload is not None
+                     else {"action": "disable", "target": "X", "snapshot": "s"})
 
     def _finish(self, name: str, result: t.Any) -> None:
         if name not in self._pending:

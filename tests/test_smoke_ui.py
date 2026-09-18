@@ -35,6 +35,7 @@ from ui.character import (
 from ui.context import ctx
 from ui.dialog import ConfirmDialog
 from ui.main import PAGES, MainWindow
+from ui.session import PurgeReport
 from ui.widgets import AccentBar, AnimatedNumber, StatsRow
 from ui.scene import SceneStack
 from ui.sidebar import Sidebar
@@ -298,8 +299,43 @@ class TestPages:
         assert page._status_label.text() == "сканирую"
         assert page._groups_area.text() == "2 группы"
 
-    def test_tweaks_page_has_four_buttons(self, qapp: t.Any) -> None:
-        assert len(_buttons(TweaksTab())) == 4
+    def test_tweaks_page_builds_and_shows_lists(self, qapp: t.Any) -> None:
+        from core.startup import StartupEntry
+        from core.services import ServiceInfo
+
+        page = TweaksTab()
+        entry = StartupEntry(name="Discord", path=r"C:\d.exe", enabled=True,
+                             source="registry", hive="HKCU",
+                             key_path=r"Software\Microsoft\Windows\CurrentVersion\Run")
+        page.set_tweaks([entry], [ServiceInfo("Spooler", "running", "automatic")],
+                        [{"name": "startup-HKCU-Discord", "ts": 1.0,
+                          "kind": "startup_disable"}])
+        assert page._status_label.text() != ""
+        # Три секции: автозагрузка (строка с кнопкой), откаты, службы.
+        texts = [w.text() for w in page.findChildren(QLabel)]
+        assert any("Discord" in t for t in texts)
+        assert any("Spooler" in t for t in texts)
+
+    def test_tweaks_row_buttons_emit_signals(self, qapp: t.Any) -> None:
+        from core.startup import StartupEntry
+
+        page = TweaksTab()
+        entry = StartupEntry(name="Discord", path=r"C:\d.exe", enabled=True,
+                             source="registry", hive="HKCU",
+                             key_path=r"Software\Microsoft\Windows\CurrentVersion\Run")
+        page.set_tweaks([entry], [],
+                        [{"name": "startup-HKCU-Discord", "ts": 1.0,
+                          "kind": "startup_disable"}])
+        fired: t.List[t.Any] = []
+        page.disableStartupRequested.connect(lambda e: fired.append(("d", e)))
+        page.restoreSnapshotRequested.connect(lambda n: fired.append(("r", n)))
+        buttons = [b for b in page.findChildren(QPushButton)
+                   if b.text() in (ctx().tr("tweaks.disable_button"),
+                                   ctx().tr("tweaks.restore_button"))]
+        for btn in buttons:
+            btn.click()
+        assert ("d", entry) in fired
+        assert ("r", "startup-HKCU-Discord") in fired
 
     def test_settings_page_has_three_controls(self, qapp: t.Any) -> None:
         combos = SettingsTab().findChildren(QComboBox)
@@ -1159,13 +1195,6 @@ class TestConfirmDialog:
         QTimer.singleShot(60, lambda: press(False))
         assert ConfirmDialog.ask(win, self.ITEMS) is False
 
-    def test_demo_items_are_translated(self, qapp: t.Any) -> None:
-        for locale in ("ru", "en"):
-            for key in ("tmp", "startup", "photo"):
-                value = ctx().tr(f"demo.items.{key}", locale)
-                assert value != f"demo.items.{key}"
-                assert value.strip()
-
 
 # ---------- звуки ----------
 
@@ -1300,8 +1329,9 @@ class TestWorkFlow:
         assert advisor.keys() == ("apps", "recs")
         assert win._pages[1].stats().keys() == ("candidates", "size")
         assert win._pages[2].stats().keys() == ("groups", "dupes")
-        # У твиков и настроек показателей нет — это нормально.
-        assert win._pages[3].stats().keys() == ()
+        # У твиков — счётчики автозагрузки, служб и снапшотов (этап 3);
+        # у настроек показателей нет — это нормально.
+        assert win._pages[3].stats().keys() == ("startup", "services", "backups")
         assert win._pages[4].stats().keys() == ()
 
     def test_scan_result_lands_in_the_tiles(self, win_fake: t.Any) -> None:
@@ -1550,6 +1580,184 @@ class TestPurgeProgress:
         assert finished == ["purge"]
         # «planned» — это оглашение плана (0%), дальше done/total по факту.
         assert ticks == [0, 25, 50, 100]
+
+    def test_purge_writes_journal_line(self, qapp: t.Any, tmp_path: t.Any) -> None:
+        """Правило 8.4: каждое действие оставляет строку в журнале."""
+        from core.journal import Journal
+        from ui.session import Session
+
+        class StubClient:
+            def purge(self, items: t.Any, dry_run: bool = True,
+                      on_progress: t.Any = None) -> dict:
+                return {"planned": 1, "planned_bytes": 10, "removed": 1,
+                        "freed_bytes": 10, "refused": 0, "cancelled": False,
+                        "lanes": [{"lane": "trash", "files": 1}],
+                        "rejects": [], "failures": []}
+
+        journal = Journal(tmp_path / "j.jsonl")
+        session = Session(client=StubClient())
+        session._journal = journal
+        finished: t.List[str] = []
+        session.taskFinished.connect(lambda name, _r: finished.append(name))
+        session.purge_items([{"path": "x", "category": "temp.app"}], False)
+        for _ in range(200):
+            qapp.processEvents()
+            if finished:
+                break
+            QTest.qWait(10)
+        assert finished == ["purge"]
+        tail = journal.tail()
+        assert tail and tail[0]["kind"] == "purge"
+        assert tail[0]["removed"] == 1 and tail[0]["outcome"] == "ok"
+
+
+class TestJournalScreen:
+    """Экран журнала после удаления (этап 3)."""
+
+    def _purge_with_report(self, win_fake: t.Any):
+        win, session = win_fake
+        win.go_to_page(1)
+        page = win._pages[1]
+        page.scanRequested.emit()
+        session.finish_candidates(make_scan())
+
+        def confirm() -> None:
+            for widget in QApplication.topLevelWidgets():
+                if isinstance(widget, ConfirmDialog):
+                    widget.confirm()
+
+        QTimer.singleShot(60, confirm)
+        page.cleanRequested.emit()
+        report = PurgeReport(
+            dry_run=False, planned=3, planned_bytes=3072, removed=3,
+            freed_bytes=3072, refused=1,
+            lanes={"trash": 1, "direct": 2},
+            rejects=[{"path": r"C:\win\sys.dat", "reason": "вне белого списка"}],
+            failures=[{"path": r"C:\tmp\lock.tmp", "reason": "занят"}],
+        )
+        session.finish_purge(report)
+        return win, page, report
+
+    def test_journal_shown_after_purge(self, win_fake: t.Any) -> None:
+        _win, page, report = self._purge_with_report(win_fake)
+        journal = page.journal_panel()
+        assert journal is not None and journal.isVisible()
+        texts = [w.text() for w in journal.findChildren(QLabel)]
+        assert any("C:\\win\\sys.dat" in t for t in texts)
+        assert any("C:\\tmp\\lock.tmp" in t for t in texts)
+        # Карточки и выбор скрыты журналом.
+        assert not page._scroll.isVisible()
+        assert not page._select_all_button.isVisible()
+
+    def test_new_scan_hides_journal(self, win_fake: t.Any) -> None:
+        _win, page, _report = self._purge_with_report(win_fake)
+        assert page.journal_panel().isVisible()
+        page.scanRequested.emit()
+        page.set_categories([_cat_card("temp.app")])
+        assert not page.journal_panel().isVisible()
+        assert page._scroll.isVisible()
+
+    def test_journal_on_dedup_page(self, win_fake: t.Any) -> None:
+        win, session = win_fake
+        win.go_to_page(2)
+        page = win._pages[2]
+        report = PurgeReport(dry_run=False, planned=2, planned_bytes=5,
+                             removed=2, freed_bytes=5,
+                             lanes={"trash": 2})
+        page.show_journal(report, "Удалено 2, освобождено 5 Б")
+        assert page._journal.isVisible()
+        page.setGroups("3 группы")
+        assert not page._journal.isVisible()
+
+    def test_journal_retranslate_keeps_report(self, qapp: t.Any) -> None:
+        from ui.tabs import JournalPanel
+
+        panel = JournalPanel()
+        panel.show_report(
+            PurgeReport(dry_run=False, removed=1, freed_bytes=1,
+                        lanes={"trash": 1}), "Готово")
+        ctx().setLocale("en")
+        panel.retranslate()
+        texts = [w.text() for w in panel.findChildren(QLabel)]
+        assert any("Deletion journal" in t for t in texts)
+        assert any("Recycle Bin" in t for t in texts)
+        ctx().setLocale("ru")
+        panel.deleteLater()
+
+
+class TestTweaksFlow:
+    """Твики (этап 3): чтение списков, отключение и возврат через диалог."""
+
+    def _open_tweaks(self, win_fake: t.Any):
+        win, session = win_fake
+        win.go_to_page(3)
+        assert "tweaks_load" in session._pending
+        return win, session, win._pages[3]
+
+    def test_page_loads_lists_on_open(self, win_fake: t.Any) -> None:
+        from core.services import ServiceInfo
+        from core.startup import StartupEntry
+
+        win, session, page = self._open_tweaks(win_fake)
+        session.finish_tweaks({
+            "startup": [StartupEntry(
+                name="Discord", path=r"C:\d.exe", enabled=True,
+                source="registry", hive="HKCU",
+                key_path=r"Software\Microsoft\Windows\CurrentVersion\Run")],
+            "services": [ServiceInfo("Spooler", "running", "automatic")],
+            "backups": [],
+        })
+        texts = [w.text() for w in page.findChildren(QLabel)]
+        assert any("Discord" in t for t in texts)
+        assert any("Spooler" in t for t in texts)
+
+    def test_disable_full_flow(self, win_fake: t.Any) -> None:
+        from core.startup import StartupEntry
+
+        entry = StartupEntry(
+            name="Discord", path=r"C:\d.exe", enabled=True,
+            source="registry", hive="HKCU",
+            key_path=r"Software\Microsoft\Windows\CurrentVersion\Run")
+        win, session, page = self._open_tweaks(win_fake)
+        session.finish_tweaks({"startup": [entry], "services": [],
+                               "backups": []})
+
+        def confirm() -> None:
+            for widget in QApplication.topLevelWidgets():
+                if isinstance(widget, ConfirmDialog):
+                    widget.confirm()
+
+        QTimer.singleShot(60, confirm)
+        page.disableStartupRequested.emit(entry)
+        assert session.tweak_calls == [("disable", entry)]
+        session.finish_tweaks_action({"action": "disable",
+                                      "target": "Discord", "snapshot": "s"})
+        # После действия списки перечитываются.
+        assert "tweaks_load" in session._pending
+        session.finish_tweaks({"startup": [], "services": [],
+                               "backups": [{"name": "startup-HKCU-Discord",
+                                            "ts": 1.0, "kind": "startup_disable"}]})
+        texts = [w.text() for w in page.findChildren(QLabel)]
+        assert any("Discord" in t for t in texts)
+
+    def test_restore_full_flow(self, win_fake: t.Any) -> None:
+        win, session, page = self._open_tweaks(win_fake)
+        session.finish_tweaks({"startup": [], "services": [],
+                               "backups": [{"name": "startup-HKCU-Discord",
+                                            "ts": 1.0, "kind": "startup_disable"}]})
+
+        def confirm() -> None:
+            for widget in QApplication.topLevelWidgets():
+                if isinstance(widget, ConfirmDialog):
+                    widget.confirm()
+
+        QTimer.singleShot(60, confirm)
+        page.restoreSnapshotRequested.emit("startup-HKCU-Discord")
+        assert session.tweak_calls == [("restore", "startup-HKCU-Discord")]
+        session.finish_tweaks_action({"action": "restore",
+                                      "target": "startup-HKCU-Discord",
+                                      "snapshot": ""})
+        assert "tweaks_load" in session._pending
 
 
 class TestElideButton:

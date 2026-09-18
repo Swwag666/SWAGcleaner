@@ -6,7 +6,7 @@ from core.advisor import Advisor, AdvisorRule, BloatwareExplorerRule, TaskPriori
 from core.executor import Executor
 from core.cleaner import Cleaner, CleanCandidate
 from core.services import WindowsServiceController, ServiceInfo
-from core.startup import StartupManager, StartupEntry, read_startup_from_registry, write_startup_to_registry
+from core.startup import StartupManager, StartupEntry, read_startup
 from core.apps import WindowsInstalledProvider, KNOWN_APPS
 from core.processes import get_running_processes
 from core.models import AppInfo, Plan

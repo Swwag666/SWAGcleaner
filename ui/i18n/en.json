@@ -84,11 +84,44 @@
   },
   "tweaks": {
     "title": "Tweaks",
-    "startup_button": "Startup manager",
-    "services_button": "Services",
-    "uwp_button": "Built-in apps (UWP)",
-    "restore_button": "Create restore point",
-    "running": "Running…"
+    "subtitle": "Startup items and services — we read, we show, we change only with your word",
+    "startup_section": "Startup",
+    "services_section": "Services",
+    "backups_section": "Restorable",
+    "refresh_button": "Refresh list",
+    "disable_button": "Disable",
+    "restore_button": "Restore",
+    "empty_startup": "Startup is empty.",
+    "empty_backups": "Nothing to roll back: no snapshots yet.",
+    "status_hint": "I'll read startup and services — without changing a thing.",
+    "loaded_status": "Startup: {startup} · services: {services} · restorable: {backups}",
+    "disabled_status": "Disabled: {name}. Restore it from «Restorable».",
+    "restored_status": "Restored: {name}.",
+    "confirm_disable_note": "The entry leaves startup; a snapshot is saved — bring it back with «Restore».",
+    "confirm_restore_note": "The entry returns to startup as it was.",
+    "source_registry": "registry",
+    "source_folder": "startup folder",
+    "svc_running": "running",
+    "svc_stopped": "stopped",
+    "svc_paused": "paused",
+    "svc_other": "other",
+    "mode_automatic": "auto",
+    "mode_manual": "manual",
+    "mode_disabled": "disabled",
+    "services_hint": "Services are read-only for now — disabling with a snapshot arrives next round.",
+    "stats_startup": "At startup",
+    "stats_services": "Services",
+    "stats_backups": "Restorable"
+  },
+  "journal": {
+    "title": "Deletion journal",
+    "lane_trash": "To the Recycle Bin: {count}",
+    "lane_direct": "Permanently: {count}",
+    "rejects": "Refused by the core: {count}",
+    "failures": "Failed: {count}",
+    "more": "…and {count} more",
+    "cancelled": "Cancelled — only part of it was removed.",
+    "hint": "Scan again — let's see what grew back."
   },
   "sidebar": {
     "caption": "SECTIONS"
@@ -96,16 +129,9 @@
   "confirm": {
     "title": "Here is exactly what will be done",
     "count": "actions",
-    "note": "This list is a demo for now: the real one arrives once the core is wired.",
+    "note": "Check the list: the action starts only after your «yes».",
     "apply": "Run",
     "cancel": "Cancel"
-  },
-  "demo": {
-    "items": {
-      "tmp": "Move temp files to the Recycle Bin — 1,284 files, 2.4 GB",
-      "startup": "Disable “Discord” at startup — boot gets faster",
-      "photo": "Send 63 duplicate photos to the Recycle Bin, keeping one file per group"
-    }
   },
   "header": {
     "language": "Switch language",

@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):
         self._assistant_visible = True
         self._assistant_animation: QParallelAnimationGroup | None = None
         self._work_page: QWidget | None = None
+        self._tweaks_loaded = False
 
         self._build_ui()
         self._connect_context()
@@ -413,6 +414,11 @@ class MainWindow(QMainWindow):
         self._mascot.enter_from_below()
         self._sweep_accent()
         self._speak_page(index)
+        # Твики читают систему при первом заходе на страницу.
+        if 0 <= index < len(PAGES) and PAGES[index][0] == "tweaks" \
+                and not self._tweaks_loaded and not self.is_busy():
+            self._tweaks_loaded = True
+            self._start_tweaks_load()
 
     def _speak_page(self, index: int) -> None:
         """Реплика помощницы про раздел: свой текст и своё настроение."""
@@ -447,6 +453,16 @@ class MainWindow(QMainWindow):
                 needs_confirm = signal_name in self.CONFIRM_SIGNALS
                 signal.connect(
                     lambda confirm=needs_confirm: self.run_action(confirm))
+            # Твики: свои сигналы с аргументами, поэтому вяжутся отдельно.
+            refresh = getattr(page, "refreshRequested", None)
+            if refresh is not None:
+                refresh.connect(self._start_tweaks_load)
+            disable = getattr(page, "disableStartupRequested", None)
+            if disable is not None:
+                disable.connect(self._ask_disable_startup)
+            restore = getattr(page, "restoreSnapshotRequested", None)
+            if restore is not None:
+                restore.connect(self._ask_restore_snapshot)
 
     def _on_progress_tick(self, percent: int) -> None:
         page = self._work_page
@@ -464,6 +480,10 @@ class MainWindow(QMainWindow):
             self._finish_dedup(result, page)
         elif name == "purge":
             self._finish_purge(result, page)
+        elif name == "tweaks_load":
+            self._finish_tweaks(result, page)
+        elif name == "tweaks_action":
+            self._finish_tweaks_action(result, page)
 
     def _on_core_error(self, message: str) -> None:
         """Ошибка ядра: статус страницы, реплика персонажа, звук."""
@@ -669,8 +689,87 @@ class MainWindow(QMainWindow):
         text = self._session.describe_purge(report)
         if hasattr(page, "setStatus"):
             page.setStatus(text)
+        # Экран журнала после удаления: что ушло, дорожки, отказы и ошибки
+        # с причинами — до следующего скана вместо списка кандидатов.
+        if hasattr(page, "show_journal"):
+            page.show_journal(report, text)
         sounds.play("done" if not report.failures else "error")
         self._assistant.say(text, "calm" if not report.failures else "panic")
+
+    # ---------- твики: автозагрузка и бэкапы (M4/M5) ----------
+
+    def _start_tweaks_load(self) -> None:
+        """Обновить списки твиков: автозагрузка, службы, снапшоты."""
+        page = self._current_page()
+        if page is None or self.is_busy():
+            return
+        self._work_page = page
+        self.set_busy(True)
+        sounds.play("click")
+        if hasattr(page, "setStatus"):
+            page.setStatus(self._context.tr("status.scanning"))
+        self._session.load_tweaks()
+
+    def _ask_disable_startup(self, entry) -> None:
+        """Отключение записи автозагрузки — только через подтверждение."""
+        if self.is_busy():
+            sounds.play("error")
+            return
+        items = [(f"{entry.name} — {entry.path}", "medium")]
+        note = self._context.tr("tweaks.confirm_disable_note")
+        if not ConfirmDialog.ask(self, items, note=note):
+            self._assistant.say(
+                self._context.tr("character.lines.cancelled"), "idle")
+            return
+        self._work_page = self._current_page()
+        self.set_busy(True)
+        sounds.play("click")
+        self._session.disable_startup(entry)
+
+    def _ask_restore_snapshot(self, snapshot: str) -> None:
+        """Возврат записи из снапшота — тоже через подтверждение."""
+        if self.is_busy():
+            sounds.play("error")
+            return
+        items = [(snapshot, "low")]
+        note = self._context.tr("tweaks.confirm_restore_note")
+        if not ConfirmDialog.ask(self, items, note=note):
+            self._assistant.say(
+                self._context.tr("character.lines.cancelled"), "idle")
+            return
+        self._work_page = self._current_page()
+        self.set_busy(True)
+        sounds.play("click")
+        self._session.restore_backup(snapshot)
+
+    def _finish_tweaks(self, result: dict, page: QWidget) -> None:
+        self._work_page = None
+        self.set_busy(False)
+        if page is not None and hasattr(page, "set_tweaks"):
+            page.set_tweaks(result.get("startup", []),
+                            result.get("services", []),
+                            result.get("backups", []))
+        sounds.play("done")
+        self._assistant.say(
+            self._context.tr("tweaks.loaded_status").format(
+                startup=len(result.get("startup", [])),
+                services=len(result.get("services", [])),
+                backups=len(result.get("backups", []))),
+            "idle")
+
+    def _finish_tweaks_action(self, result: dict, page: QWidget) -> None:
+        """Отключение/возврат прошли: статус + обновить списки по свежему."""
+        self._work_page = None
+        self.set_busy(False)
+        key = ("tweaks.disabled_status" if result.get("action") == "disable"
+               else "tweaks.restored_status")
+        text = self._context.tr(key).format(name=result.get("target", ""))
+        if page is not None and hasattr(page, "setStatus"):
+            page.setStatus(text)
+        sounds.play("done")
+        self._assistant.say(text, "calm")
+        # Списки изменились: перечитать (новая занятость — новый цикл).
+        self._session.load_tweaks()
 
     def _finish_advisor(self, result: dict, page: QWidget) -> None:
         self._work_page = None
