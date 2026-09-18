@@ -33,7 +33,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
-    QMessageBox,
     QPushButton,
     QStatusBar,
     QVBoxLayout,
@@ -91,7 +90,6 @@ class MainWindow(QMainWindow):
         self._assistant_visible = True
         self._assistant_animation: QParallelAnimationGroup | None = None
         self._work_page: QWidget | None = None
-        self._stub_after_work = True
 
         self._build_ui()
         self._connect_context()
@@ -502,7 +500,7 @@ class MainWindow(QMainWindow):
             return
         name = PAGES[self._stack.currentIndex()][0]
         if needs_confirm:
-            if not self._confirmable(name):
+            if not self._confirmable(name, page):
                 sounds.play("error")
                 if hasattr(page, "setStatus"):
                     page.setStatus(self._context.tr("session.nothing_to_clean"))
@@ -521,10 +519,14 @@ class MainWindow(QMainWindow):
                 return
         self._start_work(name, page)
 
-    def _confirmable(self, name: str) -> bool:
-        """Есть ли что подтверждать: чистке нужен скан, дублям — группы."""
+    def _confirmable(self, name: str, page: QWidget | None) -> bool:
+        """Есть ли что подтверждать: чистке нужен скан и выбранные категории."""
         if name == "cleaner":
-            return bool(self._session.last_scan().summaries)
+            if not self._session.last_scan().summaries:
+                return False
+            if page is not None and hasattr(page, "selected_ids"):
+                return bool(page.selected_ids())
+            return False
         if name == "dedup":
             return bool(self._session.last_groups())
         return False
@@ -532,9 +534,9 @@ class MainWindow(QMainWindow):
     def _ask_confirmation(self, name: str) -> bool:
         """Спросить подтверждение в стиле визуальной новеллы.
 
-        Пока экран категорий не построен, диалог показывает сводку последнего
-        скана: категории, объём, дорожку удаления и риск. Удаление применится
-        ко всем найденным пунктам этих категорий — это сказано в примечании.
+        Диалог показывает сводку по ВЫБРАННЫМ категориям последнего скана:
+        названия, объём, дорожку удаления и риск. Удаление применится ко всем
+        найденным пунктам этих категорий — это сказано в примечании.
         """
         if name == "dedup":
             groups = self._session.last_groups()
@@ -550,13 +552,20 @@ class MainWindow(QMainWindow):
                         size=human_size(wasted)))
             return ConfirmDialog.ask(self, items, note=note)
         scan = self._session.last_scan()
+        page = self._current_page()
+        selected = (set(page.selected_ids())
+                    if page is not None and hasattr(page, "selected_ids")
+                    else None)
+        summaries = [s for s in scan.summaries
+                     if selected is None or s.id in selected]
         items = [
             (self._session.describe_summary(summary, with_risk=False),
              summary.risk)
-            for summary in scan.summaries[:12]
+            for summary in summaries[:12]
         ]
         note = self._context.tr("session.purge_real").format(
-            count=scan.files, size=human_size(scan.bytes))
+            count=sum(s.files for s in summaries),
+            size=human_size(sum(s.bytes for s in summaries)))
         return ConfirmDialog.ask(self, items, note=note)
 
     def _start_work(self, name: str, page: QWidget) -> None:
@@ -586,23 +595,30 @@ class MainWindow(QMainWindow):
     # ---------- итоги настоящих задач ----------
 
     def _start_purge_cleaner(self, page: QWidget) -> None:
-        """Удаление по категориям последнего скана: дорожки решает ядро."""
+        """Удаление по ВЫБРАННЫМ категориям последнего скана.
+
+        Дорожки решает ядро. Экран категорий уже спросил, какие категории
+        едут, — здесь просто фильтруем пункты по отмеченным id.
+        """
         scan = self._session.last_scan()
         if scan.truncated:
             # Подтверждение было по полной сводке, а стрим донёс не всё:
-            # удалять часть — обман. Ждём экран категорий (этап 2).
+            # удалять часть — обман. Просим пересканировать и сузить выбор.
             sounds.play("error")
             if hasattr(page, "setStatus"):
                 page.setStatus(self._context.tr("session.need_rescan"))
             self._assistant.say(self._context.tr("session.need_rescan"), "idle")
             return
+        selected = (set(page.selected_ids())
+                    if hasattr(page, "selected_ids") else set())
         items = [
             {"path": item.path, "category": item.primary_category()}
             for item in scan.items
+            if item.primary_category() in selected
         ]
         if not items:
             # Пункты не стримились (слишком много): удалять «вслепую» нельзя —
-            # просим пересканировать, экран категорий решит это по-человечески.
+            # просим пересканировать и сузить выбор категориями.
             sounds.play("error")
             if hasattr(page, "setStatus"):
                 page.setStatus(self._context.tr("session.need_rescan"))
@@ -695,18 +711,27 @@ class MainWindow(QMainWindow):
             if scan.cancelled:
                 status = self._context.tr("session.scan_cancelled")
             page.setStatus(status)
-        if hasattr(page, "setCandidates"):
-            lines = [self._session.describe_summary(s) for s in scan.summaries[:10]]
-            if scan.truncated:
-                lines.append(self._context.tr("session.candidates_more").format(
-                    count=len(scan.items), total=scan.files))
-            page.setCandidates("\n".join(lines) or self._context.tr(
-                "cleaner.candidates_empty"))
+        if hasattr(page, "set_categories"):
+            # Экран категорий: сводки из стрима скана — они полны всегда,
+            # даже когда поштучный список не влез в память.
+            meta = self._session.cat_meta()
+            page.set_categories([
+                {
+                    "id": summary.id,
+                    "title": str(meta.get(summary.id, {}).get("title",
+                                                              summary.id)),
+                    "files": summary.files,
+                    "bytes": summary.bytes,
+                    "lane": summary.lane,
+                    "risk": summary.risk,
+                    "regrows": summary.regrows,
+                    "admin": summary.admin,
+                }
+                for summary in scan.summaries
+            ])
         sounds.play("done")
         self._assistant.say(
             self._context.tr("character.lines.clean"), "idle")
-        if self._stub_after_work:
-            self._show_categories_stub(scan)
 
     def _finish_dedup(self, result: dict, page: QWidget) -> None:
         self._work_page = None
@@ -736,33 +761,6 @@ class MainWindow(QMainWindow):
                 count=len(groups), size=human_size(wasted)),
             "idle",
         )
-
-    def _show_categories_stub(self, scan) -> None:
-        """ВРЕМЕННАЯ ЗАГЛУШКА: итог скана стандартным окном Windows.
-
-        Экран категорий по-настоящему делает не эта модель — см. context.md,
-        раздел 2, «по промту №17». Здесь только placeholder, чтобы было видно
-        место в потоке: после скана показываем сводку РЕАЛЬНЫХ категорий ядра.
-        Под offscreen (тесты) не показываем: модальное окно заблокировало бы
-        headless-прогон.
-        """
-        if QApplication.instance() is not None and \
-                QApplication.instance().platformName() == "offscreen":
-            return
-        lines = [self._session.describe_summary(s) for s in scan.summaries[:12]]
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Information)
-        box.setWindowTitle(self._context.tr("cleaner.candidates_title"))
-        box.setText(
-            f"Найдено {scan.files:,} объектов на {human_size(scan.bytes)}."
-            .replace(",", " "))
-        box.setInformativeText(
-            "\n".join(lines)
-            + "\n\nВременная заглушка вместо экрана категорий:\n"
-              "настоящий выбор по категориям и галочкам появится следующим заходом."
-        )
-        box.setStandardButtons(QMessageBox.StandardButton.Ok)
-        box.exec()
 
     def _sweep_accent(self) -> None:
         """Провести акцентную полоску под шапкой заново."""

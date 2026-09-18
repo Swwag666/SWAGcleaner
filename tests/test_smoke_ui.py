@@ -38,12 +38,27 @@ from ui.main import PAGES, MainWindow
 from ui.widgets import AccentBar, AnimatedNumber, StatsRow
 from ui.scene import SceneStack
 from ui.sidebar import Sidebar
-from ui.tabs import AdvisorTab, CleanerTab, DedupTab, SettingsTab, TweaksTab
+from ui.tabs import (
+    AdvisorTab,
+    CategoryCard,
+    CleanerTab,
+    DedupTab,
+    SettingsTab,
+    TweaksTab,
+)
 from ui.workers import AppWorker, WorkerPool, WorkerTask
 
 
 def _buttons(widget: t.Any) -> t.List[QPushButton]:
     return widget.findChildren(QPushButton)
+
+
+def _cat_card(cat_id: str, files: int = 10, size: int = 1024,
+              lane: str = "direct", risk: str = "low",
+              regrows: bool = False, admin: bool = False) -> dict:
+    """Описание карточки категории, как его строит MainWindow из скана."""
+    return {"id": cat_id, "title": cat_id, "files": files, "bytes": size,
+            "lane": lane, "risk": risk, "regrows": regrows, "admin": admin}
 
 
 @pytest.fixture
@@ -271,9 +286,10 @@ class TestPages:
     def test_cleaner_page_content(self, qapp: t.Any) -> None:
         page = CleanerTab()
         page.setStatus("идёт скан")
-        page.setCandidates("найдено 3")
+        page.set_categories([_cat_card("temp.app"), _cat_card("installers")])
         assert page._status_label.text() == "идёт скан"
-        assert page._candidates_area.text() == "найдено 3"
+        assert len(page.cards()) == 2
+        assert page.selected_ids() == ["temp.app", "installers"]
 
     def test_dedup_page_content(self, qapp: t.Any) -> None:
         page = DedupTab()
@@ -1385,6 +1401,182 @@ class TestWorkFlow:
         win._pages[1].cleanRequested.emit()
         assert not win.is_busy()
         assert session.purge_calls == []
+
+
+# ---------- экран категорий (этап 2) ----------
+
+
+class TestCategoryScreen:
+    """Категории как первичные сущности: карточки, галочки, честный purge."""
+
+    def test_cards_appear_after_scan(self, win_fake: t.Any) -> None:
+        win, session = win_fake
+        win.go_to_page(1)
+        page = win._pages[1]
+        assert not page._scroll.isVisible()
+        page.scanRequested.emit()
+        session.finish_candidates(make_scan())
+        assert page._scroll.isVisible()
+        assert [c.category_id() for c in page.cards()] == [
+            "temp.app", "installers"]
+        # По умолчанию выбрано всё — как и раньше чистилось всё.
+        assert page.selected_ids() == ["temp.app", "installers"]
+
+    def test_selection_summary_counts_only_checked(
+            self, win_fake: t.Any) -> None:
+        win, session = win_fake
+        win.go_to_page(1)
+        page = win._pages[1]
+        page.scanRequested.emit()
+        session.finish_candidates(make_scan())
+        page.cards()[1].set_checked(False)
+        text = page._selection_label.text()
+        assert "1 из 2" in text
+        # Суммируются только выбранные: temp.app = files-4 из make_scan.
+        assert "1280 шт" in text
+
+    def test_select_all_and_none_buttons(self, win_fake: t.Any) -> None:
+        win, session = win_fake
+        win.go_to_page(1)
+        page = win._pages[1]
+        page.scanRequested.emit()
+        session.finish_candidates(make_scan())
+        page._select_none_button.click()
+        assert page.selected_ids() == []
+        page._select_all_button.click()
+        assert page.selected_ids() == ["temp.app", "installers"]
+
+    def test_localized_category_titles(self, qapp: t.Any) -> None:
+        ctx().setLocale("ru")
+        card = CategoryCard(_cat_card("temp.app"))
+        assert "Временные файлы" in card._check.text()
+        ctx().setLocale("en")
+        card.retranslate()
+        assert card._check.text().startswith("Temporary files of apps")
+        card.deleteLater()
+        ctx().setLocale("ru")
+
+    def test_unknown_category_falls_back_to_core_title(self, qapp: t.Any) -> None:
+        card = CategoryCard(_cat_card("brand.new"))
+        assert "brand.new" in card._check.text()
+        card.deleteLater()
+
+    def test_purge_goes_only_for_selected(self, win_fake: t.Any) -> None:
+        win, session = win_fake
+        win.go_to_page(1)
+        page = win._pages[1]
+        page.scanRequested.emit()
+        session.finish_candidates(make_scan())
+        page.cards()[1].set_checked(False)  # installers не едут
+
+        def confirm() -> None:
+            for widget in QApplication.topLevelWidgets():
+                if isinstance(widget, ConfirmDialog):
+                    widget.confirm()
+
+        QTimer.singleShot(60, confirm)
+        page.cleanRequested.emit()
+        assert win.is_busy()
+        assert session.purge_calls
+        items, dry_run = session.purge_calls[-1]
+        assert dry_run is False
+        assert items
+        assert {i["category"] for i in items} == {"temp.app"}
+        session.finish_purge()
+
+    def test_clean_with_nothing_selected_shows_no_dialog(
+            self, win_fake: t.Any) -> None:
+        win, session = win_fake
+        win.go_to_page(1)
+        page = win._pages[1]
+        page.scanRequested.emit()
+        session.finish_candidates(make_scan())
+        page.set_all_selected(False)
+        page.cleanRequested.emit()
+        assert not win.is_busy()
+        assert session.purge_calls == []
+        assert page._status_label.text() == ctx().tr("session.nothing_to_clean")
+
+    def test_confirmation_lists_only_selected(self, win_fake: t.Any) -> None:
+        win, session = win_fake
+        win.go_to_page(1)
+        page = win._pages[1]
+        page.scanRequested.emit()
+        session.finish_candidates(make_scan())
+        page.cards()[0].set_checked(False)  # temp.app не едет
+        seen: t.List[list] = []
+
+        def peek() -> None:
+            for widget in QApplication.topLevelWidgets():
+                if isinstance(widget, ConfirmDialog):
+                    seen.append(widget.items())
+                    widget.cancel()
+
+        QTimer.singleShot(60, peek)
+        page.cleanRequested.emit()
+        assert seen and len(seen[0]) == 1
+        assert "installers" in seen[0][0][0]
+
+
+class TestPurgeProgress:
+    """Прогресс удаления: ядро шлёт события, полоса ползёт."""
+
+    def test_purge_progress_ticks_from_core_events(self, qapp: t.Any) -> None:
+        from ui.session import Session
+
+        class StubClient:
+            def purge(self, items: t.Any, dry_run: bool = True,
+                      on_progress: t.Any = None) -> dict:
+                if on_progress is not None:
+                    on_progress({"phase": "planned", "done": 4, "total": 4})
+                    on_progress({"phase": "trash", "done": 1, "total": 4})
+                    on_progress({"phase": "trash", "done": 2, "total": 4})
+                    on_progress({"phase": "direct", "done": 4, "total": 4})
+                return {"planned": 4, "planned_bytes": 100, "removed": 4,
+                        "freed_bytes": 100, "refused": 0, "cancelled": False,
+                        "lanes": [], "rejects": [], "failures": []}
+
+        session = Session(client=StubClient())
+        ticks: t.List[int] = []
+        session.progressTick.connect(ticks.append)
+        finished: t.List[str] = []
+        session.taskFinished.connect(lambda name, _result: finished.append(name))
+        session.purge_items([{"path": "x", "category": "temp.app"}], False)
+        for _ in range(200):
+            qapp.processEvents()
+            if finished:
+                break
+            QTest.qWait(10)
+        assert finished == ["purge"]
+        # «planned» — это оглашение плана (0%), дальше done/total по факту.
+        assert ticks == [0, 25, 50, 100]
+
+
+class TestElideButton:
+    """Длинные подписи кнопок сжимаются в эллипсис, а не обрезаются."""
+
+    def test_long_text_elides_on_narrow_width(self, qapp: t.Any) -> None:
+        btn = theme.button("Очень длинная подпись кнопки, которая не влезает")
+        btn.show()
+        btn.resize(120, 38)
+        QTest.qWait(20)
+        assert btn.text() != btn.fullText()
+        assert btn.text().endswith("…")
+        assert btn.toolTip() == btn.fullText()
+        btn.deleteLater()
+
+    def test_text_restores_on_wide_width(self, qapp: t.Any) -> None:
+        btn = theme.button("Короткая")
+        btn.show()
+        btn.resize(600, 38)
+        QTest.qWait(20)
+        assert btn.text() == "Короткая"
+        btn.deleteLater()
+
+    def test_minimum_width_does_not_pin_layout(self, qapp: t.Any) -> None:
+        btn = theme.button("Очень длинная подпись кнопки, которая не влезает")
+        assert btn.minimumSizeHint().width() == 0
+        btn.deleteLater()
 
 
 # ---------- воркеры ----------

@@ -19,7 +19,7 @@ import logging
 from pathlib import Path
 from typing import Dict
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QPushButton, QWidget
 
@@ -327,6 +327,20 @@ def qss(theme: str = "dark", font_kind: str = "pixel") -> str:
         border-color: {c["accent"]};
     }}
 
+    /* ---------- карточки категорий (экран чистки) ---------- */
+    QScrollArea#categoryScroll {{ background: transparent; border: none; }}
+    QScrollArea#categoryScroll > QWidget > QWidget {{ background: transparent; }}
+    QFrame#categoryCard {{
+        background-color: {c["bg_inset"]};
+        border: 1px solid {c["border_soft"]};
+        border-radius: 10px;
+    }}
+    QFrame#categoryCard:hover {{ border-color: {c["accent_soft"]}; }}
+    QFrame#categoryCard[checked="true"] {{ border-color: {c["accent_soft"]}; }}
+    QLabel#laneBadge {{ font-size: {size["small"]}{unit}; letter-spacing: 1px; }}
+    QLabel#laneBadge[lane="trash"] {{ color: {c["on"]}; }}
+    QLabel#laneBadge[lane="direct"] {{ color: {c["warn"]}; }}
+
     /* ---------- карточки ---------- */
     QFrame#card {{
         background-color: {c["bg_panel"]};
@@ -462,6 +476,72 @@ def apply_theme(app: QApplication, theme: str = "dark", font_kind: str = "pixel"
 # ---------- фабрики типовых виджетов ----------
 
 
+class ElideButton(QPushButton):
+    """Кнопка, которая при нехватке ширины сжимает текст в эллипсис.
+
+    Обычный QPushButton на узком окне (1024×768) просто обрезает длинную
+    подпись: layout не даёт кнопке сузиться из-за minimumSizeHint по тексту,
+    а сам текст рисуется куском. Здесь минимальная ширина нулевая — кнопка
+    может сжаться, а текст подгоняется под фактическую ширину с «…» на конце.
+    Полный текст всегда остаётся в tooltip и возвращается, когда места
+    становится достаточно.
+    """
+
+    # Запас под паддинги QSS (8px 16px) и рамку, чтобы эллипсис не вплотную.
+    _H_PADDING = 40
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__("", parent)
+        self._full_text = ""
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        self._full_text = text
+        self._elide()
+
+    def fullText(self) -> str:
+        """Подпись без эллипсиса — как её задали."""
+        return self._full_text
+
+    def sizeHint(self) -> QSize:  # type: ignore[override]
+        """Размер всегда считается по ПОЛНОМУ тексту.
+
+        Иначе эллипсис уменьшал бы sizeHint, разметка сжимала бы кнопку
+        ещё сильнее, текст элидировался бы снова — спираль до нуля. Полный
+        sizeHint говорит разметке «столько мне надо», а сжатие ниже него
+        уже честно обрабатывается эллипсисом в _elide().
+        """
+        hint = super().sizeHint()
+        if not self._full_text:
+            return hint
+        width = (self.fontMetrics().horizontalAdvance(self._full_text)
+                 + self._H_PADDING + 8)
+        return QSize(max(width, hint.width()), hint.height())
+
+    def minimumSizeHint(self) -> QSize:  # type: ignore[override]
+        hint = super().minimumSizeHint()
+        return QSize(0, hint.height())
+
+    def resizeEvent(self, event) -> None:  # noqa: ANN001, N802
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self) -> None:
+        if not self._full_text:
+            super().setText("")
+            return
+        metrics = self.fontMetrics()
+        available = self.width() - self._H_PADDING
+        if available <= 0 or metrics.horizontalAdvance(self._full_text) <= available:
+            elided = self._full_text
+        else:
+            elided = metrics.elidedText(
+                self._full_text, Qt.TextElideMode.ElideRight, available)
+        if elided != self.text():
+            super().setText(elided)
+        self.setToolTip(self._full_text)
+
+
 def heading(text: str, parent: QWidget | None = None) -> QLabel:
     """Крупный заголовок страницы."""
     label = QLabel(text, parent)
@@ -509,7 +589,7 @@ def stat(text: str, parent: QWidget | None = None) -> QLabel:
 
 def button(text: str, parent: QWidget | None = None, primary: bool = False) -> QPushButton:
     """Кнопка; primary — акцентная."""
-    widget = QPushButton(text, parent)
+    widget = ElideButton(text, parent)
     if primary:
         widget.setProperty("role", "primary")
     widget.setCursor(Qt.CursorShape.PointingHandCursor)

@@ -320,10 +320,25 @@ class Session(QObject):
 
     def purge_items(self, items: t.Sequence[t.Mapping[str, str]],
                     dry_run: bool) -> None:
-        """Удаление (или репетиция) выбранных пунктов. Дорожки решает ядро."""
+        """Удаление (или репетиция) выбранных пунктов. Дорожки решает ядро.
+
+        Ядро шлёт progress-события на каждый обработанный чанк: фаза
+        «planned» — это оглашение плана (ещё 0%), дальше done/total растут
+        по мере удаления. Прогоняем их в progressTick — полоса на странице
+        ползёт, а не стоит на нуле.
+        """
+
+        def on_progress(event: dict) -> None:
+            if event.get("phase") == "planned":
+                self.progressTick.emit(0)
+                return
+            done, total = event.get("done"), event.get("total")
+            if isinstance(done, int) and isinstance(total, int) and total > 0:
+                self.progressTick.emit(max(0, min(100, round(100 * done / total))))
 
         def work() -> PurgeReport:
-            data = self._client.purge(items, dry_run=dry_run)
+            data = self._client.purge(items, dry_run=dry_run,
+                                      on_progress=on_progress)
             report = PurgeReport.from_core(data, dry_run)
             self._last_purge = report
             return report
