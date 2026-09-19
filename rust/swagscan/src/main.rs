@@ -20,7 +20,7 @@ const PROTOCOL: &str = "swagscan-ndjson/1";
 
 fn usage_lines(ev: &Events) {
     ev.send(format!(
-        "{{\"event\":\"hello\",\"protocol\":\"{PROTOCOL}\",\"commands\":[\"capabilities\",\"help\",\"index\",\"categories\",\"candidates\",\"duplicates\",\"purge\",\"empty_bin\",\"drives\",\"progress\"],\"platform\":\"windows\",\"long_paths\":true}}"
+        "{{\"event\":\"hello\",\"protocol\":\"{PROTOCOL}\",\"commands\":[\"capabilities\",\"help\",\"index\",\"categories\",\"cat_meta\",\"candidates\",\"duplicates\",\"purge\",\"empty_bin\",\"drives\",\"ping\",\"cancel\",\"quit\"],\"platform\":\"windows\",\"long_paths\":true}}"
     ));
     ev.send(
         "{\"event\":\"capabilities\",\"mft\":false,\"long_paths\":true,\"lanes\":[\"trash\",\"direct\"],\"streams\":\"ndjson\",\"hash\":\"blake3\",\"size_units\":\"bytes\"}"
@@ -161,9 +161,8 @@ fn handle(
                 return;
             }
             let out = scan::run(&plan, env, ev, cancel, "index");
-            if out.cancelled {
-                ev.cancelled(id, "index");
-            }
+            // Терминальное событие одно: result с cancelled в data.
+            // Отдельное событие cancelled не шлём (см. протокол).
             ev.result_ok(id, out.json);
         }
         "categories" => {
@@ -203,9 +202,6 @@ fn handle(
                 return;
             }
             let out = scan::run(&plan, env, ev, cancel, "candidates");
-            if out.cancelled {
-                ev.cancelled(id, "candidates");
-            }
             ev.result_ok(id, out.json);
         }
         "duplicates" => {
@@ -273,9 +269,11 @@ fn handle(
     }
 }
 
+/// id возвращаем КАК JSON-литерал: число клиента уезжает числом,
+/// строка — строкой (клиент матчит ответ по точному значению).
 fn id_of(v: &serde_json::Value) -> String {
     match v.get("id") {
-        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::String(s)) => q(s),
         Some(other) => other.to_string(),
         None => "0".to_string(),
     }
@@ -283,10 +281,10 @@ fn id_of(v: &serde_json::Value) -> String {
 
 fn main() {
     let env = Env::detect();
-    let ev = emit::Writer::stdout().into_events();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (ev, writer) = emit::Writer::stdout(Arc::clone(&cancel));
     usage_lines(&ev);
 
-    let cancel = Arc::new(AtomicBool::new(false));
     let (tx, rx) = std::sync::mpsc::channel::<String>();
 
     std::thread::spawn({
@@ -305,7 +303,15 @@ fn main() {
                 if trimmed.is_empty() {
                     continue;
                 }
-                if trimmed.contains("\"cancel\"") {
+                // cancel распознаём как JSON, а не по подстроке: путь
+                // "cancel" внутри purge-команды не должен её съедать.
+                let is_cancel = serde_json::from_str::<serde_json::Value>(trimmed)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("cmd").and_then(|c| c.as_str().map(|s| s == "cancel"))
+                    })
+                    .unwrap_or(false);
+                if is_cancel {
                     cancel.store(true, Ordering::SeqCst);
                     continue;
                 }
@@ -347,9 +353,13 @@ fn main() {
             ev.result_ok(&id_of(&v), "{\"pong\":true}".to_string());
             continue;
         }
-        cancel.store(false, Ordering::SeqCst);
         let id = id_of(&v);
         handle(&v, &ev, &cancel, &env, &id);
+        // Флаг отмены сбрасываем ПОСЛЕ работы: cancel, присланный вслед
+        // за командой, иначе стирается до её старта и теряется.
+        cancel.store(false, Ordering::SeqCst);
     }
+    drop(ev);
+    writer.shutdown();
     let _ = std::io::stdout().flush();
 }

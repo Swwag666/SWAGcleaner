@@ -29,6 +29,10 @@ def default_journal_dir() -> Path:
     return root / "SWAGcleaner" / "journal"
 
 
+# Журнал выше этого размера уезжает в journal.1.jsonl (одно поколение).
+_MAX_BYTES = 2 * 1024 * 1024
+
+
 class Journal:
     """Append-only журнал действий в JSONL-файл.
 
@@ -56,18 +60,38 @@ class Journal:
         line = json.dumps(entry, ensure_ascii=False)
         with self._lock:
             self._path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if self._path.stat().st_size > _MAX_BYTES:
+                    # Ротация одним поколением: старый журнал -> .1.jsonl.
+                    rotated = self._path.with_name(self._path.stem + ".1.jsonl")
+                    os.replace(self._path, rotated)
+            except OSError:
+                pass
             with open(self._path, "a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
 
     def tail(self, limit: int = 50) -> t.List[t.Dict[str, t.Any]]:
-        """Последние записи, свежие первыми. Битые строки пропускаются."""
-        try:
-            with open(self._path, "r", encoding="utf-8") as fh:
-                lines = fh.readlines()
-        except OSError:
-            return []
+        """Последние записи, свежие первыми. Битые строки пропускаются.
+
+        Читает файл С КОНЦА блоками, а не readlines() целиком: на большом
+        журнале (годы работы) не грузит мегабайты ради 50 строк.
+        """
+        with self._lock:
+            try:
+                with open(self._path, "rb") as fh:
+                    fh.seek(0, os.SEEK_END)
+                    pos = fh.tell()
+                    data = b""
+                    # Добираем блоки, пока не наберётся limit+1 перевод строки.
+                    while pos > 0 and data.count(b"\n") <= limit:
+                        step = min(64 * 1024, pos)
+                        pos -= step
+                        fh.seek(pos)
+                        data = fh.read(step) + data
+            except OSError:
+                return []
         entries: t.List[t.Dict[str, t.Any]] = []
-        for line in reversed(lines[-limit:]):
+        for line in reversed(data.decode("utf-8", errors="replace").splitlines()):
             line = line.strip()
             if not line:
                 continue
@@ -75,4 +99,6 @@ class Journal:
                 entries.append(json.loads(line))
             except ValueError:
                 continue
+            if len(entries) >= limit:
+                break
         return entries

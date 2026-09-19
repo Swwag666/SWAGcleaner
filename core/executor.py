@@ -43,12 +43,16 @@ class Executor:
         return list(self._executed)
 
     def _log(self, action: ExecutedAction) -> None:
-        if self._journal is not None:
+        if self._journal is None:
+            return
+        try:
             self._journal.log(
                 action.action_type,
                 action.target,
                 outcome="ok" if action.success else "error",
                 message=action.message, snapshot=action.snapshot)
+        except Exception:  # журнал не должен ломать само действие
+            pass
 
     def execute_actions(self, actions: t.List[t.Dict[str, t.Any]]) -> t.List[ExecutedAction]:
         """Выполнить список действий; каждое уже подтверждено пользователем."""
@@ -81,6 +85,7 @@ class Executor:
             source=SOURCE_REGISTRY,
             hive=str(action.get("hive", "")),
             key_path=str(action.get("key_path", "")),
+            value_type=int(action.get("value_type", 1) or 1),
         )
         snapshot = self._startup.disable(entry)
         result = ExecutedAction("startup_disable", entry.name, True,

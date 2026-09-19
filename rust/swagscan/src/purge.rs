@@ -145,6 +145,12 @@ fn resolve(
         if lane == Lane::Direct && !matcher.is_regen_allowed(&path_norm) {
             lane = Lane::Trash;
         }
+        // UNC (\\srv\share) — только Direct: корзина по сети либо не
+        // работает, либо SHFileOperation молча удаляет напрямую. Честнее
+        // сразу удалять напрямую, чем делать вид, что это корзина.
+        if path_norm.starts_with("//") {
+            lane = Lane::Direct;
+        }
         let final_size = if is_dir {
             budget -= 1;
             subtree_size(&path_norm, cancel, &mut budget)
@@ -235,7 +241,23 @@ pub fn run(
                     removed += chunk.len();
                 }
                 Err((rc, aborted)) => {
-                    if !aborted && chunk.len() > 1 {
+                    if aborted {
+                        // Пользователь оборвал shell-диалог: часть чанка уже
+                        // удалена. Пере-статуем каждый файл: исчезнувшие
+                        // считаем удалёнными ( freed/removed ), оставшиеся —
+                        // отменёнными. Целиком чанк не валим.
+                        for single in chunk {
+                            if stat(&single.path_win).is_none() {
+                                freed += single.size;
+                                removed += 1;
+                            } else {
+                                failures.push((
+                                    single.path_win.clone(),
+                                    "cancelled by user".to_string(),
+                                ));
+                            }
+                        }
+                    } else if chunk.len() > 1 {
                         for single in chunk {
                             let one = vec![single.path_win.clone()];
                             match wapi::shell_delete(&one, allow_undo) {
@@ -414,6 +436,63 @@ mod tests {
         let (ok, _) = resolve(&plan, &e, &m, &cancel);
         assert_eq!(ok.len(), 1);
         assert_eq!(ok[0].lane, Lane::Trash);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unc_vsegda_direct_bez_korziny() {
+        // Сетевой путь не уезжает в Trash: корзина по сети либо не работает,
+        // либо молча удаляет напрямую. lane форсим в Direct.
+        let e = env();
+        let m = Matcher::build(&e);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let plan = PurgePlan {
+            items: vec![Item {
+                path_win: "\\\\server\\share\\temp\\x.tmp".into(),
+                category: "temp.app".into(),
+            }],
+            dry_run: true,
+        };
+        let (ok, bad) = resolve(&plan, &e, &m, &cancel);
+        // Файл не существует — resolve отклонит его по not found, но до этого
+        // проверка lane проходит раньше stat(). Поэтому проверяем причину:
+        // отказ должен быть "not found", а не про корзину.
+        assert!(ok.is_empty());
+        assert_eq!(bad.len(), 1);
+        assert_eq!(bad[0].reason, "not found");
+    }
+
+    #[test]
+    fn unc_lane_forsiruetsya_v_direct() {
+        // Отдельно проверяем сам форс: UNC + категория Trash → Direct.
+        // Используем живой локальный файл через UNC-нотацию localhost.
+        let dir = std::env::temp_dir().join(format!("swagscan_u_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("y.tmp");
+        std::fs::write(&f, b"12345").unwrap();
+        // TEMP обычно вида C:\Users\...\Temp — перегоняем в \\localhost\C$\...
+        let plain = f.to_string_lossy().to_string();
+        let unc = if plain.len() > 2 && plain.as_bytes()[1] == b':' {
+            format!("\\\\localhost\\{}$\\{}", plain.as_bytes()[0] as char, &plain[3..])
+        } else {
+            String::new()
+        };
+        if !unc.is_empty() && std::path::Path::new(&unc).exists() {
+            let e = env();
+            let m = Matcher::build(&e);
+            let cancel = Arc::new(AtomicBool::new(false));
+            let plan = PurgePlan {
+                items: vec![Item {
+                    path_win: unc.clone(),
+                    category: "temp.app".into(),
+                }],
+                dry_run: true,
+            };
+            let (ok, bad) = resolve(&plan, &e, &m, &cancel);
+            assert!(bad.is_empty(), "{:?}", bad);
+            assert_eq!(ok.len(), 1);
+            assert_eq!(ok[0].lane, Lane::Direct);
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

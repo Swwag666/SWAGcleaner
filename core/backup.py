@@ -14,6 +14,7 @@ import json
 import os
 import time
 import typing as t
+import uuid
 from pathlib import Path
 
 
@@ -34,6 +35,14 @@ class BackupStore:
     def __init__(self, base_dir: Path | str | None = None) -> None:
         self._store: t.Dict[str, t.Any] = {}
         self._base_dir: Path | None = Path(base_dir) if base_dir else None
+        if self._base_dir is not None:
+            # Сироты *.tmp — след убитого посреди save() процесса. Чистим
+            # на старте: они бесполезны (снапшот не зафиксирован).
+            try:
+                for orphan in self._base_dir.glob("*.tmp"):
+                    orphan.unlink()
+            except OSError:
+                pass
 
     @classmethod
     def disk(cls) -> "BackupStore":
@@ -42,15 +51,24 @@ class BackupStore:
 
     def _file(self, name: str) -> Path:
         assert self._base_dir is not None
+        # Имя снапшота приходит из данных (имя значения реестра и т.п.):
+        # разделители и ".." превращали бы его в путь вне папки бэкапов.
+        if not name or name in (".", "..") \
+                or any(sep in name for sep in ("/", "\\", ":")):
+            raise ValueError(f"небезопасное имя снапшота: {name!r}")
         return self._base_dir / f"{name}.json"
 
     def save(self, name: str, data: t.Any, kind: str = "generic") -> None:
         """Сохранить снапшот: в память и, если есть папка, на диск."""
+        if self._base_dir is not None:
+            # Валидация имени ДО любых побочек (файлы, память).
+            self._file(name)
         payload = {"name": name, "ts": time.time(), "kind": kind, "data": data}
         self._store[name] = data
         if self._base_dir is not None:
             self._base_dir.mkdir(parents=True, exist_ok=True)
-            tmp = self._file(name).with_suffix(".json.tmp")
+            # tmp уникален: два save() подряд (или после краха) не делят имя.
+            tmp = self._base_dir / f"{name}.{uuid.uuid4().hex}.tmp"
             tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1),
                            encoding="utf-8")
             os.replace(tmp, self._file(name))

@@ -74,7 +74,6 @@ const BROWSER_CACHE: &Cat = &Cat {
         "%LOCALAPPDATA%\\Yandex\\YandexBrowser\\User Data\\Default\\Code Cache",
         "%LOCALAPPDATA%\\Yandex\\YandexBrowser\\User Data\\Default\\GPUCache",
         "%LOCALAPPDATA%\\Mozilla\\Firefox\\Profiles",
-        "%APPDATA%\\Mozilla\\Firefox\\Profiles",
     ],
     name_prefix: "",
     path_must_contain: "",
@@ -96,7 +95,6 @@ const CACHE_APP: &Cat = &Cat {
         "%LOCALAPPDATA%\\NuGet\\Cache",
         "%LOCALAPPDATA%\\Composer\\Cache",
         "%APPDATA%\\npm-cache",
-        "%ProgramData%\\Package Cache",
         "%LOCALAPPDATA%\\Microsoft\\Windows\\Explorer",
     ],
     name_prefix: "",
@@ -307,6 +305,12 @@ impl Matcher {
                 if prefix.is_empty() || prefix == "//" {
                     continue;
                 }
+                // Переменная окружения, развернувшаяся в корень диска
+                // (TEMP="C:\" -> prefix "c:") или в UNC-корень ("//srv/share"),
+                // не должна превращать весь диск/шару в категорию-мусор.
+                if prefix.len() <= 3 || crate::pathx::root_of(&prefix) == prefix {
+                    continue;
+                }
                 rules.push(Rule {
                     cat: c,
                     pattern: env.expand(pat),
@@ -388,33 +392,44 @@ impl Matcher {
     }
 }
 
+/// Блок-лист системных мест. Матч СЕГМЕНТНЫЙ: путь бьётся на сегменты по '/',
+/// блок срабатывает, если какой-то сегмент ЦЕЛИКОМ равен имени из списка.
+/// Это ловит и сам каталог ("c:/windows/system32"), и его содержимое,
+/// но не трогает похожие имена ("winsxs-backup").
 pub fn is_blocked(path_norm: &str) -> bool {
-    const BLOCKED: &[&str] = &[
-        "/winsxs",
-        "/installer",
-        "/windowsinstaller",
-        "/system32/",
-        "/syswow64/",
-        "/wine/preview/",
-        "/boot/",
-        "/program files/",
-        "/program files (x86)/",
-        "/programdata/microsoft/windows defender/",
-        "/pagefile.sys",
-        "/hiberfil.sys",
-        "/swapfile.sys",
-        "/recovery/",
-        "/system volume information",
-        "/$mft",
-        "/$extend",
+    const BLOCKED_SEGMENTS: &[&str] = &[
+        "winsxs",
+        "installer",
+        "windowsinstaller",
+        "system32",
+        "syswow64",
+        "boot",
+        "program files",
+        "program files (x86)",
+        "recovery",
+        "system volume information",
+        "$mft",
+        "$extend",
+        "pagefile.sys",
+        "hiberfil.sys",
+        "swapfile.sys",
     ];
     if path_norm.len() <= 3 {
         return true;
     }
-    for b in BLOCKED {
-        if path_norm.contains(b) {
+    for seg in path_norm.split('/') {
+        if BLOCKED_SEGMENTS.contains(&seg) {
             return true;
         }
+    }
+    // Многосегментные правила, которые сегментным матчем не выразить.
+    if path_norm.contains("/programdata/microsoft/windows defender/")
+        || path_norm.ends_with("/programdata/microsoft/windows defender")
+    {
+        return true;
+    }
+    if path_norm.contains("/wine/preview/") {
+        return true;
     }
     if path_norm.ends_with("/config") || path_norm.contains("/windows/config/") {
         return true;
@@ -465,6 +480,47 @@ mod tests {
         assert!(is_blocked("c:/windows/system32/kernel32.dll"));
         assert!(is_blocked("c:/program files/app/app.exe"));
         assert!(!is_blocked("c:/windows/temp/a.log"));
+    }
+
+    #[test]
+    fn blok_segmentnyi_a_ne_podstrochnyi() {
+        // Сам каталог без хвостового слэша тоже ловится.
+        assert!(is_blocked("c:/windows/system32"));
+        assert!(is_blocked("c:/windows/system32/drivers"));
+        assert!(is_blocked("c:/windows/winsxs"));
+        assert!(is_blocked("c:/boot"));
+        assert!(is_blocked("c:/pagefile.sys"));
+        // Похожие имена с другим сегментом — НЕ блокируются.
+        assert!(!is_blocked("c:/x/winsxs-backup/y"));
+        assert!(!is_blocked("c:/x/system32-backup"));
+        assert!(!is_blocked("c:/x/installers-cache/y"));
+        assert!(!is_blocked("c:/x/bootleg/y"));
+    }
+
+    #[test]
+    fn pravilo_s_kornem_diska_ignoriruetsya() {
+        // TEMP=C:\ не должен превращать весь диск в temp.app.
+        let e = Env {
+            temp: "C:\\".into(),
+            ..env()
+        };
+        let mm = Matcher::build(&e);
+        let c = mm.classify("c:/windows/anything.tmp", 1000, 0, 100);
+        assert!(!c.iter().any(|x| x.id == "temp.app"));
+        // И белый список регенерации тоже не захватывает корень.
+        assert!(!mm.is_regen_allowed("c:/windows"));
+        // А нормальный TEMP продолжает работать.
+        let mm2 = m();
+        assert!(mm2.is_regen_allowed("c:/users/one/appdata/local/temp/x"));
+    }
+
+    #[test]
+    fn package_cache_bolshe_ne_direct() {
+        // %ProgramData%\Package Cache — ловушка: удаление ломает Repair VS.
+        let mm = m();
+        let c = mm.classify("c:/programdata/package cache/{guid}/pkg.msi", 10_000_000, 0, 100);
+        assert!(!c.iter().any(|x| x.id == "cache.apps"));
+        assert!(!mm.is_regen_allowed("c:/programdata/package cache/x"));
     }
 
     #[test]

@@ -53,7 +53,7 @@ class DuplicateScanner:
     def scan_similar(
         self, paths: t.List[Path], max_distance: int = 5
     ) -> t.List[t.List[Path]]:
-        """Находит группы изображений с 지각적 расстоянием <= max_distance.
+        """Находит группы изображений с перцептуальным расстоянием <= max_distance.
 
         Работает на основе хешей и возвращает кластеры с минимальным расстоянием.
         """
@@ -71,33 +71,33 @@ class DuplicateScanner:
                 continue
 
         all_hashes = list(hash_to_paths.keys())
+        parsed: t.Dict[str, t.Any] = {}
+        for key in all_hashes:
+            try:
+                parsed[key] = imagehash.hex_to_hash(key)
+            except (ValueError, TypeError):
+                continue
         visited: t.Set[int] = set()
         clusters: t.List[t.List[Path]] = []
-        for i, h1 in enumerate(all_hashes):
-            if i in visited:
+        for i in range(len(all_hashes)):
+            if i in visited or all_hashes[i] not in parsed:
                 continue
-            cluster: t.List[Path] = []
-            queue = [i]
             visited.add(i)
+            # Пути сид-хеша в кластер тоже входят: иначе пара одинаковых
+            # фото превращалась в список из одного файла соседа.
+            cluster: t.List[Path] = list(hash_to_paths[all_hashes[i]])
+            queue = [i]
             while queue:
                 idx = queue.pop()
-                h_current = all_hashes[idx]
-                try:
-                    current_hash = imagehash.hex_to_hash(h_current)
-                except (imagehash.ImageHash.HashError, ValueError):
-                    continue
+                current_hash = parsed[all_hashes[idx]]
                 for j in range(len(all_hashes)):
-                    if j in visited:
+                    if j in visited or all_hashes[j] not in parsed:
                         continue
-                    try:
-                        other_hash = imagehash.hex_to_hash(all_hashes[j])
-                    except (imagehash.ImageHash.HashError, ValueError):
-                        continue
-                    if current_hash - other_hash <= max_distance:
+                    if current_hash - parsed[all_hashes[j]] <= max_distance:
                         visited.add(j)
                         cluster.extend(hash_to_paths[all_hashes[j]])
                         queue.append(j)
-            if cluster:
+            if len(cluster) > 1:
                 clusters.append(cluster)
         return clusters
 

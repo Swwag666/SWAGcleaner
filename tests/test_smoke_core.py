@@ -472,3 +472,205 @@ class TestExecutor:
         assert not result.success
         assert executor.executed()[0].message
         assert journal.tail()[0]["outcome"] == "error"
+
+
+class TestStartupFixes:
+    RUN = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    RUNONCE = r"Software\Microsoft\Windows\CurrentVersion\RunOnce"
+
+    def test_snapshot_names_unique_per_key(self, tmp_path: t.Any) -> None:
+        from core.backup import BackupStore
+        from core.startup import StartupManager
+
+        registry = MemoryRegistry()
+        registry.set_value("HKCU", self.RUN, "Foo", r"C:\a.exe", 1)
+        registry.set_value("HKCU", self.RUNONCE, "Foo", r"C:\b.exe", 1)
+        store = BackupStore(tmp_path)
+        manager = StartupManager(registry=registry, store=store)
+        entries = {e.key_path: e for e in manager.get_startup_entries()
+                   if e.name == "Foo"}
+        s1 = manager.disable(entries[self.RUN])
+        s2 = manager.disable(entries[self.RUNONCE])
+        assert s1 != s2
+        assert set(store.list()) == {s1, s2}
+
+    def test_snapshot_name_traversal_safe(self, tmp_path: t.Any) -> None:
+        from core.backup import BackupStore
+        from core.startup import StartupEntry, StartupManager, SOURCE_REGISTRY
+
+        manager = StartupManager(registry=MemoryRegistry(),
+                                 store=BackupStore(tmp_path))
+        entry = StartupEntry(name="../../evil", path="v", enabled=True,
+                             source=SOURCE_REGISTRY, hive="HKCU",
+                             key_path=self.RUN, value_type=1)
+        snapshot = manager.disable(entry)
+        assert "/" not in snapshot and "\\" not in snapshot and ".." not in snapshot
+        assert list(tmp_path.glob("*.json"))
+
+    def test_expand_sz_type_preserved(self, tmp_path: t.Any) -> None:
+        from core.backup import BackupStore
+        from core.startup import StartupManager
+
+        registry = MemoryRegistry()
+        registry.set_value("HKCU", self.RUN, "Pathy", r"%WINDIR%\x.exe", 2)
+        store = BackupStore(tmp_path)
+        manager = StartupManager(registry=registry, store=store)
+        entry = [e for e in manager.get_startup_entries() if e.name == "Pathy"][0]
+        assert entry.value_type == 2
+        snapshot = manager.disable(entry)
+        data = store.restore(snapshot)
+        assert data["value_type"] == 2
+        manager.restore(snapshot)
+        assert registry.values[("HKCU", self.RUN, "Pathy")][1] == 2
+
+    def test_failed_delete_drops_snapshot(self, tmp_path: t.Any) -> None:
+        from core.backup import BackupStore
+        from core.startup import StartupManager
+
+        class DenyRegistry(MemoryRegistry):
+            def delete_value(self, hive, key_path, value_name):
+                raise PermissionError("denied")
+
+        registry = DenyRegistry()
+        registry.set_value("HKLM", self.RUN, "Upd", r"C:\u.exe", 1)
+        store = BackupStore(tmp_path)
+        manager = StartupManager(registry=registry, store=store)
+        entry = [e for e in manager.get_startup_entries() if e.name == "Upd"][0]
+        with pytest.raises(PermissionError):
+            manager.disable(entry)
+        assert store.list() == []
+
+
+class TestJournalFixes:
+    def test_rotation_keeps_writing(self, tmp_path: t.Any) -> None:
+        from core.journal import Journal
+
+        path = tmp_path / "j.jsonl"
+        journal = Journal(path)
+        big = "x" * 3000
+        for i in range(800):  # ~2.5 МБ, гарантированно за порогом ротации
+            journal.log("purge", f"{big}{i}")
+        rotated = tmp_path / "j.1.jsonl"
+        assert rotated.exists()
+        journal.log("purge", "after-rotation")
+        tail = journal.tail(5)
+        assert tail[0]["detail"] == "after-rotation"
+
+    def test_tail_reads_from_end_of_big_file(self, tmp_path: t.Any) -> None:
+        from core.journal import Journal
+
+        path = tmp_path / "j.jsonl"
+        journal = Journal(path)
+        for i in range(300):
+            journal.log("purge", f"entry-{i}")
+        tail = journal.tail(3)
+        assert [e["detail"] for e in tail] == ["entry-299", "entry-298", "entry-297"]
+
+    def test_tail_survives_broken_utf8(self, tmp_path: t.Any) -> None:
+        from core.journal import Journal
+
+        path = tmp_path / "j.jsonl"
+        journal = Journal(path)
+        journal.log("purge", "good")
+        with open(path, "ab") as fh:
+            fh.write(b"\xff\xfe{bad json\xff\n")
+        journal.log("purge", "good2")
+        kinds = [e["detail"] for e in journal.tail()]
+        assert kinds == ["good2", "good"]
+
+
+class TestBackupFixes:
+    def test_orphan_tmp_cleaned_on_init(self, tmp_path: t.Any) -> None:
+        from core.backup import BackupStore
+
+        (tmp_path / "one.json").write_text(
+            '{"name": "one", "ts": 1, "kind": "k", "data": {}}', encoding="utf-8")
+        (tmp_path / "orphan.deadbeef.tmp").write_text("{}", encoding="utf-8")
+        store = BackupStore(tmp_path)
+        assert store.list() == ["one"]
+        assert not list(tmp_path.glob("*.tmp"))
+
+    def test_unsafe_name_rejected(self, tmp_path: t.Any) -> None:
+        from core.backup import BackupStore
+
+        store = BackupStore(tmp_path)
+        with pytest.raises(ValueError):
+            store.save("../escape", {"v": 1})
+        with pytest.raises(ValueError):
+            store.save("a/b", {"v": 1})
+
+    def test_two_saves_no_tmp_race(self, tmp_path: t.Any) -> None:
+        from core.backup import BackupStore
+
+        store = BackupStore(tmp_path)
+        store.save("n", {"v": 1})
+        store.save("n", {"v": 2})
+        assert store.restore("n") == {"v": 2}
+        assert not list(tmp_path.glob("*.tmp"))
+
+
+class TestExecutorFixes:
+    RUN = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+    def test_journal_failure_does_not_break_action(self, tmp_path: t.Any) -> None:
+        from core.backup import BackupStore
+        from core.executor import Executor
+
+        class BrokenJournal:
+            def log(self, *a: t.Any, **k: t.Any) -> None:
+                raise OSError("disk full")
+
+        registry = MemoryRegistry()
+        registry.set_value("HKCU", self.RUN, "Discord", r"C:\d.exe", 1)
+        executor = Executor(store=BackupStore(tmp_path / "bk"),
+                            journal=BrokenJournal(), registry=registry)
+        (result,) = executor.execute_actions([{
+            "type": "startup_disable", "name": "Discord",
+            "value": r"C:\d.exe", "hive": "HKCU", "key_path": self.RUN,
+        }])
+        assert result.success
+        assert registry.list_values("HKCU", self.RUN) == []
+
+
+class TestDedupSimilar:
+    def test_identical_pair_clustered_with_both_paths(self, tmp_path: t.Any) -> None:
+        from core.dedup import DuplicateScanner
+
+        from PIL import ImageDraw
+
+        def patterned(block: bool) -> "Image.Image":
+            im = Image.new("RGB", (64, 64), (10, 10, 10))
+            d = ImageDraw.Draw(im)
+            if block:
+                d.rectangle([0, 0, 31, 31], fill=(240, 240, 240))
+            else:
+                for i in range(0, 64, 8):
+                    d.line([i, 0, i, 63], fill=(240, 240, 240))
+            return im
+
+        img = patterned(True)
+        a = tmp_path / "a.png"
+        b = tmp_path / "b.png"
+        c = tmp_path / "c.png"
+        img.save(a)
+        img.save(b)
+        patterned(False).save(c)
+        clusters = DuplicateScanner().scan_similar([a, b, c])
+        flat = [sorted(str(p) for p in cl) for cl in clusters]
+        assert [sorted([str(a), str(b)])] == flat
+
+    def test_singleton_not_reported(self, tmp_path: t.Any) -> None:
+        from core.dedup import DuplicateScanner
+
+        a = tmp_path / "only.png"
+        Image.new("RGB", (64, 64), (10, 200, 10)).save(a)
+        assert DuplicateScanner().scan_similar([a]) == []
+
+
+class TestServicesFixes:
+    def test_unknown_mode_kept(self) -> None:
+        from core.services import ServiceInfo, WindowsServiceController
+
+        fake = [ServiceInfo("Protected", "running", "unknown")]
+        controller = WindowsServiceController(provider=lambda: fake)
+        assert controller.list_services()[0].start_mode == "unknown"

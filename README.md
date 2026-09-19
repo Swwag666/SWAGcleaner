@@ -41,7 +41,7 @@
 | Мост | NDJSON-протокол поверх stdin/stdout, один долгоживущий процесс |
 | AI (опция) | stdlib `urllib` → Ollama / OpenAI-совместимый API |
 | Сборка | PyInstaller (spec подкладывает `swagscan.exe`) |
-| Тесты | pytest (263) + `cargo test` (40) |
+| Тесты | pytest (277) + `cargo test` (52) |
 | Полигон | VirtualBox + Windows 11 24H2 (тесты удаления не на живом железе) |
 
 ## Как работает чистка (политика удаления)
@@ -89,7 +89,7 @@
 
 Интерфейс — настоящий: боковое меню, пять страниц, две темы, ru/en, пиксельный шрифт Handjet,
 звуки, помощница в стиле визуальной новеллы, диалог подтверждения, живые счётчики, фоновые
-задачи, 263 + 40 тестов.
+задачи, 277 + 52 теста.
 
 Ядро сканирования — настоящее и проверенное: Rust-обход, категории, дубликаты BLAKE3, удаление
 в две дорожки, dry-run, отмена; мост и протокол покрыты интеграционными тестами; на живой машине
@@ -138,15 +138,15 @@ rustup toolchain install stable-x86_64-pc-windows-gnu
 # нужен MinGW-w64 (D:\mingw64) в PATH
 cd rust/swagscan
 cargo +stable-x86_64-pc-windows-gnu build --release    # target/release/swagscan.exe
-cargo +stable-x86_64-pc-windows-gnu test               # 40 тестов
+cargo +stable-x86_64-pc-windows-gnu test               # 52 теста
 ```
 
 ## Тесты
 
 ```bash
-# весь набор Python (263 теста: модели, ядро, UI, AI, мост до Rust)
+# весь набор Python (277 тестов: модели, ядро, UI, AI, мост до Rust)
 ./venv/Scripts/python.exe -m pytest -o addopts="" -q -p no:cacheprovider
-# Rust-ядро (40 тестов)
+# Rust-ядро (52 теста)
 cd rust/swagscan && cargo +stable-x86_64-pc-windows-gnu test
 ```
 
@@ -211,7 +211,7 @@ action is logged. The **tweaks page** is real: startup items are read from the r
 Startup folders, disabling saves an on-disk snapshot (survives restarts) and a "Restore" button
 brings the entry back; services are listed read-only. The scan core itself
 is real too — Rust scanner with categories, BLAKE3 duplicates, two-lane deletion, dry-run and
-cancellation, covered by 263 pytest + 40 cargo tests, byte-exact against the Python reference.
+cancellation, covered by 277 pytest + 52 cargo tests, byte-exact against the Python reference.
 The VirtualBox polygon (Win11 24H2) runs the core end to end from host shared folders; the built
 `.exe` was verified inside the VM (`--self-test`, `--disk --candidates`, GUI screenshots in
 `shots/polygon-2026-09-16/`). Of the old Python `core/` modules, processes and the Python

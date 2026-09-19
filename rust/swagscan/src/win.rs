@@ -255,6 +255,17 @@ pub fn paths_to_double_null(paths: &[String]) -> Vec<u16> {
 }
 
 pub fn shell_delete(paths: &[String], allow_undo: bool) -> Result<(), (i32, bool)> {
+    let rc_ab = shell_delete_raw(paths, allow_undo);
+    if rc_ab.is_ok() {
+        return rc_ab;
+    }
+    // Длинные пути (>260) и часть UNC SHFileOperation не берёт в сыром виде —
+    // повтор с verbatim-префиксом (\\?\...). Дёшево, только при ошибке.
+    let verbatim: Vec<String> = paths.iter().map(|p| crate::pathx::to_verbatim(p)).collect();
+    shell_delete_raw(&verbatim, allow_undo)
+}
+
+fn shell_delete_raw(paths: &[String], allow_undo: bool) -> Result<(), (i32, bool)> {
     let buf = paths_to_double_null(paths);
     let title = wide("");
     let mut op = SHFILEOPSTRUCTW {
@@ -305,6 +316,24 @@ pub fn winerror_text(code: u32) -> &'static str {
         21 => "ERROR_NOT_READY",
         32 => "ERROR_SHARING_VIOLATION",
         33 => "ERROR_LOCK_VIOLATION",
+        // DE_* из shellapi: SHFileOperation возвращает не Win32-коды,
+        // а свои (0x71+), без таблицы это читается как UNKNOWN.
+        0x71 => "DE_INSRCDST",
+        0x72 => "DE_MANY_SRC",
+        0x74 => "DE_ROOTDIR",
+        0x75 => "DE_OPCANCELLED",
+        0x76 => "DE_DESTSUBTREE",
+        0x78 => "DE_ACCESSDENIEDSRC",
+        0x7A => "DE_PATHTOODEEP",
+        0x7C => "DE_INVALIDFILES",
+        0x7D => "DE_DESTSAMETREE",
+        0x7E => "DE_FLDDOESTOODEEP",
+        0x80 => "DE_MANYDEST",
+        0x81 => "DE_INVALIDFILES",
+        0x82 => "DE_SAMEFILE",
+        0x83 => "DE_RENAM_REPLACE",
+        0x84 => "DE_DIFFDIR",
+        0x85 => "DE_ROOTDIR|DE_DESTSUBTREE",
         87 => "ERROR_INVALID_PARAMETER",
         145 => "ERROR_DIRECTORY_NOT_EMPTY",
         206 => "ERROR_FILENAME_EXCED_RANGE",

@@ -111,3 +111,11 @@ class WorkerPool:
     @property
     def pool(self) -> QThreadPool:
         return self._pool
+
+    def shutdown(self, wait_ms: int = 3000) -> None:
+        """Закрытие приложения: снять очередь и дождаться бегущих задач."""
+        pool = self._pool
+        if pool is None:
+            return
+        pool.clear()
+        pool.waitForDone(wait_ms)

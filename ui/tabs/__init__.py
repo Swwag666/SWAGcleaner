@@ -920,7 +920,7 @@ class TweaksTab(EmptyTab):
             else "tweaks.svc_other"
         mode_key = f"tweaks.mode_{service.start_mode}" \
             if service.start_mode in ("automatic", "manual", "disabled") \
-            else "tweaks.mode_manual"
+            else "tweaks.mode_unknown"
         layout.addWidget(hint(ctx().tr(state_key), row))
         layout.addWidget(hint(ctx().tr(mode_key), row))
         return row

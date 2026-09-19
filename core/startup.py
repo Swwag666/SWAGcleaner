@@ -11,7 +11,9 @@
 """
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import typing as t
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +41,7 @@ class StartupEntry:
     source: str  # registry | startup_folder
     hive: str = ""       # HKCU/HKLM (для registry)
     key_path: str = ""   # путь ключа (для registry)
+    value_type: int = 1  # REG_SZ=1, REG_EXPAND_SZ=2... — откат обязан вернуть ТИП
 
 
 class RegistryProtocol(t.Protocol):
@@ -117,10 +120,11 @@ def read_startup(registry: t.Optional[RegistryProtocol] = None,
     registry = registry if registry is not None else WinregRegistry()
     entries: t.List[StartupEntry] = []
     for hive, key_path in _RUN_KEYS:
-        for name, data, _vtype in registry.list_values(hive, key_path):
+        for name, data, vtype in registry.list_values(hive, key_path):
             entries.append(StartupEntry(
                 name=name, path=data, enabled=True,
-                source=SOURCE_REGISTRY, hive=hive, key_path=key_path))
+                source=SOURCE_REGISTRY, hive=hive, key_path=key_path,
+                value_type=vtype))
     for folder in (folders if folders is not None else startup_folders()):
         try:
             files = sorted(folder.iterdir())
@@ -147,6 +151,21 @@ class StartupManager:
     def get_startup_entries(self) -> t.List[StartupEntry]:
         return read_startup(self._registry)
 
+    @staticmethod
+    def _snapshot_name(entry: StartupEntry) -> str:
+        r"""Имя снапшота: уникально по (hive, key, name) и безопасно как файл.
+
+        Голое имя значения годилось бы только для HKCU\Run: Run\Foo и
+        RunOnce\Foo бились об одно имя, а символы вроде «\» или «..»
+        превращали снапшот в путь вне папки бэкапов.
+        """
+        key_hash = hashlib.sha1(entry.key_path.encode("utf-8")).hexdigest()[:8]
+        full = f"{entry.hive}|{entry.key_path}|{entry.name}"
+        full_hash = hashlib.sha1(full.encode("utf-8")).hexdigest()[:8]
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", entry.name)[:40] or "x"
+        safe = safe.replace("..", "_").strip(".") or "x"
+        return f"startup-{entry.hive}-{key_hash}-{safe}-{full_hash}"
+
     def disable(self, entry: StartupEntry) -> str:
         """Отключить элемент: снапшот в BackupStore, затем удаление записи.
 
@@ -158,15 +177,20 @@ class StartupManager:
             raise ValueError(f"не умею отключать {entry.source}: {entry.name}")
         if self._store is None:
             raise ValueError("нет хранилища бэкапов — отключать нельзя")
-        snapshot = f"startup-{entry.hive}-{entry.name}".replace("\\", "_")
+        snapshot = self._snapshot_name(entry)
         self._store.save(snapshot, {
             "hive": entry.hive,
             "key_path": entry.key_path,
             "value_name": entry.name,
             "value_data": entry.path,
-            "value_type": 1,  # REG_SZ
+            "value_type": entry.value_type,
         }, kind="startup_disable")
-        self._registry.delete_value(entry.hive, entry.key_path, entry.name)
+        try:
+            self._registry.delete_value(entry.hive, entry.key_path, entry.name)
+        except OSError:
+            # Например HKLM без прав админа: запись жива, снапшот — сирота.
+            self._store.remove(snapshot)
+            raise
         return snapshot
 
     def restore(self, snapshot: str) -> None:

@@ -35,23 +35,52 @@ pub fn strip_verbatim(path: &str) -> &str {
     path
 }
 
+/// Нормализация пути СТРОКОВО, без обращения к ФС:
+/// - `\` -> `/`, нижний регистр, verbatim-префиксы сняты;
+/// - сегменты "." выкидываются, ".." снимает предыдущий сегмент
+///   (выше корня диска/шары не поднимаемся: лишние ".." ОТБРАСЫВАЮТСЯ —
+///   это закрывает обход белого списка через "..\");
+/// - у каждого сегмента срезаются trailing dots/spaces
+///   (семантика Win32: "dir .\file" == "dir\file", "name.txt " == "name.txt").
 pub fn norm(path: &str) -> String {
     let src = strip_verbatim(path);
-    let unc = path.starts_with("\\\\?\\UNC\\");
+    let unc = path.starts_with("\\\\?\\UNC\\") || src.starts_with("\\\\");
+    // UNC: //srv/share — корень, ".." не должен съедать шару/сервер.
+    let min_keep = if unc { 2 } else { 0 };
+    let mut segs: Vec<String> = Vec::new();
+    for part in src.split(|c| c == '\\' || c == '/') {
+        // Сегменты только из точек/пробелов — особые по правилам Win32:
+        // "." = текущий каталог, ".." (и сводящиеся к нему ".. ", ".. .")
+        // = родитель, а 3+ точек — ЛИТЕРАЛЬНОЕ имя (Windows сохраняет "..."
+        // как каталог, не сводит к ".."; mkdir ... работает). Greedy-trim
+        // тут нельзя: он стёр бы ".." целиком и превратил бы "..." в "..".
+        if part.chars().all(|c| c == '.' || c == ' ') {
+            let dots = part.chars().take_while(|c| *c == '.').count();
+            if dots == 2 {
+                if segs.len() > min_keep {
+                    if let Some(last) = segs.last() {
+                        if !last.ends_with(':') {
+                            segs.pop();
+                        }
+                    }
+                }
+            } else if dots >= 3 {
+                segs.push(".".repeat(dots));
+            }
+            continue;
+        }
+        // Обычный сегмент: срезаем хвостовые точки/пробелы (семантика Win32).
+        let cleaned = part.trim_end_matches(['.', ' ']);
+        if cleaned.is_empty() {
+            continue;
+        }
+        segs.push(cleaned.chars().flat_map(|c| c.to_lowercase()).collect());
+    }
     let mut s = String::with_capacity(src.len() + 2);
     if unc {
         s.push_str("//");
     }
-    for c in src.chars() {
-        if c == '\\' {
-            s.push('/');
-        } else {
-            s.extend(c.to_lowercase());
-        }
-    }
-    while s.ends_with('/') && s.len() > 1 {
-        s.pop();
-    }
+    s.push_str(&segs.join("/"));
     s
 }
 
@@ -215,5 +244,40 @@ mod tests {
     fn chitaet_chelovecheski_razmery() {
         assert_eq!(bytes_human(512), "512 B");
         assert_eq!(bytes_human(2048), "2.0 KB");
+    }
+
+    #[test]
+    fn norm_shlopivaet_tochki_i_katalogi_vverh() {
+        assert_eq!(norm("c:/windows/system32/../temp"), "c:/windows/temp");
+        assert_eq!(norm("C:\\Windows\\System32\\.\\drivers"), "c:/windows/system32/drivers");
+        assert_eq!(norm("c:/a/./b/../c"), "c:/a/c");
+    }
+
+    #[test]
+    fn norm_srezaet_hvostovye_tochki_i_probely_segmentov() {
+        // Win32: "dir .\file" == "dir\file", "name " == "name"
+        assert_eq!(norm("c:/windows/system32 ./x"), "c:/windows/system32/x");
+        assert_eq!(norm("c:/temp/name.txt "), "c:/temp/name.txt");
+        assert_eq!(norm("c:/temp/name.txt."), "c:/temp/name.txt");
+    }
+
+    #[test]
+    fn norm_ne_daet_podnyatsya_vyshe_kornya() {
+        // Лишние ".." на корне отбрасываются: обход белого списка через
+        // "c:/temp/../../windows" превращается в честный "c:/windows".
+        assert_eq!(norm("c:/../windows"), "c:/windows");
+        assert_eq!(norm("c:/temp/../../windows/system32"), "c:/windows/system32");
+        assert_eq!(norm("c:/"), "c:");
+        // ".." с хвостовыми точками/пробелами — тот же переход наверх.
+        assert_eq!(norm("c:/a/b/.. ./c"), "c:/a/c");
+        // "..." — литеральное имя каталога (Windows его сохраняет).
+        assert_eq!(norm("c:/a/b/.../c"), "c:/a/b/.../c");
+    }
+
+    #[test]
+    fn norm_unc_ne_daet_sest_sharu() {
+        assert_eq!(norm("\\\\srv\\share\\a\\..\\b"), "//srv/share/b");
+        assert_eq!(norm("\\\\srv\\share\\..\\..\\x"), "//srv/share/x");
+        assert_eq!(norm("\\\\srv\\share\\"), "//srv/share");
     }
 }

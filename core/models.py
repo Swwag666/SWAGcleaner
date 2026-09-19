@@ -13,11 +13,13 @@ from dataclasses import dataclass, field
 class AppInfo:
     """Единица информации об установленной программе.
 
-    Сохраняет display_name, install_location, publisher.
+    Сохраняет display_name, install_location, publisher и строку
+    штатного деинсталлятора (UninstallString), если она есть в реестре.
     """
     display_name: str
     install_location: str | None = None
     publisher: str | None = None
+    uninstall_string: str | None = None
 
     @property
     def install_root(self) -> str | None:

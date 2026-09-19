@@ -56,9 +56,10 @@ def _win32_list_services() -> t.List[ServiceInfo]:
                 finally:
                     win32service.CloseServiceHandle(handle)
             except Exception:
-                # Нет доступа к конфигурации (защищённые службы) — честно
-                # показываем состояние, режим помечаем как неизвестный.
-                start_mode = "manual"
+                # Нет доступа к конфигурации (защищённые службы): честный
+                # "unknown", а не вранье про "manual" — иначе пользователь
+                # решит, что службу можно смело дергать.
+                start_mode = "unknown"
             out.append(ServiceInfo(
                 name=name,
                 state=state_map.get(status[1], "other"),

@@ -115,10 +115,12 @@ class WindowsInstalledProvider(InstalledProvider):
                     return None
                 install_location = _reg_value(winreg, key, "InstallLocation")
                 publisher = _reg_value(winreg, key, "Publisher")
+                uninstall_string = _reg_value(winreg, key, "UninstallString")
                 return AppInfo(
                     display_name=display_name.strip(),
                     install_location=install_location if isinstance(install_location, str) else None,
                     publisher=publisher if isinstance(publisher, str) else None,
+                    uninstall_string=uninstall_string if isinstance(uninstall_string, str) else None,
                 )
         except OSError:
             return None

@@ -21,7 +21,7 @@ import threading
 import typing as t
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 
 from core.swagscan import FileEvent, SwagscanClient, SwagscanError, get_client
 from ui.context import ctx
@@ -36,7 +36,7 @@ LANE_DIRECT = "direct"
 # Порог стрима кандидатов в память: выше него пункты не копим (и удаление
 # из окна честно просит подождать экран категорий), но сводка по категориям
 # полна всегда — она считается из самого стрима, а не из накопленного.
-MAX_SHOWN_CANDIDATES = 200_000
+MAX_SHOWN_CANDIDATES = 50_000
 
 
 def human_size(num_bytes: float) -> str:
@@ -161,10 +161,17 @@ class Session(QObject):
         self._last_scan = ScanResult()
         self._last_groups: t.List[DupGroup] = []
         self._last_purge: t.Optional[PurgeReport] = None
+        self._last_recs: t.List[t.Dict[str, t.Any]] = []
+        self._last_uninstallers: t.Dict[str, str] = {}
         # Журнал и бэкапы ленивые: папки создаются при первом действии,
         # а не при старте окна.
         self._journal: t.Any = None
         self._store: t.Any = None
+        # Сброс занятости — ТОЛЬКО в главном потоке: воркер шлёт сигнал,
+        # queued-слот щёлкает флагом. Иначе окно могло стартовать новую
+        # задачу до прихода taskFinished от старой (гонка потоков).
+        self.taskFinished.connect(self._settle, Qt.ConnectionType.QueuedConnection)
+        self.taskFailed.connect(self._settle_failed, Qt.ConnectionType.QueuedConnection)
 
     # ---------- журнал и бэкапы (правило 8.4: след на каждое действие) ----------
 
@@ -220,6 +227,26 @@ class Session(QObject):
         except Exception:  # noqa: BLE001 - отмена не должна ронять окно
             _LOGGER.warning("cancel не дошёл до ядра", exc_info=True)
 
+    def shutdown(self) -> None:
+        """Закрытие окна: мягкая отмена, подождать пул, погасить ядро.
+
+        Без этого swagscan.exe оставался сиротой после закрытия окна
+        (найдено аудитом): процесс жил и держал stdin/stdout.
+        """
+        self._cancel.set()
+        try:
+            self._client.cancel()
+        except Exception:
+            pass
+        try:
+            self._pool.shutdown()
+        except Exception:
+            pass
+        try:
+            self._client.stop()
+        except Exception:
+            pass
+
     # ---------- запуск задач ----------
 
     def _set_busy(self, busy: bool) -> None:
@@ -227,6 +254,13 @@ class Session(QObject):
             return
         self._busy = busy
         self.busyChanged.emit(busy)
+
+    def _settle(self, _name: str, _result: object) -> None:
+        """Задача завершилась — окно свободно (слот главного потока)."""
+        self._set_busy(False)
+
+    def _settle_failed(self, _name: str, _message: str) -> None:
+        self._set_busy(False)
 
     def _run(
         self,
@@ -244,11 +278,10 @@ class Session(QObject):
         self._set_busy(True)
 
         def _done(result: t.Any) -> None:
-            self._set_busy(False)
+            # Флаг занятости снимет queued-слот _settle в главном потоке.
             self.taskFinished.emit(name, result)
 
         def _error(message: str) -> None:
-            self._set_busy(False)
             self.errorOccurred.emit(message)
             self.taskFailed.emit(name, message)
 
@@ -275,9 +308,62 @@ class Session(QObject):
             apps = provider.get_installed_apps()
             advisor = Advisor([KnownBloatwareRule(set()), BloatwareExplorerRule()])
             recs = TaskPrioritizer().prioritize(advisor.analyze(apps))
+            # План применяется позже кнопкой «Применить»: запоминаем и
+            # рекомендации, и штатные деинсталляторы найденных программ.
+            self._last_recs = recs
+            self._last_uninstallers = {
+                app.display_name: app.uninstall_string
+                for app in apps if app.uninstall_string
+            }
             return {"apps": len(apps), "recs": recs}
 
         self._run("advisor", work)
+
+    def apply_advisor(self) -> None:
+        """Применить план советника: штатные деинсталляторы для remove-реков.
+
+        Честная семантика кнопки «Применить»: мы не переcкачиваем список
+        и не притворяемся удалением — для каждой программы из плана с
+        рекомендацией «удалить» запускается её собственный деинсталлятор
+        (UninstallString из реестра), подтверждение внутри него.
+        """
+
+        def work() -> t.Dict[str, t.Any]:
+            import subprocess
+
+            launched: t.List[str] = []
+            for rec in self._last_recs:
+                if rec.get("type") != "remove":
+                    continue
+                name = str(rec.get("name", ""))
+                uninstaller = self._last_uninstallers.get(name)
+                if not uninstaller:
+                    continue
+                try:
+                    subprocess.Popen(uninstaller, shell=True)
+                    launched.append(name)
+                except OSError:
+                    _LOGGER.warning("деинсталлятор не стартовал: %s", name)
+            try:
+                self.journal().log(
+                    "advisor_apply",
+                    ctx().tr("session.apply_launched").format(
+                        count=len(launched)),
+                    outcome="ok", launched=len(launched))
+            except Exception:  # noqa: BLE001 — журнал не должен ронять задачу
+                _LOGGER.warning("строка журнала не записана", exc_info=True)
+            return {"launched": launched}
+
+        self._run("advisor_apply", work)
+
+    def advisor_removals(self) -> t.List[str]:
+        """Имена программ плана с рекомендацией «удалить» и деинсталлятором."""
+        return [
+            str(rec.get("name", ""))
+            for rec in self._last_recs
+            if rec.get("type") == "remove"
+            and str(rec.get("name", "")) in self._last_uninstallers
+        ]
 
     # ---------- чистильщик ----------
 
@@ -355,22 +441,67 @@ class Session(QObject):
                 self.progressTick.emit(max(0, min(100, round(100 * done / total))))
 
         def work() -> PurgeReport:
-            data = self._client.purge(items, dry_run=dry_run,
-                                      on_progress=on_progress)
-            report = PurgeReport.from_core(data, dry_run)
-            self._last_purge = report
-            try:
-                self.journal().log(
-                    "purge", self.describe_purge(report),
-                    outcome="error" if report.failures else "ok",
-                    dry_run=report.dry_run, planned=report.planned,
-                    removed=report.removed, freed_bytes=report.freed_bytes,
-                    refused=report.refused, failures=len(report.failures))
-            except Exception:  # noqa: BLE001 — журнал не должен ронять удаление
-                _LOGGER.warning("строка журнала не записана", exc_info=True)
-            return report
+            return self._purge_work(items, dry_run, on_progress)
 
         self._run("purge", work)
+
+    def purge_duplicates(self, groups: t.Sequence[DupGroup]) -> None:
+        """Удаление дублей: в каждой группе остаётся самый свежий файл.
+
+        Выбор «кого оставить» (stat по mtime) делается здесь, в рабочем
+        потоке: stat тысяч путей в главном потоке на медленном диске
+        замораживал окно (найдено контрольным аудитом).
+        """
+
+        def work() -> PurgeReport:
+            from pathlib import Path
+
+            items: t.List[t.Dict[str, str]] = []
+            for group in groups:
+                if len(group.paths) < 2:
+                    continue
+                keep = max(
+                    group.paths,
+                    key=lambda p: Path(p).stat().st_mtime
+                    if Path(p).exists() else 0,
+                )
+                items.extend(
+                    {"path": p, "category": "dupes.photo"}
+                    for p in group.paths if p != keep
+                )
+            return self._purge_work(items, False)
+
+        self._run("purge", work)
+
+    def _purge_work(
+        self,
+        items: t.Sequence[t.Mapping[str, str]],
+        dry_run: bool,
+        on_progress: t.Optional[t.Callable[[dict], None]] = None,
+    ) -> PurgeReport:
+        """Общая часть удаления: ядро, отчёт, журнал, сброс кешей.
+
+        После настоящего (не репетиционного) удаления кеши скана и групп
+        дублей обнуляются: файлы уже ушли, и повторное удаление по старому
+        списку честно отрапортует «уже нет» вместо мнимого успеха.
+        """
+        data = self._client.purge(items, dry_run=dry_run,
+                                  on_progress=on_progress)
+        report = PurgeReport.from_core(data, dry_run)
+        self._last_purge = report
+        if not dry_run:
+            self._last_scan = ScanResult()
+            self._last_groups = []
+        try:
+            self.journal().log(
+                "purge", self.describe_purge(report),
+                outcome="error" if report.failures else "ok",
+                dry_run=report.dry_run, planned=report.planned,
+                removed=report.removed, freed_bytes=report.freed_bytes,
+                refused=report.refused, failures=len(report.failures))
+        except Exception:  # noqa: BLE001 — журнал не должен ронять удаление
+            _LOGGER.warning("строка журнала не записана", exc_info=True)
+        return report
 
     # ---------- твики: автозагрузка и службы (M4), бэкапы на диске (M5) ----------
 
@@ -404,6 +535,7 @@ class Session(QObject):
                 "value": entry.path,
                 "hive": entry.hive,
                 "key_path": entry.key_path,
+                "value_type": getattr(entry, "value_type", 1),
             }])[0]
             if not result.success:
                 raise RuntimeError(result.message)

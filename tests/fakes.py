@@ -118,6 +118,21 @@ class FakeCoreSession(QObject):
         self.purge_calls.append((list(items), dry_run))
         self._start("purge")
 
+    def purge_duplicates(self, groups) -> None:
+        # Паритет с Session.purge_duplicates: фейк помечает вызов и идёт
+        # в ту же задачу «purge», что и обычное удаление.
+        self.purge_calls.append((list(groups), False))
+        self._start("purge")
+
+    def advisor_removals(self) -> t.List[str]:
+        return []
+
+    def apply_advisor(self) -> None:
+        self._start("advisor_apply")
+
+    def shutdown(self) -> None:
+        pass
+
     def load_tweaks(self) -> None:
         self._start("tweaks_load")
 
@@ -146,6 +161,10 @@ class FakeCoreSession(QObject):
     def finish_purge(self, report: t.Optional[PurgeReport] = None) -> None:
         self._finish("purge", report if report is not None
                      else PurgeReport(dry_run=False, removed=3, freed_bytes=1024))
+
+    def finish_advisor_apply(self, payload: t.Optional[dict] = None) -> None:
+        self._finish("advisor_apply", payload if payload is not None
+                     else {"launched": []})
 
     def finish_tweaks(self, payload: t.Optional[dict] = None) -> None:
         self._finish("tweaks_load", payload if payload is not None

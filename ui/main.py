@@ -30,6 +30,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -444,8 +445,7 @@ class MainWindow(QMainWindow):
         self._session.taskFinished.connect(self._on_task_finished)
         self._session.taskFailed.connect(lambda _name, _msg: None)
         for page in self._pages:
-            for signal_name in ("scanRequested", "chooseFolderRequested",
-                                "applyRequested", "cleanRequested",
+            for signal_name in ("scanRequested", "cleanRequested",
                                 "deleteRequested"):
                 signal = getattr(page, signal_name, None)
                 if signal is None:
@@ -453,6 +453,15 @@ class MainWindow(QMainWindow):
                 needs_confirm = signal_name in self.CONFIRM_SIGNALS
                 signal.connect(
                     lambda confirm=needs_confirm: self.run_action(confirm))
+            # У этих двух кнопок своя семантика, а не «запустить задачу»:
+            # «Папка» открывает выбор каталога, «Применить» гонит план
+            # советника в деинсталляторы — обе через свои обработчики.
+            choose_folder = getattr(page, "chooseFolderRequested", None)
+            if choose_folder is not None:
+                choose_folder.connect(self._ask_dedup_folder)
+            apply_plan = getattr(page, "applyRequested", None)
+            if apply_plan is not None:
+                apply_plan.connect(self._ask_apply_advisor)
             # Твики: свои сигналы с аргументами, поэтому вяжутся отдельно.
             refresh = getattr(page, "refreshRequested", None)
             if refresh is not None:
@@ -470,20 +479,31 @@ class MainWindow(QMainWindow):
             page.set_progress(percent)
 
     def _on_task_finished(self, name: str, result: object) -> None:
-        """Итог задачи уже в главном потоке: раскладываем по странице."""
+        """Итог задачи уже в главном потоке: раскладываем по странице.
+
+        Обработчик итога не должен уронить окно: любое исключение внутри
+        _finish_* ловится здесь, окно возвращается в свободное состояние.
+        """
         page = self._work_page or self._current_page()
-        if name == "advisor":
-            self._finish_advisor(result, page)
-        elif name == "cleaner_scan":
-            self._finish_cleaner(result, page)
-        elif name == "dedup":
-            self._finish_dedup(result, page)
-        elif name == "purge":
-            self._finish_purge(result, page)
-        elif name == "tweaks_load":
-            self._finish_tweaks(result, page)
-        elif name == "tweaks_action":
-            self._finish_tweaks_action(result, page)
+        try:
+            if name == "advisor":
+                self._finish_advisor(result, page)
+            elif name == "advisor_apply":
+                self._finish_advisor_apply(result, page)
+            elif name == "cleaner_scan":
+                self._finish_cleaner(result, page)
+            elif name == "dedup":
+                self._finish_dedup(result, page)
+            elif name == "purge":
+                self._finish_purge(result, page)
+            elif name == "tweaks_load":
+                self._finish_tweaks(result, page)
+            elif name == "tweaks_action":
+                self._finish_tweaks_action(result, page)
+        except Exception:  # noqa: BLE001 - см. docstring
+            _LOGGER.exception("обработчик итога задачи упал: %s", name)
+            self._work_page = None
+            self.set_busy(False)
 
     def _on_core_error(self, message: str) -> None:
         """Ошибка ядра: статус страницы, реплика персонажа, звук."""
@@ -583,9 +603,23 @@ class MainWindow(QMainWindow):
              summary.risk)
             for summary in summaries[:12]
         ]
+        # Итог в примечании считаем по фактическому фильтру удаления —
+        # основной категории пункта: сводки считают файл в каждой своей
+        # категории и потому завышали обещание (найдено аудитом).
+        wanted = selected if selected is not None \
+            else {s.id for s in summaries}
+        chosen = [i for i in scan.items if i.primary_category() in wanted]
+        if chosen:
+            count = len(chosen)
+            size = sum(i.size for i in chosen)
+        else:
+            # Стрим не влез в память: точных пунктов нет, честно показываем
+            # оценку по сводкам (удаление всё равно дальше откажет с
+            # «пересканируйте» — обмана не будет).
+            count = sum(s.files for s in summaries)
+            size = sum(s.bytes for s in summaries)
         note = self._context.tr("session.purge_real").format(
-            count=sum(s.files for s in summaries),
-            size=human_size(sum(s.bytes for s in summaries)))
+            count=count, size=human_size(size))
         return ConfirmDialog.ask(self, items, note=note)
 
     def _start_work(self, name: str, page: QWidget) -> None:
@@ -656,19 +690,13 @@ class MainWindow(QMainWindow):
         self._session.purge_items(items, False)
 
     def _start_purge_dedup(self, page: QWidget) -> None:
-        """Удаление дубликатов фото: из каждой группы живёт свежая копия."""
+        """Удаление дубликатов фото: из каждой группы живёт свежая копия.
+
+        Выбор «кого оставить» (stat по mtime) делает сессия в рабочем
+        потоке: здесь, в главном, он на медленном диске морозил окно.
+        """
         groups = self._session.last_groups()
-        items: List[dict] = []
-        for group in groups:
-            if len(group.paths) < 2:
-                continue
-            keep = max(group.paths, key=lambda p: Path(p).stat().st_mtime
-                       if Path(p).exists() else 0)
-            items.extend(
-                {"path": p, "category": "dupes.photo"}
-                for p in group.paths if p != keep
-            )
-        if not items:
+        if not any(len(g.paths) > 1 for g in groups):
             sounds.play("error")
             return
         self._work_page = page
@@ -679,7 +707,71 @@ class MainWindow(QMainWindow):
         if hasattr(page, "set_progress"):
             page.set_progress(0)
 
-        self._session.purge_items(items, False)
+        self._session.purge_duplicates(groups)
+
+    def _ask_dedup_folder(self) -> None:
+        """Кнопка «Папка»: выбрать каталог и искать дубликаты в нём."""
+        if self.is_busy():
+            sounds.play("error")
+            return
+        folder = QFileDialog.getExistingDirectory(
+            self, self._context.tr("dedup.folder_button"))
+        if not folder:
+            return
+        page = self._current_page()
+        if page is None:
+            return
+        self._work_page = page
+        self.set_busy(True)
+        sounds.play("click")
+        if hasattr(page, "setStatus"):
+            page.setStatus(self._context.tr("status.scanning"))
+        if hasattr(page, "set_progress"):
+            page.set_progress(0)
+        self._session.scan_duplicates([folder])
+
+    def _ask_apply_advisor(self) -> None:
+        """Кнопка «Применить выбранное»: деинсталляторы программ из плана.
+
+        Честная семантика: для каждой рекомендации «удалить» запускается
+        её собственный деинсталлятор (UninstallString из реестра) — и об
+        этом сказано в примечании подтверждения.
+        """
+        if self.is_busy():
+            sounds.play("error")
+            return
+        page = self._current_page()
+        names = self._session.advisor_removals()
+        if not names:
+            sounds.play("error")
+            text = self._context.tr("advisor.apply_none")
+            if page is not None and hasattr(page, "setStatus"):
+                page.setStatus(text)
+            self._assistant.say(text, "idle")
+            return
+        items = [(name, "medium") for name in names[:12]]
+        note = self._context.tr("advisor.apply_note")
+        if not ConfirmDialog.ask(self, items, note=note):
+            self._assistant.say(
+                self._context.tr("character.lines.cancelled"), "idle")
+            return
+        self._work_page = page
+        self.set_busy(True)
+        sounds.play("click")
+        if page is not None and hasattr(page, "setStatus"):
+            page.setStatus(self._context.tr("status.processing"))
+        self._session.apply_advisor()
+
+    def _finish_advisor_apply(self, result: dict, page: QWidget) -> None:
+        self._work_page = None
+        self.set_busy(False)
+        launched = result.get("launched", []) if isinstance(result, dict) else []
+        text = self._context.tr("session.apply_launched").format(
+            count=len(launched))
+        if page is not None and hasattr(page, "setStatus"):
+            page.setStatus(text)
+        sounds.play("done" if launched else "error")
+        self._assistant.say(text, "calm" if launched else "idle")
 
     def _finish_purge(self, report, page: QWidget) -> None:
         self._work_page = None
@@ -865,6 +957,17 @@ class MainWindow(QMainWindow):
         """Провести акцентную полоску под шапкой заново."""
         self._accent_bar.sweep()
 
+    def keyPressEvent(self, event) -> None:  # noqa: ANN001
+        """Esc во время работы — отмена текущей задачи (сигнал ядру)."""
+        if event.key() == Qt.Key.Key_Escape and self.is_busy():
+            self._session.request_cancel()
+            if self._status_label is not None:
+                self._status_label.setText(
+                    self._context.tr("status.cancelling"))
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
         # Полоска должна занимать всю шапку и после изменения размера окна.
@@ -913,3 +1016,15 @@ class MainWindow(QMainWindow):
     def setStatus(self, status: str) -> None:
         self._status = status
         self._status_label.setText(status)
+
+    def closeEvent(self, event) -> None:  # noqa: ANN001
+        """Закрытие окна: гасим сессию (отмена задачи, стоп ядра, пул).
+
+        Без этого swagscan.exe оставался сиротой в диспетчере задач
+        (найдено контрольным аудитом): процесс жил с открытыми pipe'ами.
+        """
+        try:
+            self._session.shutdown()
+        except Exception:  # noqa: BLE001 - закрытие окна не должно падать
+            pass
+        super().closeEvent(event)

@@ -132,6 +132,7 @@ pub fn read_partial(path_win: &str) -> Option<Vec<u8>> {
     Some(buf)
 }
 
+#[cfg(test)]
 pub fn read_full(path_win: &str) -> Option<Vec<u8>> {
     let (mut f, len) = read_open(path_win)?;
     let mut buf = vec![0u8; len as usize];
@@ -141,12 +142,31 @@ pub fn read_full(path_win: &str) -> Option<Vec<u8>> {
     Some(buf)
 }
 
+/// Полное BLAKE3 без загрузки файла в память: буфер 4 МБ, потоково.
+/// На 20-ГБ файлах и 8 потоках rayon read_full давал бы многократные
+/// гигабайты одновременно — тут пик памяти постоянный.
+pub fn hash_file(path_win: &str) -> Option<String> {
+    let (mut f, _len) = read_open(path_win)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = vec![0u8; 4 << 20];
+    loop {
+        match f.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                hasher.update(&buf[..n]);
+            }
+            Err(_) => return None,
+        }
+    }
+    Some(hasher.finalize().to_hex().to_string())
+}
+
 fn hash_bytes(data: &[u8]) -> String {
     blake3::hash(data).to_hex().to_string()
 }
 
 fn throttled(ev: &Events, job: &str, phase: &str, n: usize, total: usize) {
-    if n % 256 != 0 {
+    if n != 1 && n % 256 != 0 {
         return;
     }
     ev.progress(
@@ -259,8 +279,7 @@ pub fn run(plan: &DupPlan, ev: &Events, cancel: &Arc<AtomicBool>, job: &str) -> 
                 if cn.load(Ordering::Relaxed) {
                     return;
                 }
-                if let Some(buf) = read_full(&win(&s.path)) {
-                    let h = hash_bytes(&buf);
+                if let Some(h) = hash_file(&win(&s.path)) {
                     ff.lock().unwrap().entry(h).or_insert_with(Vec::new).push(s.clone());
                 }
                 let n = dn.fetch_add(1, Ordering::Relaxed) + 1;
@@ -287,15 +306,18 @@ pub fn run(plan: &DupPlan, ev: &Events, cancel: &Arc<AtomicBool>, job: &str) -> 
         let wb = b.1 * (b.2.len() as u64 - 1);
         wb.cmp(&wa)
     });
+    // wasted считаем по ВСЕМ группам до усечения выдачи.
+    let wasted: u64 = groups
+        .iter()
+        .map(|(_, size, paths)| size * (paths.len() as u64 - 1))
+        .sum();
     groups.truncate(plan.limit_groups);
 
-    let mut wasted = 0u64;
     let mut body = String::from("[");
     for (i, (h, size, paths)) in groups.iter().enumerate() {
         if i > 0 {
             body.push(',');
         }
-        wasted += size * (paths.len() as u64 - 1);
         body.push_str(&format!(
             "{{\"hash\":{},\"size\":{size},\"count\":{},\"paths\":[{}]}}",
             q(h),
@@ -345,5 +367,24 @@ mod tests {
     fn hash_stabilen() {
         assert_eq!(hash_bytes(b"abc"), hash_bytes(b"abc"));
         assert_ne!(hash_bytes(b"abc"), hash_bytes(b"abd"));
+    }
+
+    #[test]
+    fn potokovyj_hash_sovpadaet_s_polnym_chteniem() {
+        // Стриминг-хеш обязан давать тот же BLAKE3, что и read_full.
+        let dir = std::env::temp_dir().join(format!("swagscan_hs_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("big.bin");
+        // Больше одного буфера (4 МБ), чтобы цикл чтения прошёл несколько раз.
+        let mut data = Vec::with_capacity((5 << 20) + 12345);
+        let mut x: u64 = 0x12345678;
+        for _ in 0..data.capacity() {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+            data.push((x >> 33) as u8);
+        }
+        std::fs::write(&f, &data).unwrap();
+        let p = f.to_str().unwrap();
+        assert_eq!(hash_file(p).unwrap(), hash_bytes(&data));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

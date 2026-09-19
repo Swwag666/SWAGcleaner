@@ -32,6 +32,8 @@
     "stats_apps": "Programs found",
     "stats_recs": "Recommendations",
     "apply_button": "Apply selected",
+    "apply_none": "Nothing to apply from the plan: run a scan first.",
+    "apply_note": "Windows will open each app's own uninstaller — confirm inside each one.",
     "apply_running": "Applying…",
     "item_type_remove": "Remove",
     "item_type_disable": "Disable",
@@ -108,6 +110,7 @@
     "mode_automatic": "auto",
     "mode_manual": "manual",
     "mode_disabled": "disabled",
+    "mode_unknown": "unknown",
     "services_hint": "Services are read-only for now — disabling with a snapshot arrives next round.",
     "stats_startup": "At startup",
     "stats_services": "Services",
@@ -186,6 +189,7 @@
   "status": {
     "ready": "Ready",
     "scanning": "Scanning…",
+    "cancelling": "Cancelling…",
     "processing": "Processing…",
     "idle": "Idle"
   },
@@ -219,7 +223,8 @@
     "nothing_to_clean": "Scan first to find what to clean.",
     "need_rescan": "Too many items for one deletion — rescan and narrow the choice by categories.",
     "dup_keep_note": "The newest copy of each group is kept.",
-    "purge_real": "Will delete {count} items, {size}. Lanes are decided by the core: some to the Recycle Bin, some permanently."
+    "purge_real": "Will delete {count} items, {size}. Lanes are decided by the core: some to the Recycle Bin, some permanently.",
+    "apply_launched": "Uninstallers launched: {count}"
   },
   "cats": {
     "temp_app": "Temporary files of apps",

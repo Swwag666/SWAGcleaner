@@ -115,7 +115,7 @@ fn skip_dir_name(name: &str) -> bool {
 }
 
 struct Queue {
-    items: Mutex<VecDeque<(String, usize, usize)>>,
+    items: Mutex<VecDeque<(String, usize, usize, usize)>>,
 }
 
 impl Queue {
@@ -124,17 +124,21 @@ impl Queue {
             items: Mutex::new(VecDeque::new()),
         }
     }
-    fn push(&self, v: Vec<(String, usize, usize)>, c: &Counters) {
+    fn push(&self, v: Vec<(String, usize, usize, usize)>, c: &Counters) {
         c.pending.fetch_add(v.len(), Ordering::SeqCst);
         self.items.lock().unwrap().extend(v);
     }
-    fn pop(&self) -> Option<(String, usize, usize)> {
+    fn pop(&self) -> Option<(String, usize, usize, usize)> {
         self.items.lock().unwrap().pop_back()
     }
     fn empty(&self) -> bool {
         self.items.lock().unwrap().is_empty()
     }
 }
+
+/// Сколько junction/symlink-переходов подряд ещё идём при follow_reparse.
+/// Цикл "C:\a\link -> C:\a" без предела крутил бы обход бесконечно.
+const MAX_REPARSE_CHAIN: usize = 8;
 
 struct Local {
     own: HashMap<String, (u64, u64)>,
@@ -221,7 +225,6 @@ impl Local {
 
 pub struct Outcome {
     pub json: String,
-    pub cancelled: bool,
 }
 
 fn stream_file(ev: &Events, path_norm: &str, size: u64, mtime: i64, cats: &[&'static Cat]) {
@@ -234,13 +237,14 @@ fn stream_file(ev: &Events, path_norm: &str, size: u64, mtime: i64, cats: &[&'st
         s.push_str(&format!(",\"categories\":[{}]", ids.join(",")));
     }
     s.push('}');
-    ev.send_buffered(s);
+    ev.send(s);
 }
 
 fn walk_one(
     dir_norm: &str,
     depth: usize,
     my_root: usize,
+    reparse_depth: usize,
     plan: &Plan,
     ridx: &RootIndex,
     matcher: &Matcher,
@@ -273,14 +277,18 @@ fn walk_one(
 
             if is_dir {
                 counters.dirs.fetch_add(1, Ordering::Relaxed);
-                local.own.entry(child.clone()).or_insert((0, 0)).1 += 1;
+                local.own.entry(child.clone()).or_insert((0, 0));
                 if reparse && !plan.follow_reparse {
+                    counters.reparse.fetch_add(1, Ordering::Relaxed);
+                } else if reparse && reparse_depth >= MAX_REPARSE_CHAIN {
+                    // Цепочка переходов слишком длинная — почти наверняка цикл.
                     counters.reparse.fetch_add(1, Ordering::Relaxed);
                 } else if depth < plan.max_depth
                     && !skip_dir_name(&name)
                     && !ridx.covered_by_other(&child, my_root)
                 {
-                    queue.push(vec![(child, depth + 1, my_root)], counters);
+                    let next_reparse = if reparse { reparse_depth + 1 } else { 0 };
+                    queue.push(vec![(child, depth + 1, my_root, next_reparse)], counters);
                 }
             } else if plan.include_hidden || !(hidden || system) {
                 let size = wapi::find_size(&data);
@@ -322,7 +330,11 @@ fn record_file(
     }
 
     if let Some(p) = parent(&path_norm) {
-        local.own.entry(p.to_string()).or_insert((0, 0)).0 += size;
+        // own = dir -> (байты, ФАЙЛЫ): раньше во втором поле считались
+        // подкаталоги, и top_folders в JSON называл их "files".
+        let e = local.own.entry(p.to_string()).or_insert((0, 0));
+        e.0 += size;
+        e.1 += 1;
     }
     let ext = extension(&path_norm);
     let e = local.ext.entry(ext).or_insert((0, 0));
@@ -403,7 +415,7 @@ pub fn run(plan: &Plan, env: &Env, ev: &Events, cancel: &Arc<AtomicBool>, job: &
         roots
             .iter()
             .enumerate()
-            .map(|(i, r)| (r.clone(), 0usize, i))
+            .map(|(i, r)| (r.clone(), 0usize, i, 0usize))
             .collect(),
         &counters,
     );
@@ -443,11 +455,12 @@ pub fn run(plan: &Plan, env: &Env, ev: &Events, cancel: &Arc<AtomicBool>, job: &
                                 break;
                             }
                             match q_r.pop() {
-                                Some((dir, depth, my_root)) => {
+                                Some((dir, depth, my_root, reparse_depth)) => {
                                     walk_one(
                                         &dir,
                                         depth,
                                         my_root,
+                                        reparse_depth,
                                         plan_r,
                                         ri_r,
                                         m_r,
@@ -505,7 +518,7 @@ pub fn run(plan: &Plan, env: &Env, ev: &Events, cancel: &Arc<AtomicBool>, job: &
                     all.junk_files, all.junk_bytes, cancelled
                 ),
             };
-            Outcome { json, cancelled }
+            Outcome { json }
         }
         Mode::Aggregates => {
             let mut all = Local::new();
@@ -579,7 +592,7 @@ pub fn run(plan: &Plan, env: &Env, ev: &Events, cancel: &Arc<AtomicBool>, job: &
             if plan.want_categories {
                 json = inject_meta(&json, &mut samples_map, &matcher, env);
             }
-            Outcome { json, cancelled }
+            Outcome { json }
         }
     }
 }
