@@ -674,3 +674,190 @@ class TestServicesFixes:
         fake = [ServiceInfo("Protected", "running", "unknown")]
         controller = WindowsServiceController(provider=lambda: fake)
         assert controller.list_services()[0].start_mode == "unknown"
+
+class TestElevate:
+    def test_task_xml_escapes_path(self) -> None:
+        from core import elevate
+        xml = elevate._task_xml('C:\\A & B\\SWAGcleaner.exe')
+        assert 'A &amp; B' in xml
+        assert 'A & B\\' not in xml
+        assert 'HighestAvailable' in xml
+        assert '<Triggers />' in xml
+
+    def test_maybe_elevate_skips_non_frozen(self, monkeypatch: t.Any) -> None:
+        from core import elevate
+        monkeypatch.setattr(elevate, 'is_frozen', lambda: False)
+        assert elevate.maybe_elevate(['--gui']) is False
+
+    def test_maybe_elevate_admin_ensures_task(self, monkeypatch: t.Any) -> None:
+        from core import elevate
+        calls: list[str] = []
+        monkeypatch.setattr(elevate, 'is_frozen', lambda: True)
+        monkeypatch.setattr(elevate, 'is_admin', lambda: True)
+        monkeypatch.setattr(elevate, 'ensure_task', lambda: calls.append('ensure'))
+        assert elevate.maybe_elevate(['--gui']) is False
+        assert calls == ['ensure']
+
+    def test_maybe_elevate_via_task(self, monkeypatch: t.Any) -> None:
+        from core import elevate
+        monkeypatch.setattr(elevate, 'is_frozen', lambda: True)
+        monkeypatch.setattr(elevate, 'is_admin', lambda: False)
+        monkeypatch.setattr(elevate, 'task_exists', lambda: True)
+        monkeypatch.setattr(elevate, 'run_task', lambda: True)
+        monkeypatch.setattr(elevate, 'relaunch_elevated',
+                            lambda argv: (_ for _ in ()).throw(AssertionError('runas не нужен')))
+        assert elevate.maybe_elevate(['--gui']) is True
+
+    def test_maybe_elevate_first_run_runas(self, monkeypatch: t.Any) -> None:
+        from core import elevate
+        monkeypatch.setattr(elevate, 'is_frozen', lambda: True)
+        monkeypatch.setattr(elevate, 'is_admin', lambda: False)
+        monkeypatch.setattr(elevate, 'task_exists', lambda: False)
+        seen: list[list[str]] = []
+        monkeypatch.setattr(elevate, 'relaunch_elevated', lambda argv: seen.append(argv) or True)
+        assert elevate.maybe_elevate(['--gui']) is True
+        assert seen == [['--gui']]
+
+    def test_maybe_elevate_runas_declined(self, monkeypatch: t.Any) -> None:
+        from core import elevate
+        monkeypatch.setattr(elevate, 'is_frozen', lambda: True)
+        monkeypatch.setattr(elevate, 'is_admin', lambda: False)
+        monkeypatch.setattr(elevate, 'task_exists', lambda: False)
+        monkeypatch.setattr(elevate, 'relaunch_elevated', lambda argv: False)
+        assert elevate.maybe_elevate(['--gui']) is False
+
+    def test_register_task_writes_xml(self, monkeypatch: t.Any) -> None:
+        from core import elevate
+        captured: dict[str, str] = {}
+
+        class R:
+            returncode = 0
+            stderr = ''
+            stdout = ''
+
+        def fake_schtasks(*args: str, timeout: int = 30) -> R:
+            if '/create' in args:
+                xml_path = args[args.index('/xml') + 1]
+                captured['xml'] = open(xml_path, encoding='utf-16').read()
+            return R()
+
+        monkeypatch.setattr(elevate, '_schtasks', fake_schtasks)
+        monkeypatch.setattr(elevate, '_create_shortcut', lambda exe: None)
+        assert elevate.register_task('C:\\Tools\\SWAGcleaner.exe') is True
+        assert 'C:\\Tools\\SWAGcleaner.exe' in captured['xml']
+
+    def test_ensure_task_reregisters_on_move(self, monkeypatch: t.Any, tmp_path: t.Any) -> None:
+        from core import elevate
+        import sys as _sys
+        calls: list[str] = []
+        monkeypatch.setattr(elevate, 'is_frozen', lambda: True)
+        monkeypatch.setattr(elevate, 'task_exists', lambda: True)
+        monkeypatch.setattr(elevate, 'task_command', lambda: 'C:\\old\\SWAGcleaner.exe')
+        monkeypatch.setattr(elevate, 'register_task', lambda exe: calls.append(exe) or True)
+        monkeypatch.setattr(elevate, '_create_shortcut', lambda exe: None)
+        monkeypatch.setattr(_sys, 'executable', str(tmp_path / 'SWAGcleaner.exe'))
+        elevate.ensure_task()
+        assert calls == [str(tmp_path / 'SWAGcleaner.exe')]
+
+    def test_ensure_task_quiet_when_current(self, monkeypatch: t.Any, tmp_path: t.Any) -> None:
+        from core import elevate
+        import sys as _sys
+        monkeypatch.setattr(elevate, 'is_frozen', lambda: True)
+        monkeypatch.setattr(_sys, 'executable', str(tmp_path / 'SWAGcleaner.exe'))
+        monkeypatch.setattr(elevate, 'task_exists', lambda: True)
+        monkeypatch.setattr(elevate, 'task_command',
+                            lambda: str(tmp_path / 'SWAGcleaner.exe'))
+        monkeypatch.setattr(elevate, 'register_task',
+                            lambda exe: (_ for _ in ()).throw(AssertionError('не надо')))
+        elevate.ensure_task()
+class TestStartupRestoreGuard:
+    def test_restore_refuses_foreign_key(self, tmp_path: t.Any) -> None:
+        from core.backup import BackupStore
+        from core.startup import StartupManager
+
+        class MemoryRegistry:
+            def __init__(self) -> None:
+                self.writes: list[tuple] = []
+
+            def list_values(self, hive, key_path): return []
+            def delete_value(self, hive, key_path, value_name): pass
+            def set_value(self, hive, key_path, value_name, data, value_type):
+                self.writes.append((hive, key_path, value_name))
+
+        store = BackupStore(tmp_path / "bk")
+        store.save("snap-evil", {"hive": "HKLM", "key_path": r"Software\Evil",
+                                 "value_name": "x", "value_data": "y",
+                                 "value_type": 1})
+        reg = MemoryRegistry()
+        mgr = StartupManager(registry=reg, store=store)
+        with pytest.raises(ValueError):
+            mgr.restore("snap-evil")
+        assert reg.writes == []
+        assert (tmp_path / "bk" / "snap-evil.json").exists()
+
+    def test_restore_allows_run_key(self, tmp_path: t.Any) -> None:
+        from core.backup import BackupStore
+        from core.startup import StartupManager
+
+        class MemoryRegistry:
+            def __init__(self) -> None:
+                self.writes: list[tuple] = []
+
+            def list_values(self, hive, key_path): return []
+            def delete_value(self, hive, key_path, value_name): pass
+            def set_value(self, hive, key_path, value_name, data, value_type):
+                self.writes.append((hive, key_path, value_name, value_type))
+
+        store = BackupStore(tmp_path / "bk")
+        store.save("snap-ok", {"hive": "HKCU",
+                               "key_path": r"Software\Microsoft\Windows\CurrentVersion\Run",
+                               "value_name": "app", "value_data": "C:\\app.exe",
+                               "value_type": 2})
+        reg = MemoryRegistry()
+        mgr = StartupManager(registry=reg, store=store)
+        mgr.restore("snap-ok")
+        assert reg.writes == [("HKCU",
+                               r"Software\Microsoft\Windows\CurrentVersion\Run",
+                               "app", 2)]
+
+
+class TestElevateShortcuts:
+    def test_shortcut_uses_encoded_command(self, monkeypatch: t.Any, tmp_path: t.Any) -> None:
+        import base64
+        import subprocess as sp
+        from core import elevate
+
+        seen: dict[str, list] = {}
+
+        def fake_run(cmd, **kw):
+            seen['cmd'] = cmd
+
+            class R:
+                returncode = 0
+                stderr = b''
+            return R()
+
+        monkeypatch.setattr(sp, 'run', fake_run)
+        monkeypatch.setattr(elevate.Path, 'home', lambda: tmp_path)
+        elevate._create_shortcut('C:\\Tools\\SWAGcleaner.exe')
+        cmd = seen['cmd']
+        assert '-EncodedCommand' in cmd
+        blob = cmd[cmd.index('-EncodedCommand') + 1]
+        decoded = base64.b64decode(blob).decode('utf-16-le')
+        assert 'SWAGcleaner' in decoded
+        assert 'UAC' in decoded
+        assert '/run /tn SWAGcleaner' in decoded
+
+    def test_ensure_task_recreates_missing_shortcut(self, monkeypatch: t.Any, tmp_path: t.Any) -> None:
+        import sys
+        from pathlib import Path
+        from core import elevate
+
+        calls: list[str] = []
+        monkeypatch.setattr(elevate, 'is_frozen', lambda: True)
+        monkeypatch.setattr(elevate, 'task_exists', lambda: True)
+        monkeypatch.setattr(elevate, 'task_command', lambda: str(Path(sys.executable).resolve()))
+        monkeypatch.setattr(elevate, '_shortcut_path', lambda: tmp_path / 'gone.lnk')
+        monkeypatch.setattr(elevate, '_create_shortcut', lambda exe: calls.append(exe))
+        elevate.ensure_task()
+        assert calls  # ярлык отсутствовал - должен быть пересоздан

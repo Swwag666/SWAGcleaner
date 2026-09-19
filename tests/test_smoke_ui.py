@@ -1828,3 +1828,81 @@ class TestWorkers:
         assert pool.waitForDone(5000)
         qapp.processEvents()
         assert results == ["done"]
+
+
+class TestPurgeTrashedText:
+    def test_trashed_note_in_summary(self, qapp: t.Any) -> None:
+        from ui.session import PurgeReport, get_session
+
+        session = get_session()
+        report = PurgeReport(dry_run=False, removed=5, freed_bytes=1024 * 1024,
+                             trashed_bytes=512 * 1024 * 1024)
+        text = session.describe_purge(report)
+        assert "1.0" in text or "1,0" in text
+        assert "512" in text
+        ctx().setLocale("en")
+        try:
+            en = session.describe_purge(report)
+            assert "Recycle Bin" in en
+        finally:
+            ctx().setLocale("ru")
+
+    def test_no_trashed_note_when_zero(self, qapp: t.Any) -> None:
+        from ui.session import PurgeReport, get_session
+
+        session = get_session()
+        report = PurgeReport(dry_run=False, removed=2, freed_bytes=100)
+        text = session.describe_purge(report)
+        assert "корзине" not in text
+
+class TestConfirmDialogPolish:
+    def test_long_list_gets_scroll_and_fits(self, qapp: t.Any) -> None:
+        from ui.dialog import ConfirmDialog
+        from PySide6.QtWidgets import QFrame, QScrollArea
+
+        host = QWidget()
+        host.resize(1024, 768)
+        items = [(f"пункт {i}", "low") for i in range(80)]
+        dlg = ConfirmDialog(host, items)
+        try:
+            dlg._fit_to_parent()
+            assert dlg.panel().height() <= 768 - 2 * ConfirmDialog.PANEL_MARGIN + 1
+            scroll = dlg.findChild(QScrollArea)
+            assert scroll is not None
+            inner = scroll.widget()
+            assert inner is not None and len(inner.findChildren(QFrame)) >= 80
+        finally:
+            dlg.deleteLater()
+            host.deleteLater()
+
+    def test_retranslate_switches_static_labels(self, qapp: t.Any) -> None:
+        from ui.dialog import ConfirmDialog
+
+        host = QWidget()
+        host.resize(800, 600)
+        dlg = ConfirmDialog(host, [("действие", "medium")])
+        try:
+            ctx().setLocale("en")
+            dlg.retranslate()
+            texts = [w.text() for w in dlg.findChildren(QLabel)]
+            assert any("Medium" in t or "medium" in t.lower() for t in texts)
+            assert dlg.cancel_button().text() != ""
+            ctx().setLocale("ru")
+            dlg.retranslate()
+            texts = [w.text() for w in dlg.findChildren(QLabel)]
+            assert any("действие" in t for t in texts)
+        finally:
+            ctx().setLocale("ru")
+            dlg.deleteLater()
+            host.deleteLater()
+
+    def test_human_size_localized(self, qapp: t.Any) -> None:
+        from ui.session import human_size
+
+        ctx().setLocale("en")
+        try:
+            assert "MB" in human_size(5 * 1024 * 1024)
+            assert human_size(100) == "100 B"
+        finally:
+            ctx().setLocale("ru")
+        assert "МБ" in human_size(5 * 1024 * 1024)

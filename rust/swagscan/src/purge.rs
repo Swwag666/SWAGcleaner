@@ -24,6 +24,10 @@ struct Resolved {
     category: &'static str,
     lane: Lane,
     size: u64,
+    /// Физический размер на диске (сжатые NTFS/sparse занимают меньше
+    /// логического). Именно его возвращает диск при удалении.
+    disk_size: u64,
+    is_dir: bool,
 }
 
 #[derive(Debug)]
@@ -157,12 +161,21 @@ fn resolve(
         } else {
             size
         };
+        // Для каталогов физический размер не считаем (субдерево и так логическое);
+        // для файлов спрашиваем сжатый размер — честный учёт освобождённого места.
+        let disk = if is_dir {
+            final_size
+        } else {
+            wapi::compressed_size(&item.path_win).unwrap_or(final_size)
+        };
         ok.push(Resolved {
             path_norm,
             path_win: item.path_win.clone(),
             category: cat.id,
             lane,
             size: final_size,
+            disk_size: disk,
+            is_dir,
         });
     }
     let _ = env;
@@ -184,6 +197,36 @@ fn drop_covered(items: &mut Vec<Resolved>) {
 }
 
 const CHUNK: usize = 400;
+
+/// Запасной путь для direct-дорожки: прямое DeleteFileW/RemoveDirectoryW.
+/// Ok — файл удалён (учёт сделан внутри); Err(код Win32) — честная причина
+/// отказа (32 = занят, 5 = нужен админ), она и уходит в отчёт.
+fn direct_fallback(
+    single: &Resolved,
+    freed: &mut u64,
+    removed: &mut usize,
+) -> Result<(), u32> {
+    let r = if single.is_dir {
+        wapi::remove_dir_direct(&single.path_win)
+    } else {
+        wapi::delete_file_direct(&single.path_win)
+    };
+    match r {
+        Ok(()) => {
+            *freed += single.disk_size;
+            *removed += 1;
+            Ok(())
+        }
+        // Файл исчез между сканом и удалением (служба сама сротировала лог):
+        // мусора на диске уже нет — это не ошибка, а достигнутая цель.
+        Err(2) => {
+            *freed += single.disk_size;
+            *removed += 1;
+            Ok(())
+        }
+        Err(code) => Err(code),
+    }
+}
 
 pub fn run(
     plan: &PurgePlan,
@@ -212,12 +255,16 @@ pub fn run(
     p.emit(ev, true, job, "planned", planned as u64, Some(planned as u64), total_size, None);
 
     if plan.dry_run {
-        return report(&items, &rejects, &[], true, planned, total_size, 0, 0, cancel, env);
+        return report(&items, &rejects, &[], true, planned, total_size, 0, 0, 0, cancel, env);
     }
 
     wapi::co_initialize();
     let mut failures: Vec<(String, String)> = Vec::new();
+    // freed — физически освобождено сейчас (direct-дорожка); trashed — уехало
+    // в корзину: место вернётся только после её очистки. Обе цифры — по
+    // физическому (сжатому) размеру, иначе на сжатых логах счётчик врёт в разы.
     let mut freed = 0u64;
+    let mut trashed = 0u64;
     let mut removed = 0usize;
 
     for allow_undo in [true, false] {
@@ -234,10 +281,14 @@ pub fn run(
                 continue;
             }
             let paths: Vec<String> = chunk.iter().map(|i| i.path_win.clone()).collect();
-            let before: u64 = chunk.iter().map(|i| i.size).sum();
+            let before: u64 = chunk.iter().map(|i| i.disk_size).sum();
             match wapi::shell_delete(&paths, allow_undo) {
                 Ok(()) => {
-                    freed += before;
+                    if allow_undo {
+                        trashed += before;
+                    } else {
+                        freed += before;
+                    }
                     removed += chunk.len();
                 }
                 Err((rc, aborted)) => {
@@ -248,7 +299,11 @@ pub fn run(
                         // отменёнными. Целиком чанк не валим.
                         for single in chunk {
                             if stat(&single.path_win).is_none() {
-                                freed += single.size;
+                                if allow_undo {
+                                    trashed += single.disk_size;
+                                } else {
+                                    freed += single.disk_size;
+                                }
                                 removed += 1;
                             } else {
                                 failures.push((
@@ -262,16 +317,59 @@ pub fn run(
                             let one = vec![single.path_win.clone()];
                             match wapi::shell_delete(&one, allow_undo) {
                                 Ok(()) => {
-                                    freed += single.size;
+                                    if allow_undo {
+                                        trashed += single.disk_size;
+                                    } else {
+                                        freed += single.disk_size;
+                                    }
                                     removed += 1;
                                 }
-                                Err((rc2, _)) => failures.push((
-                                    single.path_win.clone(),
-                                    format!("SHFileOperationW rc={rc2} ({})", wapi::winerror_text(rc2 as u32)),
-                                )),
+                                Err((rc2, _)) => {
+                                    if !allow_undo {
+                                        match direct_fallback(single, &mut freed, &mut removed) {
+                                            Ok(()) => continue,
+                                            Err(code) => {
+                                                failures.push((
+                                                    single.path_win.clone(),
+                                                    format!(
+                                                        "{} (rc={code})",
+                                                        wapi::winerror_text(code)
+                                                    ),
+                                                ));
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                    failures.push((
+                                        single.path_win.clone(),
+                                        format!("SHFileOperationW rc={rc2} ({})", wapi::winerror_text(rc2 as u32)),
+                                    ));
+                                }
                             }
                         }
                     } else {
+                        // Одиночный чанк: для direct-дорожки пробуем прямое
+                        // удаление ядром — шелл часто отвечает DE_INVALIDFILES
+                        // на файлы, которые DeleteFileW берёт без вопросов.
+                        let single = chunk[0];
+                        if !allow_undo {
+                            match direct_fallback(single, &mut freed, &mut removed) {
+                                Ok(()) => {
+                                    p.emit(ev, false, job, "direct", removed as u64,
+                                           Some(planned as u64), freed, None);
+                                    continue;
+                                }
+                                Err(code) => {
+                                    failures.push((
+                                        single.path_win.clone(),
+                                        format!("{} (rc={code})", wapi::winerror_text(code)),
+                                    ));
+                                    p.emit(ev, false, job, "direct", removed as u64,
+                                           Some(planned as u64), freed, None);
+                                    continue;
+                                }
+                            }
+                        }
                         for i in chunk {
                             failures.push((
                                 i.path_win.clone(),
@@ -291,14 +389,14 @@ pub fn run(
                 if allow_undo { "trash" } else { "direct" },
                 removed as u64,
                 Some(planned as u64),
-                freed,
+                freed + trashed,
                 None,
             );
         }
     }
     wapi::co_uninitialize();
 
-    report(&items, &rejects, &failures, false, planned, total_size, freed, removed, cancel, env)
+    report(&items, &rejects, &failures, false, planned, total_size, freed, trashed, removed, cancel, env)
 }
 
 fn report(
@@ -309,6 +407,7 @@ fn report(
     planned: usize,
     planned_bytes: u64,
     freed: u64,
+    trashed: u64,
     removed: usize,
     cancel: &Arc<AtomicBool>,
     _env: &Env,
@@ -344,7 +443,7 @@ fn report(
     };
 
     format!(
-        "{{\"dry_run\":{dry_run},\"planned\":{planned},\"planned_bytes\":{planned_bytes},\"removed\":{removed},\"freed_bytes\":{freed},\"refused\":{},\"cancelled\":{},\"lanes\":[{}],\"categories\":[{}],\"rejects\":[{}],\"failures\":[{}]}}",
+        "{{\"dry_run\":{dry_run},\"planned\":{planned},\"planned_bytes\":{planned_bytes},\"removed\":{removed},\"freed_bytes\":{freed},\"trashed_bytes\":{trashed},\"refused\":{},\"cancelled\":{},\"lanes\":[{}],\"categories\":[{}],\"rejects\":[{}],\"failures\":[{}]}}",
         rejects.len(),
         cancel.load(Ordering::Relaxed),
         lane_summary.join(","),
@@ -520,11 +619,38 @@ mod tests {
     }
 
     #[test]
+    fn resolve_zapolnyaet_fizicheskii_razmer() {
+        let dir = std::env::temp_dir().join(format!("swagscan_ds_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("b.tmp");
+        std::fs::write(&f, vec![3u8; 7777]).unwrap();
+        let e = Env {
+            temp: dir.to_string_lossy().to_string(),
+            ..env()
+        };
+        let m = Matcher::build(&e);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let plan = PurgePlan {
+            items: vec![Item {
+                path_win: f.to_string_lossy().to_string(),
+                category: "temp.app".into(),
+            }],
+            dry_run: true,
+        };
+        let (ok, bad) = resolve(&plan, &e, &m, &cancel);
+        assert!(bad.is_empty(), "{:?}", bad);
+        assert_eq!(ok.len(), 1);
+        assert_eq!(ok[0].size, 7777);
+        assert_eq!(ok[0].disk_size, 7777);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn drop_covered_ubyraet_potomkov() {
         let mut v = vec![
-            Resolved { path_norm: "c:/a/b".into(), path_win: "C:\\a\\b".into(), category: "temp.app", lane: Lane::Direct, size: 1 },
-            Resolved { path_norm: "c:/a/b/c".into(), path_win: "C:\\a\\b\\c".into(), category: "temp.app", lane: Lane::Direct, size: 2 },
-            Resolved { path_norm: "c:/z".into(), path_win: "C:\\z".into(), category: "temp.app", lane: Lane::Direct, size: 3 },
+            Resolved { path_norm: "c:/a/b".into(), path_win: "C:\\a\\b".into(), category: "temp.app", lane: Lane::Direct, size: 1, disk_size: 1, is_dir: false },
+            Resolved { path_norm: "c:/a/b/c".into(), path_win: "C:\\a\\b\\c".into(), category: "temp.app", lane: Lane::Direct, size: 2, disk_size: 2, is_dir: false },
+            Resolved { path_norm: "c:/z".into(), path_win: "C:\\z".into(), category: "temp.app", lane: Lane::Direct, size: 3, disk_size: 3, is_dir: false },
         ];
         drop_covered(&mut v);
         assert_eq!(v.len(), 2);

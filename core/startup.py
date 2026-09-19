@@ -194,13 +194,22 @@ class StartupManager:
         return snapshot
 
     def restore(self, snapshot: str) -> None:
-        """Вернуть запись автозагрузки из снапшота; снапшот после — удалить."""
+        """Вернуть запись автозагрузки из снапшота; снапшот после — удалить.
+
+        Цель записи жёстко сверяется с _RUN_KEYS: снапшот лежит в профиле
+        пользователя, а приложение работает от администратора — подменённый
+        снапшот не должен превращаться в запись в произвольный ключ HKLM.
+        """
         if self._store is None:
             raise ValueError("нет хранилища бэкапов")
         data = self._store.restore(snapshot)
         if not isinstance(data, dict) or "value_name" not in data:
             raise ValueError(f"снапшот не найден или битый: {snapshot}")
-        self._registry.set_value(data["hive"], data["key_path"],
-                                 data["value_name"], data["value_data"],
+        hive = str(data["hive"])
+        key_path = str(data["key_path"])
+        if (hive, key_path) not in _RUN_KEYS:
+            raise ValueError(f"снапшот ведёт вне ключей автозагрузки: {hive} {key_path}")
+        self._registry.set_value(hive, key_path,
+                                 str(data["value_name"]), str(data["value_data"]),
                                  int(data.get("value_type", 1)))
         self._store.remove(snapshot)

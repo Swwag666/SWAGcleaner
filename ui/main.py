@@ -507,6 +507,9 @@ class MainWindow(QMainWindow):
 
     def _on_core_error(self, message: str) -> None:
         """Ошибка ядра: статус страницы, реплика персонажа, звук."""
+        # Неудачная загрузка твиков не должна быть «навсегда»: при повторном
+        # заходе на страницу перечитываем систему ещё раз.
+        self._tweaks_loaded = False
         page = self._work_page or self._current_page()
         self._work_page = None
         text = self._context.tr("session.core_error").format(error=message)
@@ -1005,6 +1008,9 @@ class MainWindow(QMainWindow):
         for page in self._pages:
             if hasattr(page, "retranslate"):
                 page.retranslate()
+        # Открытый модальный диалог подтверждения тоже переодевается.
+        for dlg in self.findChildren(ConfirmDialog):
+            dlg.retranslate()
         self._status_label.setText(self._context.tr("status.ready"))
         self._apply_visuals()
 

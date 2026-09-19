@@ -3,6 +3,13 @@
     "title": "SWAGcleaner",
     "subtitle": "Оптимизация ПК — локально, безопасно"
   },
+  "units": {
+    "b": "Б",
+    "kb": "КБ",
+    "mb": "МБ",
+    "gb": "ГБ",
+    "tb": "ТБ"
+  },
   "menu": {
     "file": "Файл",
     "edit": "Правка",
@@ -210,6 +217,7 @@
     "lane_direct_short": "без корзины",
     "purge_plan": "Репетиция: будет удалено {count} на {size}",
     "purge_done": "Удалено {count}, освобождено {size}",
+    "purge_trashed": "в корзине {size} — вернётся после её очистки",
     "purge_trash": "в корзину ушло {count}",
     "purge_direct": "без корзины {count}",
     "purge_refused": "отказов {count}",

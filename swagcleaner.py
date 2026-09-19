@@ -180,6 +180,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="проверить сборку: поднять окно без показа, отчитаться и выйти",
     )
+    parser.add_argument(
+        "--no-elevate",
+        action="store_true",
+        help="не перезапускаться от администратора (отладка)",
+    )
     return parser.parse_args(argv)
 
 
@@ -478,6 +483,15 @@ def main(argv: list[str] | None = None) -> int:
     if not args.gui:
         print("Графический режим отключён. Запустите --gui для включения.")
         return 0
+
+    from core import elevate
+
+    if not args.no_elevate:
+        # Без прав: если задача планировщика уже есть — перезапуск через неё
+        # (ноль окон UAC); если нет — один runas, админская копия сама
+        # зарегистрирует задачу и ярлык «без UAC».
+        if elevate.maybe_elevate(["--gui"]):
+            return 0
 
     try:
         from ui.context import init_context

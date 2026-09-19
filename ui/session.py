@@ -40,15 +40,20 @@ MAX_SHOWN_CANDIDATES = 50_000
 
 
 def human_size(num_bytes: float) -> str:
-    """Человеческий размер: 2 441.7 МБ, 1.2 ГБ, 512 КБ."""
+    """Человеческий размер: 2 441.7 МБ, 1.2 ГБ, 512 КБ.
+
+    Единицы локализованы (units.*): английская локаль пишет B/KB/MB/GB/TB.
+    """
     value = float(num_bytes)
-    for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
-        if value < 1024.0 or unit == "ТБ":
-            if unit == "Б":
+    keys = ("units.b", "units.kb", "units.mb", "units.gb", "units.tb")
+    for key in keys:
+        unit = ctx().tr(key)
+        if value < 1024.0 or key == "units.tb":
+            if key == "units.b":
                 return f"{int(value)} {unit}"
             return f"{value:,.1f} {unit}".replace(",", " ")
         value /= 1024.0
-    return f"{value:,.1f} ТБ".replace(",", " ")
+    return f"{value:,.1f} {ctx().tr('units.tb')}".replace(",", " ")
 
 
 @dataclass
@@ -113,6 +118,7 @@ class PurgeReport:
     planned_bytes: int = 0
     removed: int = 0
     freed_bytes: int = 0
+    trashed_bytes: int = 0
     refused: int = 0
     cancelled: bool = False
     lanes: t.Dict[str, int] = field(default_factory=dict)
@@ -127,6 +133,7 @@ class PurgeReport:
             planned_bytes=int(data.get("planned_bytes", 0)),
             removed=int(data.get("removed", 0)),
             freed_bytes=int(data.get("freed_bytes", 0)),
+            trashed_bytes=int(data.get("trashed_bytes", 0)),
             refused=int(data.get("refused", 0)),
             cancelled=bool(data.get("cancelled", False)),
             lanes={l["lane"]: int(l["files"]) for l in data.get("lanes", [])},
@@ -329,6 +336,7 @@ class Session(QObject):
         """
 
         def work() -> t.Dict[str, t.Any]:
+            import shlex
             import subprocess
 
             launched: t.List[str] = []
@@ -340,9 +348,16 @@ class Session(QObject):
                 if not uninstaller:
                     continue
                 try:
-                    subprocess.Popen(uninstaller, shell=True)
+                    # Без shell=True: строка из реестра парсится в argv и не
+                    # имеет шанса развернуться в командную подстановку под
+                    # админским токеном приложения.
+                    argv = shlex.split(uninstaller, posix=False)
+                    if not argv:
+                        continue
+                    argv[0] = argv[0].strip('"')
+                    subprocess.Popen(argv)
                     launched.append(name)
-                except OSError:
+                except (OSError, ValueError):
                     _LOGGER.warning("деинсталлятор не стартовал: %s", name)
             try:
                 self.journal().log(
@@ -498,6 +513,7 @@ class Session(QObject):
                 outcome="error" if report.failures else "ok",
                 dry_run=report.dry_run, planned=report.planned,
                 removed=report.removed, freed_bytes=report.freed_bytes,
+                trashed_bytes=report.trashed_bytes,
                 refused=report.refused, failures=len(report.failures))
         except Exception:  # noqa: BLE001 — журнал не должен ронять удаление
             _LOGGER.warning("строка журнала не записана", exc_info=True)
@@ -619,6 +635,9 @@ class Session(QObject):
             ctx().tr("session.purge_done").format(
                 count=report.removed, size=human_size(report.freed_bytes)),
         ]
+        if report.trashed_bytes:
+            parts.append(ctx().tr("session.purge_trashed").format(
+                size=human_size(report.trashed_bytes)))
         if report.refused or report.rejects:
             parts.append(ctx().tr("session.purge_refused").format(count=report.refused))
         if report.failures:

@@ -3,6 +3,13 @@
     "title": "SWAGcleaner",
     "subtitle": "Tidy up your PC — locally, safely"
   },
+  "units": {
+    "b": "B",
+    "kb": "KB",
+    "mb": "MB",
+    "gb": "GB",
+    "tb": "TB"
+  },
   "menu": {
     "file": "File",
     "edit": "Edit",
@@ -210,6 +217,7 @@
     "lane_direct_short": "permanent",
     "purge_plan": "Dry run: {count} items, {size} would be removed",
     "purge_done": "Removed {count}, freed {size}",
+    "purge_trashed": "{size} in the Recycle Bin — space returns once it is emptied",
     "purge_trash": "{count} to the Recycle Bin",
     "purge_direct": "{count} without the Bin",
     "purge_refused": "{count} refused",

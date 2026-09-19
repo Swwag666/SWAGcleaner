@@ -114,6 +114,9 @@ extern "system" {
         lp_fs_name: *mut u16,
         fs_name_size: u32,
     ) -> i32;
+    fn GetCompressedFileSizeW(lp_file_name: *const u16, lp_file_size_high: *mut u32) -> u32;
+    fn DeleteFileW(lp_file_name: *const u16) -> i32;
+    fn RemoveDirectoryW(lp_path_name: *const u16) -> i32;
 }
 
 #[link(name = "shell32")]
@@ -287,6 +290,42 @@ fn shell_delete_raw(paths: &[String], allow_undo: bool) -> Result<(), (i32, bool
     }
 }
 
+/// Физический размер на диске: для сжатых NTFS/sparse файлов меньше
+/// логического (логи CBS и пр.). На несжатых равен логическому размеру.
+pub fn compressed_size(path: &str) -> Option<u64> {
+    let w = wide(path);
+    let mut hi = 0u32;
+    let lo = unsafe { GetCompressedFileSizeW(w.as_ptr(), &mut hi) };
+    if lo == 0xFFFF_FFFF {
+        let err = unsafe { GetLastError() };
+        if err != 0 {
+            return None;
+        }
+    }
+    Some(((hi as u64) << 32) | lo as u64)
+}
+
+/// Прямое удаление файла ядром Win32: запасной путь, когда SHFileOperation
+/// отвечает DE_INVALIDFILES (залоченный службой файл даёт честный код 32,
+/// а «неудобный» для шелла файл таки удаляется).
+pub fn delete_file_direct(path: &str) -> Result<(), u32> {
+    let w = wide(path);
+    if unsafe { DeleteFileW(w.as_ptr()) } != 0 {
+        Ok(())
+    } else {
+        Err(unsafe { GetLastError() })
+    }
+}
+
+pub fn remove_dir_direct(path: &str) -> Result<(), u32> {
+    let w = wide(path);
+    if unsafe { RemoveDirectoryW(w.as_ptr()) } != 0 {
+        Ok(())
+    } else {
+        Err(unsafe { GetLastError() })
+    }
+}
+
 pub fn empty_recycle_bin(drive: Option<&str>) -> Result<(), i32> {
     let w = drive.map(|d| wide(&format!("{}\\", d)));
     let ptr = match &w {
@@ -375,5 +414,18 @@ mod tests {
         if let Some(v) = volume_info("C:\\") {
             assert!(!v.fs_name.is_empty());
         }
+    }
+
+    #[test]
+    fn compressed_size_na_neszhatom_ravna_logike() {
+        let dir = std::env::temp_dir().join(format!("swagscan_cs_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.bin");
+        std::fs::write(&f, vec![7u8; 12345]).unwrap();
+        let p = f.to_string_lossy().to_string();
+        let phys = compressed_size(&p).expect("размер должен читаться");
+        assert_eq!(phys, 12345);
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(compressed_size("C:\\netutakogoputi\\none.bin").is_none());
     }
 }

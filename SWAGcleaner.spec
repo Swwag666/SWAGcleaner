@@ -93,6 +93,7 @@ if onedir:
         console=False,
         disable_windowed_traceback=False,
         icon=None,
+        uac_admin=True,
     )
     coll = COLLECT(
         exe,
@@ -121,4 +122,5 @@ else:
         console=False,
         disable_windowed_traceback=False,
         icon=None,
+        uac_admin=True,
     )

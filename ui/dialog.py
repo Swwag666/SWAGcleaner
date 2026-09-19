@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -60,6 +61,8 @@ class ConfirmDialog(QDialog):
         self.setObjectName("confirmDialog")
 
         self._items = [(text, risk) for text, risk in items]
+        self._headline = headline
+        self._note_text = note
         self._risk_labels: List[QLabel] = []
         self._slide: Optional[QPropertyAnimation] = None
 
@@ -80,9 +83,9 @@ class ConfirmDialog(QDialog):
 
         head_row = QHBoxLayout()
         head_row.setSpacing(10)
-        title = QLabel(headline or ctx().tr("confirm.title"), self._panel)
-        title.setProperty("role", "title")
-        head_row.addWidget(title)
+        self._title = QLabel(self._headline or ctx().tr("confirm.title"), self._panel)
+        self._title.setProperty("role", "title")
+        head_row.addWidget(self._title)
         head_row.addStretch(1)
 
         self._count = AnimatedNumber(self._panel)
@@ -95,14 +98,29 @@ class ConfirmDialog(QDialog):
         head_row.addWidget(self._count_caption)
         layout.addLayout(head_row)
 
-        note_text = note if note is not None else ctx().tr("confirm.note")
-        self._note = QLabel(note_text, self._panel)
+        self._note = QLabel(
+            self._note_text if self._note_text is not None else ctx().tr("confirm.note"),
+            self._panel,
+        )
         self._note.setProperty("role", "hint")
         self._note.setWordWrap(True)
         layout.addWidget(self._note)
 
+        # Список действий — в прокрутке: длинный перечень (сотня пунктов)
+        # не раздувает панель за экран, а листается внутри неё.
+        self._scroll = QScrollArea(self._panel)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        host = QWidget()
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        host_layout.setSpacing(6)
         for text, risk in self._items:
-            layout.addWidget(self._build_item(text, risk))
+            host_layout.addWidget(self._build_item(host, text, risk))
+        host_layout.addStretch(1)
+        self._scroll.setWidget(host)
+        layout.addWidget(self._scroll, 1)
 
         layout.addSpacing(4)
         self._divider = QFrame(self._panel)
@@ -139,10 +157,10 @@ class ConfirmDialog(QDialog):
                                  context=Qt.ShortcutContext.WindowShortcut)
             shortcut.activated.connect(slot)
 
-    def _build_item(self, text: str, risk: str) -> QFrame:
+    def _build_item(self, parent: QWidget, text: str, risk: str) -> QFrame:
         """Строка списка: пометка риска слева, само действие справа."""
         risk = risk if risk in RISK_KEYS else "low"
-        row = QFrame(self._panel)
+        row = QFrame(parent)
         row.setObjectName("dialogItem")
         layout = QHBoxLayout(row)
         layout.setContentsMargins(12, 9, 12, 9)
@@ -200,12 +218,37 @@ class ConfirmDialog(QDialog):
         self._slide.setStartValue(QPoint(final.x(), self.height()))
         self._slide.setEndValue(final)
         self._slide.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._slide.finished.connect(self._drop_slide)
         self._slide.start()
 
     def _take_focus(self) -> None:
         """Забрать фокус у кнопки, если активация окна отдала его ей."""
         if self.focusWidget() is not self:
             self.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _drop_slide(self) -> None:
+        """Отпустить завершённую анимацию, чтобы она не висела на диалоге."""
+        if self._slide is not None:
+            self._slide.deleteLater()
+            self._slide = None
+
+    def retranslate(self) -> None:
+        """Статичные подписи диалога на языке, актуальном прямо сейчас.
+
+        Строки пунктов приходят от вызывающего уже готовыми — их не трогаем;
+        меняем только собственные надписи (и только если они не были заданы
+        явным текстом при создании).
+        """
+        if self._headline is None:
+            self._title.setText(ctx().tr("confirm.title"))
+        self._count_caption.setText(ctx().tr("confirm.count"))
+        if self._note_text is None:
+            self._note.setText(ctx().tr("confirm.note"))
+        self._cancel_button.setText(ctx().tr("confirm.cancel"))
+        self._confirm_button.setText(ctx().tr("confirm.apply"))
+        for badge in self._risk_labels:
+            risk = badge.property("risk") or "low"
+            badge.setText(ctx().tr(RISK_KEYS.get(risk, RISK_KEYS["low"])))
 
     def _fit_to_parent(self) -> None:
         parent = self.parentWidget()

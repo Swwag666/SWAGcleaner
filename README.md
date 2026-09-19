@@ -41,7 +41,7 @@
 | Мост | NDJSON-протокол поверх stdin/stdout, один долгоживущий процесс |
 | AI (опция) | stdlib `urllib` → Ollama / OpenAI-совместимый API |
 | Сборка | PyInstaller (spec подкладывает `swagscan.exe`) |
-| Тесты | pytest (277) + `cargo test` (52) |
+| Тесты | pytest (295) + `cargo test` (54) |
 | Полигон | VirtualBox + Windows 11 24H2 (тесты удаления не на живом железе) |
 
 ## Как работает чистка (политика удаления)
@@ -77,7 +77,10 @@
 3. **Показ.** Пункты с галочками и объёмом по каждому, итог «освободится N», а дерево по объёму
    отвечает на главный вопрос забитого диска — «куда вообще ушло место».
 4. **Подтверждение.** Лишние галочки снимаются в диалоге; про необходимость прав администратора
-   предупреждение появляется сразу, а не системным окном посередине работы.
+   предупреждение появляется сразу, а не системным окном посередине работы. Сама программа
+   поднимается от администратора один раз через UAC и дальше стартует молча: задача
+   планировщика `SWAGcleaner` + ярлык «SWAGcleaner (no UAC)» в меню Пуск. Отладочный запуск
+   без этой механики — флаг `--no-elevate`.
 5. **Выполнение.** Пакетными операциями, с прогрессом по категориям и возможностью отменить.
 6. **Отчёт.** Сколько освободилось, сколько файлов, что можно вернуть из корзины и что удалено
    без возможности восстановления. Строка в журнале — на каждое действие.
@@ -89,7 +92,7 @@
 
 Интерфейс — настоящий: боковое меню, пять страниц, две темы, ru/en, пиксельный шрифт Handjet,
 звуки, помощница в стиле визуальной новеллы, диалог подтверждения, живые счётчики, фоновые
-задачи, 277 + 52 теста.
+задачи, 295 + 54 теста.
 
 Ядро сканирования — настоящее и проверенное: Rust-обход, категории, дубликаты BLAKE3, удаление
 в две дорожки, dry-run, отмена; мост и протокол покрыты интеграционными тестами; на живой машине
@@ -144,7 +147,7 @@ cargo +stable-x86_64-pc-windows-gnu test               # 52 теста
 ## Тесты
 
 ```bash
-# весь набор Python (277 тестов: модели, ядро, UI, AI, мост до Rust)
+# весь набор Python (295 тестов: модели, ядро, UI, AI, мост до Rust)
 ./venv/Scripts/python.exe -m pytest -o addopts="" -q -p no:cacheprovider
 # Rust-ядро (52 теста)
 cd rust/swagscan && cargo +stable-x86_64-pc-windows-gnu test
@@ -211,7 +214,7 @@ action is logged. The **tweaks page** is real: startup items are read from the r
 Startup folders, disabling saves an on-disk snapshot (survives restarts) and a "Restore" button
 brings the entry back; services are listed read-only. The scan core itself
 is real too — Rust scanner with categories, BLAKE3 duplicates, two-lane deletion, dry-run and
-cancellation, covered by 277 pytest + 52 cargo tests, byte-exact against the Python reference.
+cancellation, covered by 295 pytest + 54 cargo tests, byte-exact against the Python reference.
 The VirtualBox polygon (Win11 24H2) runs the core end to end from host shared folders; the built
 `.exe` was verified inside the VM (`--self-test`, `--disk --candidates`, GUI screenshots in
 `shots/polygon-2026-09-16/`). Of the old Python `core/` modules, processes and the Python
