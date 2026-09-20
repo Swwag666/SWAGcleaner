@@ -1906,3 +1906,49 @@ class TestConfirmDialogPolish:
         finally:
             ctx().setLocale("ru")
         assert "МБ" in human_size(5 * 1024 * 1024)
+
+class TestStage4TweaksUi:
+    """Этап 4: кнопка отключения службы и секция UWP."""
+
+    def test_service_row_has_disable_button_only_when_enabled(self, qapp: t.Any) -> None:
+        from core.services import ServiceInfo
+
+        page = TweaksTab()
+        page.set_tweaks([], [ServiceInfo("Spooler", "running", "automatic"),
+                             ServiceInfo("Fax", "stopped", "disabled")], [], [])
+        fired: t.List[str] = []
+        page.disableServiceRequested.connect(lambda n: fired.append(n))
+        # ElideButton на непоказанном виджете может элидировать text(),
+        # поэтому сравниваем fullText().
+        buttons = [b for b in page.findChildren(QPushButton)
+                   if getattr(b, "fullText", b.text)() ==
+                   ctx().tr("tweaks.disable_button")]
+        # Одна служба включена — одна кнопка.
+        assert len(buttons) == 1
+        buttons[0].click()
+        assert fired == ["Spooler"]
+
+    def test_uwp_section_renders_and_emits(self, qapp: t.Any) -> None:
+        from core.uwp import UwpPackage
+
+        page = TweaksTab()
+        pkg = UwpPackage(name="Microsoft.BingWeather",
+                         full_name="Microsoft.BingWeather_4.1_x64__8wekyb3d8bbwe",
+                         install_location=r"C:\Program Files\WindowsApps\bing")
+        page.set_tweaks([], [], [], [pkg])
+        texts = [w.text() for w in page.findChildren(QLabel)]
+        assert any("Microsoft.BingWeather" in x for x in texts)
+        fired: t.List[str] = []
+        page.removeUwpRequested.connect(lambda f: fired.append(f))
+        buttons = [b for b in page.findChildren(QPushButton)
+                   if getattr(b, "fullText", b.text)() ==
+                   ctx().tr("tweaks.uwp_remove_button")]
+        assert len(buttons) == 1
+        buttons[0].click()
+        assert fired == ["Microsoft.BingWeather_4.1_x64__8wekyb3d8bbwe"]
+
+    def test_empty_uwp_shows_hint(self, qapp: t.Any) -> None:
+        page = TweaksTab()
+        page.set_tweaks([], [], [], [])
+        texts = [w.text() for w in page.findChildren(QLabel)]
+        assert any(ctx().tr("tweaks.empty_uwp") in x for x in texts)

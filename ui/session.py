@@ -533,8 +533,14 @@ class Session(QObject):
             store = self.backups()
             backups = [info for name in store.list()
                        if (info := store.info(name)) is not None]
+            try:
+                from core.uwp import UwpController
+                uwp = UwpController().list_packages()
+            except Exception:  # noqa: BLE001 — AppX может не быть, странице не мешает
+                _LOGGER.warning("список UWP не прочитан", exc_info=True)
+                uwp = []
             return {"startup": entries, "services": services,
-                    "backups": backups}
+                    "backups": backups, "uwp": uwp}
 
         self._run("tweaks_load", work)
 
@@ -549,6 +555,7 @@ class Session(QObject):
                 "type": "startup_disable",
                 "name": entry.name,
                 "value": entry.path,
+                "source": getattr(entry, "source", "registry"),
                 "hive": entry.hive,
                 "key_path": entry.key_path,
                 "value_type": getattr(entry, "value_type", 1),
@@ -560,15 +567,59 @@ class Session(QObject):
 
         self._run("tweaks_action", work)
 
-    def restore_backup(self, snapshot: str) -> None:
-        """Вернуть запись автозагрузки из снапшота; снапшот после удалить."""
+    def disable_service(self, name: str) -> None:
+        """Отключить службу (StartMode Disabled) со снапшотом прежнего режима.
+
+        Работающая служба не останавливается — отключение вступит после
+        перезагрузки, так система не падает посреди сеанса.
+        """
 
         def work() -> t.Dict[str, t.Any]:
             from core.executor import Executor
 
             executor = Executor(store=self.backups(), journal=self.journal())
             result = executor.execute_actions([{
-                "type": "startup_restore",
+                "type": "service_disable",
+                "name": name,
+            }])[0]
+            if not result.success:
+                raise RuntimeError(result.message)
+            return {"action": "service_disable", "target": name,
+                    "snapshot": result.snapshot}
+
+        self._run("tweaks_action", work)
+
+    def remove_uwp(self, full_name: str) -> None:
+        """Удалить UWP-пакет у текущего пользователя со снапшотом манифеста."""
+
+        def work() -> t.Dict[str, t.Any]:
+            from core.executor import Executor
+
+            executor = Executor(store=self.backups(), journal=self.journal())
+            result = executor.execute_actions([{
+                "type": "uwp_remove",
+                "package": full_name,
+            }])[0]
+            if not result.success:
+                raise RuntimeError(result.message)
+            return {"action": "uwp_remove", "target": result.target,
+                    "snapshot": result.snapshot}
+
+        self._run("tweaks_action", work)
+
+    def restore_backup(self, snapshot: str) -> None:
+        """Вернуть из снапшота: запись реестра, файл папки, службу или UWP.
+
+        Маршрут отката выбирается по данным снапшота (kind), так что одна
+        кнопка «Вернуть» на странице твиков покрывает все виды действий.
+        """
+
+        def work() -> t.Dict[str, t.Any]:
+            from core.executor import Executor
+
+            executor = Executor(store=self.backups(), journal=self.journal())
+            result = executor.execute_actions([{
+                "type": "backup_restore",
                 "snapshot": snapshot,
             }])[0]
             if not result.success:

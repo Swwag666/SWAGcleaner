@@ -762,8 +762,11 @@ class TweaksTab(EmptyTab):
     refreshRequested = Signal()
     disableStartupRequested = Signal(object)   # StartupEntry
     restoreSnapshotRequested = Signal(str)     # имя снапшота
+    disableServiceRequested = Signal(str)      # имя службы
+    removeUwpRequested = Signal(str)           # PackageFullName
 
     _MAX_SERVICES = 60
+    _MAX_UWP = 60
 
     def __init__(self, parent: QWidget | None = None) -> None:
         self._status_label: Optional[QLabel] = None
@@ -772,6 +775,7 @@ class TweaksTab(EmptyTab):
         self._startup: List[object] = []
         self._services: List[object] = []
         self._backups: List[Dict[str, object]] = []
+        self._uwp: List[object] = []
         super().__init__(parent)
 
     def _result_expands(self) -> bool:
@@ -807,11 +811,13 @@ class TweaksTab(EmptyTab):
     # ---------- данные ----------
 
     def set_tweaks(self, startup: List[object], services: List[object],
-                   backups: List[Dict[str, object]]) -> None:
-        """Показать списки: автозагрузка, службы, снапшоты для отката."""
+                   backups: List[Dict[str, object]],
+                   uwp: Optional[List[object]] = None) -> None:
+        """Показать списки: автозагрузка, службы, UWP, снапшоты отката."""
         self._startup = list(startup)
         self._services = list(services)
         self._backups = list(backups)
+        self._uwp = list(uwp or [])
         self._render_rows()
         self.setStats("startup", len(self._startup))
         self.setStats("services", len(self._services))
@@ -852,6 +858,16 @@ class TweaksTab(EmptyTab):
             put(hint(ctx().tr("journal.more").format(
                 count=len(self._services) - self._MAX_SERVICES), self))
 
+        put(section(ctx().tr("tweaks.uwp_section"), self))
+        put(hint(ctx().tr("tweaks.uwp_hint"), self))
+        if not self._uwp:
+            put(hint(ctx().tr("tweaks.empty_uwp"), self))
+        for pkg in self._uwp[:self._MAX_UWP]:
+            put(self._uwp_row(pkg))
+        if len(self._uwp) > self._MAX_UWP:
+            put(hint(ctx().tr("journal.more").format(
+                count=len(self._uwp) - self._MAX_UWP), self))
+
     def _startup_row(self, entry) -> QFrame:
         row = QFrame(self)
         row.setObjectName("categoryCard")
@@ -889,7 +905,7 @@ class TweaksTab(EmptyTab):
         layout.setSpacing(10)
         name = str(info.get("name", ""))
         shown = name
-        for prefix in ("startup-HKCU-", "startup-HKLM-"):
+        for prefix in ("startup-HKCU-", "startup-HKLM-", "service-", "uwp-"):
             if shown.startswith(prefix):
                 shown = shown[len(prefix):]
         ts = float(info.get("ts", 0.0))
@@ -923,6 +939,31 @@ class TweaksTab(EmptyTab):
             else "tweaks.mode_unknown"
         layout.addWidget(hint(ctx().tr(state_key), row))
         layout.addWidget(hint(ctx().tr(mode_key), row))
+        if service.start_mode != "disabled":
+            disable = button(ctx().tr("tweaks.disable_button"), row)
+            disable.setMinimumHeight(30)
+            disable.clicked.connect(
+                lambda _checked=False, n=service.name:
+                    self.disableServiceRequested.emit(n))
+            layout.addWidget(disable)
+        return row
+
+    def _uwp_row(self, pkg) -> QFrame:
+        row = QFrame(self)
+        row.setObjectName("categoryCard")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(10)
+        name = body(pkg.name, row)
+        name.setSizePolicy(QSizePolicy.Policy.Ignored,
+                           QSizePolicy.Policy.Preferred)
+        layout.addWidget(name, 2)
+        remove = button(ctx().tr("tweaks.uwp_remove_button"), row)
+        remove.setMinimumHeight(30)
+        remove.clicked.connect(
+            lambda _checked=False, f=pkg.full_name:
+                self.removeUwpRequested.emit(f))
+        layout.addWidget(remove)
         return row
 
     # ---------- тексты ----------

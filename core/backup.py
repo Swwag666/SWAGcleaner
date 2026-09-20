@@ -58,6 +58,16 @@ class BackupStore:
             raise ValueError(f"небезопасное имя снапшота: {name!r}")
         return self._base_dir / f"{name}.json"
 
+    def payload_path(self, name: str) -> Path:
+        """Путь для бинарной полезной нагрузки снапшота (файл из папки
+        автозагрузки). Та же проверка имени, что и у JSON."""
+        self._file(name)  # только ради валидации имени
+        assert self._base_dir is not None
+        return self._base_dir / f"{name}.payload"
+
+    def has_disk(self) -> bool:
+        return self._base_dir is not None
+
     def save(self, name: str, data: t.Any, kind: str = "generic") -> None:
         """Сохранить снапшот: в память и, если есть папка, на диск."""
         if self._base_dir is not None:
@@ -92,6 +102,10 @@ class BackupStore:
         if self._base_dir is not None:
             try:
                 self._file(name).unlink()
+            except OSError:
+                pass
+            try:
+                self.payload_path(name).unlink(missing_ok=True)
             except OSError:
                 pass
 

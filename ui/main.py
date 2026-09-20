@@ -472,6 +472,12 @@ class MainWindow(QMainWindow):
             restore = getattr(page, "restoreSnapshotRequested", None)
             if restore is not None:
                 restore.connect(self._ask_restore_snapshot)
+            disable_svc = getattr(page, "disableServiceRequested", None)
+            if disable_svc is not None:
+                disable_svc.connect(self._ask_disable_service)
+            remove_uwp = getattr(page, "removeUwpRequested", None)
+            if remove_uwp is not None:
+                remove_uwp.connect(self._ask_remove_uwp)
 
     def _on_progress_tick(self, percent: int) -> None:
         page = self._work_page
@@ -837,13 +843,46 @@ class MainWindow(QMainWindow):
         sounds.play("click")
         self._session.restore_backup(snapshot)
 
+    def _ask_disable_service(self, name: str) -> None:
+        """Отключение службы — по одной, через подтверждение (правило 8.6)."""
+        if self.is_busy():
+            sounds.play("error")
+            return
+        items = [(name, "medium")]
+        note = self._context.tr("tweaks.confirm_service_note")
+        if not ConfirmDialog.ask(self, items, note=note):
+            self._assistant.say(
+                self._context.tr("character.lines.cancelled"), "idle")
+            return
+        self._work_page = self._current_page()
+        self.set_busy(True)
+        sounds.play("click")
+        self._session.disable_service(name)
+
+    def _ask_remove_uwp(self, full_name: str) -> None:
+        """Удаление UWP-пакета у пользователя — через подтверждение."""
+        if self.is_busy():
+            sounds.play("error")
+            return
+        items = [(full_name, "medium")]
+        note = self._context.tr("tweaks.confirm_uwp_note")
+        if not ConfirmDialog.ask(self, items, note=note):
+            self._assistant.say(
+                self._context.tr("character.lines.cancelled"), "idle")
+            return
+        self._work_page = self._current_page()
+        self.set_busy(True)
+        sounds.play("click")
+        self._session.remove_uwp(full_name)
+
     def _finish_tweaks(self, result: dict, page: QWidget) -> None:
         self._work_page = None
         self.set_busy(False)
         if page is not None and hasattr(page, "set_tweaks"):
             page.set_tweaks(result.get("startup", []),
                             result.get("services", []),
-                            result.get("backups", []))
+                            result.get("backups", []),
+                            result.get("uwp", []))
         sounds.play("done")
         self._assistant.say(
             self._context.tr("tweaks.loaded_status").format(
@@ -856,7 +895,9 @@ class MainWindow(QMainWindow):
         """Отключение/возврат прошли: статус + обновить списки по свежему."""
         self._work_page = None
         self.set_busy(False)
-        key = ("tweaks.disabled_status" if result.get("action") == "disable"
+        action = str(result.get("action", ""))
+        key = ("tweaks.disabled_status"
+               if action.endswith("disable") or action == "uwp_remove"
                else "tweaks.restored_status")
         text = self._context.tr(key).format(name=result.get("target", ""))
         if page is not None and hasattr(page, "setStatus"):

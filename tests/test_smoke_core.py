@@ -861,3 +861,229 @@ class TestElevateShortcuts:
         monkeypatch.setattr(elevate, '_create_shortcut', lambda exe: calls.append(exe))
         elevate.ensure_task()
         assert calls  # ярлык отсутствовал - должен быть пересоздан
+
+
+class TestStage4FolderStartup:
+    """Записи папки автозагрузки: отключение переездом файла + откат."""
+
+    def _make(self, tmp_path):
+        from core.backup import BackupStore
+        from core.startup import StartupManager, StartupEntry, SOURCE_FOLDER
+        import core.startup as startup_mod
+
+        folder = tmp_path / "Startup"
+        folder.mkdir()
+        target = folder / "tool.lnk"
+        target.write_bytes(b"LNK")
+        store = BackupStore(tmp_path / "bk")
+        mgr = StartupManager(store=store)
+        return startup_mod, mgr, StartupEntry(
+            name="tool", path=str(target), enabled=True, source=SOURCE_FOLDER), target
+
+    def test_folder_entry_moves_to_backup(self, tmp_path: t.Any, monkeypatch: t.Any) -> None:
+        startup_mod, mgr, entry, target = self._make(tmp_path)
+        monkeypatch.setattr(startup_mod, "startup_folders", lambda: [target.parent])
+        snap = mgr.disable(entry)
+        assert not target.exists()
+        assert mgr._store.payload_path(snap).is_file()
+        assert mgr._store.restore(snap)["orig_path"] == str(target)
+
+    def test_folder_entry_restore_returns_file(self, tmp_path: t.Any, monkeypatch: t.Any) -> None:
+        startup_mod, mgr, entry, target = self._make(tmp_path)
+        monkeypatch.setattr(startup_mod, "startup_folders", lambda: [target.parent])
+        snap = mgr.disable(entry)
+        mgr.restore(snap)
+        assert target.read_bytes() == b"LNK"
+        assert snap not in mgr._store.list()
+
+    def test_folder_restore_refuses_foreign_path(self, tmp_path: t.Any, monkeypatch: t.Any) -> None:
+        startup_mod, mgr, entry, target = self._make(tmp_path)
+        monkeypatch.setattr(startup_mod, "startup_folders", lambda: [target.parent])
+        snap = mgr.disable(entry)
+        data = mgr._store.restore(snap)
+        data["orig_path"] = str(tmp_path / "elsewhere" / "evil.lnk")
+        mgr._store.save(snap, data, kind="startup_folder_disable")
+        with pytest.raises(ValueError):
+            mgr.restore(snap)
+        # Файл не уехал в чужое место: полезная нагрузка на месте.
+        assert mgr._store.payload_path(snap).is_file()
+
+    def test_folder_entry_memory_store_refused(self, tmp_path: t.Any) -> None:
+        from core.backup import BackupStore
+        from core.startup import StartupManager, StartupEntry, SOURCE_FOLDER
+
+        target = tmp_path / "x.lnk"
+        target.write_bytes(b"x")
+        mgr = StartupManager(store=BackupStore())
+        with pytest.raises(ValueError):
+            mgr.disable(StartupEntry(name="x", path=str(target),
+                                     enabled=True, source=SOURCE_FOLDER))
+        assert target.exists()
+
+
+class TestStage4Services:
+    def _ctl(self, services, writes):
+        from core.services import WindowsServiceController, ServiceInfo
+        return WindowsServiceController(
+            provider=lambda: list(services),
+            changer=lambda name, mode: writes.append((name, mode)))
+
+    def test_disable_snapshots_prev_mode(self) -> None:
+        from core.services import ServiceInfo
+        writes: list = []
+        ctl = self._ctl([ServiceInfo("Fax", "stopped", "manual")], writes)
+        snap = ctl.disable_service("Fax")
+        assert writes == [("Fax", "disabled")]
+        assert snap["prev_start_mode"] == "manual"
+        assert snap["kind"] == "service"
+
+    def test_critical_service_refused(self) -> None:
+        from core.services import ServiceInfo
+        writes: list = []
+        ctl = self._ctl([ServiceInfo("EventLog", "running", "automatic")], writes)
+        with pytest.raises(ValueError):
+            ctl.disable_service("EventLog")
+        assert writes == []
+
+    def test_critical_restore_allowed(self) -> None:
+        # Откат критичной службы в рабочий режим — это починка, не вред.
+        from core.services import ServiceInfo
+        writes: list = []
+        ctl = self._ctl([ServiceInfo("EventLog", "stopped", "disabled")], writes)
+        name = ctl.restore_service({"kind": "service", "service": "EventLog",
+                                    "prev_start_mode": "automatic",
+                                    "prev_state": "running"})
+        assert name == "EventLog"
+        assert writes == [("EventLog", "automatic")]
+
+    def test_already_disabled_refused(self) -> None:
+        from core.services import ServiceInfo
+        writes: list = []
+        ctl = self._ctl([ServiceInfo("Fax", "stopped", "disabled")], writes)
+        with pytest.raises(ValueError):
+            ctl.disable_service("Fax")
+        assert writes == []
+
+
+class TestStage4Uwp:
+    def _runner(self, scripts: list, list_json: str, rc: int = 0,
+                stderr: bytes = b""):
+        from types import SimpleNamespace
+
+        def run(script: str, timeout: int = 60):
+            scripts.append(script)
+            if "Get-AppxPackage" in script:
+                return SimpleNamespace(returncode=0,
+                                       stdout=list_json.encode("utf-8"),
+                                       stderr=b"")
+            return SimpleNamespace(returncode=rc, stdout=b"", stderr=stderr)
+        return run
+
+    LIST = '[{"Name":"Microsoft.BingWeather","PackageFullName":"Microsoft.BingWeather_4.1_x64__8wekyb3d8bbwe","InstallLocation":"C:\\\\Program Files\\\\WindowsApps\\\\bing","Publisher":"CN=Microsoft"},'            '{"Name":"Microsoft.VCLibs","PackageFullName":"vclibs","InstallLocation":"","Publisher":""}]'
+
+    def test_list_parses_packages(self) -> None:
+        from core.uwp import UwpController
+        ctl = UwpController(runner=self._runner([], self.LIST))
+        pkgs = ctl.list_packages()
+        assert [p.name for p in pkgs] == ["Microsoft.BingWeather"]
+
+    def test_remove_stores_manifest_snapshot(self) -> None:
+        from core.uwp import UwpController
+        scripts: list = []
+        ctl = UwpController(runner=self._runner(scripts, self.LIST))
+        snap = ctl.remove_package("Microsoft.BingWeather_4.1_x64__8wekyb3d8bbwe")
+        assert snap["kind"] == "uwp"
+        assert snap["manifest"].endswith("AppxManifest.xml")
+        assert any("Remove-AppxPackage" in s for s in scripts)
+
+    def test_remove_unknown_refused(self) -> None:
+        from core.uwp import UwpController
+        ctl = UwpController(runner=self._runner([], self.LIST))
+        with pytest.raises(ValueError):
+            ctl.remove_package("no.such.package_1.0_x64__zzz")
+
+    def test_restore_registers_manifest(self) -> None:
+        from core.uwp import UwpController
+        scripts: list = []
+        ctl = UwpController(runner=self._runner(scripts, "[]"))
+        name = ctl.restore_package({
+            "kind": "uwp", "name": "Microsoft.BingWeather",
+            "manifest": r"C:\Program Files\WindowsApps\bing\AppxManifest.xml"})
+        assert name == "Microsoft.BingWeather"
+        assert any("Add-AppxPackage" in s and "-Register" in s for s in scripts)
+
+    def test_restore_staged_gone_is_honest_error(self) -> None:
+        from core.uwp import UwpController
+        scripts: list = []
+        runner = self._runner(scripts, "[]", rc=3,
+                              stderr="staged-копия стёрта".encode("utf-8"))
+        ctl = UwpController(runner=runner)
+        with pytest.raises(RuntimeError):
+            ctl.restore_package({
+                "kind": "uwp", "name": "X",
+                "manifest": r"C:\Program Files\WindowsApps\x\AppxManifest.xml"})
+
+
+class TestStage4ExecutorRouting:
+    def test_backup_restore_routes_service(self, tmp_path: t.Any) -> None:
+        from core.backup import BackupStore
+        from core.executor import Executor
+
+        writes: list = []
+
+        class FakeServices:
+            def restore_service(self, data):
+                writes.append(("restore", data["service"]))
+                return data["service"]
+
+        store = BackupStore(tmp_path / "bk")
+        store.save("service-Fax", {"kind": "service", "service": "Fax",
+                                   "prev_start_mode": "manual",
+                                   "prev_state": "stopped"},
+                   kind="service_disable")
+        ex = Executor(store=store, services=FakeServices())
+        (res,) = ex.execute_actions([{"type": "backup_restore",
+                                      "snapshot": "service-Fax"}])
+        assert res.success and res.action_type == "service_restore"
+        assert writes == [("restore", "Fax")]
+        assert "service-Fax" not in store.list()
+
+    def test_backup_restore_routes_uwp(self, tmp_path: t.Any) -> None:
+        from core.backup import BackupStore
+        from core.executor import Executor
+
+        class FakeUwp:
+            def restore_package(self, data):
+                return data["name"]
+
+        store = BackupStore(tmp_path / "bk")
+        store.save("uwp-Bing", {"kind": "uwp", "name": "Bing",
+                                "manifest": r"C:\X\AppxManifest.xml"},
+                   kind="uwp_remove")
+        ex = Executor(store=store, uwp=FakeUwp())
+        (res,) = ex.execute_actions([{"type": "backup_restore",
+                                      "snapshot": "uwp-Bing"}])
+        assert res.success and res.action_type == "uwp_restore"
+        assert "uwp-Bing" not in store.list()
+
+    def test_startup_disable_folder_source(self, tmp_path: t.Any, monkeypatch: t.Any) -> None:
+        import core.startup as startup_mod
+        from core.backup import BackupStore
+        from core.executor import Executor
+
+        folder = tmp_path / "Startup"
+        folder.mkdir()
+        target = folder / "app.lnk"
+        target.write_bytes(b"L")
+        monkeypatch.setattr(startup_mod, "startup_folders", lambda: [folder])
+        store = BackupStore(tmp_path / "bk")
+        ex = Executor(store=store)
+        (res,) = ex.execute_actions([{
+            "type": "startup_disable", "name": "app", "value": str(target),
+            "source": "startup_folder", "hive": "", "key_path": ""}])
+        assert res.success
+        assert not target.exists()
+        (back,) = ex.execute_actions([{"type": "backup_restore",
+                                       "snapshot": res.snapshot}])
+        assert back.success
+        assert target.read_bytes() == b"L"

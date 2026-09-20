@@ -118,10 +118,16 @@
     "mode_manual": "manual",
     "mode_disabled": "disabled",
     "mode_unknown": "unknown",
-    "services_hint": "Services are read-only for now — disabling with a snapshot arrives next round.",
+    "services_hint": "Disabled one at a time, start mode only: a running service is not killed on the spot — the change applies after reboot. The previous mode is snapshotted and restorable.",
     "stats_startup": "At startup",
     "stats_services": "Services",
-    "stats_backups": "Restorable"
+    "stats_backups": "Restorable",
+    "uwp_section": "Store apps",
+    "uwp_hint": "Removed for your user only; the package stays staged in the system and comes back via Restore in seconds. Frameworks and system packages are never listed.",
+    "uwp_remove_button": "Remove",
+    "empty_uwp": "No user Store apps found.",
+    "confirm_service_note": "The service start mode becomes Disabled; a running service keeps running until reboot. The previous mode is kept in a snapshot.",
+    "confirm_uwp_note": "The app is removed for your user; the package stays in the system and can be brought back via Restore."
   },
   "journal": {
     "title": "Deletion journal",

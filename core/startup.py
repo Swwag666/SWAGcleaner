@@ -170,13 +170,16 @@ class StartupManager:
         """Отключить элемент: снапшот в BackupStore, затем удаление записи.
 
         Возвращает имя снапшота — по нему запись возвращается обратно.
-        Поддерживаются записи реестра; файл из папки автозагрузки пока не
-        трогаем (его отключение — переезд файла — отдельная история).
+        Запись реестра — снапшот значения и DeleteValue; файл из папки
+        автозагрузки — переезд файла в хранилище бэкапов (сам файл и есть
+        полезная нагрузка снапшота).
         """
-        if entry.source != SOURCE_REGISTRY:
-            raise ValueError(f"не умею отключать {entry.source}: {entry.name}")
         if self._store is None:
             raise ValueError("нет хранилища бэкапов — отключать нельзя")
+        if entry.source == SOURCE_FOLDER:
+            return self._disable_folder_entry(entry)
+        if entry.source != SOURCE_REGISTRY:
+            raise ValueError(f"не умею отключать {entry.source}: {entry.name}")
         snapshot = self._snapshot_name(entry)
         self._store.save(snapshot, {
             "hive": entry.hive,
@@ -193,17 +196,48 @@ class StartupManager:
             raise
         return snapshot
 
+    def _disable_folder_entry(self, entry: StartupEntry) -> str:
+        """Файл из папки «Автозагрузка»: переезд в бэкап + снапшот пути."""
+        import shutil
+
+        if not getattr(self._store, "has_disk", lambda: False)():
+            raise ValueError("для файлов автозагрузки нужен дисковый бэкап")
+        src = Path(entry.path)
+        if not src.is_file():
+            raise ValueError(f"файл автозагрузки не найден: {src}")
+        snapshot = self._snapshot_name(entry)
+        # Валидация имени ДО переезда файла — небезопасное имя не должно
+        # трогать систему вообще.
+        payload = self._store.payload_path(snapshot)
+        self._store.save(snapshot, {
+            "kind": "startup_folder",
+            "orig_path": str(src),
+            "file_name": src.name,
+        }, kind="startup_folder_disable")
+        try:
+            shutil.move(str(src), str(payload))
+        except OSError:
+            self._store.remove(snapshot)
+            raise
+        return snapshot
+
     def restore(self, snapshot: str) -> None:
         """Вернуть запись автозагрузки из снапшота; снапшот после — удалить.
 
-        Цель записи жёстко сверяется с _RUN_KEYS: снапшот лежит в профиле
+        Цель записи жёстко сверяется с белыми списками (_RUN_KEYS для
+        реестра, startup_folders() для файлов): снапшот лежит в профиле
         пользователя, а приложение работает от администратора — подменённый
-        снапшот не должен превращаться в запись в произвольный ключ HKLM.
+        снапшот не должен превращаться в запись куда попало.
         """
         if self._store is None:
             raise ValueError("нет хранилища бэкапов")
         data = self._store.restore(snapshot)
-        if not isinstance(data, dict) or "value_name" not in data:
+        if not isinstance(data, dict):
+            raise ValueError(f"снапшот не найден или битый: {snapshot}")
+        if data.get("kind") == "startup_folder":
+            self._restore_folder_entry(snapshot, data)
+            return
+        if "value_name" not in data:
             raise ValueError(f"снапшот не найден или битый: {snapshot}")
         hive = str(data["hive"])
         key_path = str(data["key_path"])
@@ -212,4 +246,24 @@ class StartupManager:
         self._registry.set_value(hive, key_path,
                                  str(data["value_name"]), str(data["value_data"]),
                                  int(data.get("value_type", 1)))
+        self._store.remove(snapshot)
+
+    def _restore_folder_entry(self, snapshot: str, data: t.Dict[str, t.Any]) -> None:
+        """Вернуть файл в папку «Автозагрузка» из полезной нагрузки снапшота."""
+        orig = Path(str(data.get("orig_path", "")))
+        allowed = False
+        for folder in startup_folders():
+            try:
+                if orig.resolve().is_relative_to(folder.resolve()):
+                    allowed = True
+                    break
+            except OSError:
+                continue
+        if not allowed:
+            raise ValueError(f"снапшот ведёт вне папок автозагрузки: {orig}")
+        payload = self._store.payload_path(snapshot)
+        if not payload.is_file():
+            raise ValueError(f"полезная нагрузка снапшота потеряна: {snapshot}")
+        orig.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(payload, orig)
         self._store.remove(snapshot)
