@@ -36,6 +36,9 @@ for _p in (
 datas = [
     ("ui/i18n/ru.json", "ui/i18n"),
     ("ui/i18n/en.json", "ui/i18n"),
+    # База системных твиков: без неё страница твиков потеряет секцию «Твики
+    # системы» (core/tweaks.py ищет её рядом с собой).
+    ("core/tweaks_db.json", "core"),
     ("assets/fonts/Handjet.ttf", "assets/fonts"),
     ("assets/fonts/OFL.txt", "assets/fonts"),
     # Картинки помощницы: каждая поза — отдельный файл. Исходники в

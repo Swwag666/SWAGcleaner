@@ -1,0 +1,2926 @@
+[
+  {
+    "id": "explorer.file_extensions",
+    "category": "explorer",
+    "name_en": "Show File Extensions",
+    "name_ru": "Показывать расширения файлов",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "HideFileExt",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "HideFileExt",
+        "type": "dword",
+        "value": 1
+      }
+    ]
+  },
+  {
+    "id": "explorer.fix_duplicate_drives",
+    "category": "explorer",
+    "name_en": "Fix Duplicate Drives in Explorer",
+    "name_ru": "Исправить дублирование дисков в проводнике",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace\\DelegateFolders\\{F5FB2C77-0E2F-4A16-A381-3E560C68BC83}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace\\DelegateFolders\\{F5FB2C77-0E2F-4A16-A381-3E560C68BC83}"
+      }
+    ],
+    "off": [
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace\\DelegateFolders\\{F5FB2C77-0E2F-4A16-A381-3E560C68BC83}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Desktop\\NameSpace\\DelegateFolders\\{F5FB2C77-0E2F-4A16-A381-3E560C68BC83}"
+      }
+    ],
+    "note": "NEEDS_REVIEW: one-way Fix button in source (fix_Click), no off branch; off synthesized as create_key per extraction rules. UI hides itself once keys are absent (checkReg collapses e8/fix)."
+  },
+  {
+    "id": "explorer.hidden_files",
+    "category": "explorer",
+    "name_en": "Show Hidden Files and Folders",
+    "name_ru": "Показывать скрытые файлы и папки",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "Hidden",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "Hidden",
+        "type": "dword",
+        "value": 0
+      }
+    ]
+  },
+  {
+    "id": "explorer.hide_gallery",
+    "category": "explorer",
+    "name_en": "Hide The \"Gallery\" Section",
+    "name_ru": "Скрыть раздел \"Галерея\"",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 22621,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Classes\\CLSID\\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}",
+        "name": "System.IsPinnedToNameSpaceTree",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Classes\\CLSID\\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}",
+        "name": "System.IsPinnedToNameSpaceTree",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "note": "Toggle shown only when build >= 22621 (constructor gate: e5 collapsed below 22621). HKCU\\Software\\Classes write targets the per-user classes hive."
+  },
+  {
+    "id": "explorer.launch_to_this_pc",
+    "category": "explorer",
+    "name_en": "Open The \"This PC\" Page in Explorer Instead of \"Home\"",
+    "name_ru": "Открывать в проводнике страницу \"Этот ПК\" вместо \"Главная\"",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "LaunchTo",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "LaunchTo",
+        "type": "dword",
+        "value": 2
+      }
+    ],
+    "note": "off-value 2 = Home page per source (1 = This PC)."
+  },
+  {
+    "id": "explorer.library_folders",
+    "category": "explorer",
+    "name_en": "Hide Non-Removable Library Folders",
+    "name_ru": "Скрыть неудаляемые библиотеки в проводнике",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "max_build": 22620,
+    "on": [
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{A0953C92-50DC-43bf-BE83-3742FED03C9C}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{f86fa3ab-70d2-4fc7-9c99-fcbf05467f3a}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{A0953C92-50DC-43bf-BE83-3742FED03C9C}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{f86fa3ab-70d2-4fc7-9c99-fcbf05467f3a}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{A8CDFF1C-4878-43be-B5FD-F8091C1C60D0}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{d3162b92-9365-467a-956b-92703aca08af}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{A8CDFF1C-4878-43be-B5FD-F8091C1C60D0}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{d3162b92-9365-467a-956b-92703aca08af}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{374DE290-123F-4565-9164-39C4925E467B}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{088e3905-0323-4b02-9826-5d99428e115f}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{374DE290-123F-4565-9164-39C4925E467B}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{088e3905-0323-4b02-9826-5d99428e115f}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{3ADD1653-EB32-4cb0-BBD7-DFA0ABB5ACCA}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{24ad3ad4-a569-4530-98e1-ab02f9417aa8}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{3ADD1653-EB32-4cb0-BBD7-DFA0ABB5ACCA}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{24ad3ad4-a569-4530-98e1-ab02f9417aa8}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{1CF1260C-4DD0-4ebb-811F-33C572699FDE}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{3dfdf296-dbec-4fb4-81d1-6a3438bcf4de}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{1CF1260C-4DD0-4ebb-811F-33C572699FDE}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{3dfdf296-dbec-4fb4-81d1-6a3438bcf4de}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{0DB7E03F-FC29-4DC6-9020-FF41B59E513A}"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{0DB7E03F-FC29-4DC6-9020-FF41B59E513A}"
+      }
+    ],
+    "off": [
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{A0953C92-50DC-43bf-BE83-3742FED03C9C}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{f86fa3ab-70d2-4fc7-9c99-fcbf05467f3a}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{A0953C92-50DC-43bf-BE83-3742FED03C9C}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{f86fa3ab-70d2-4fc7-9c99-fcbf05467f3a}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{A8CDFF1C-4878-43be-B5FD-F8091C1C60D0}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{d3162b92-9365-467a-956b-92703aca08af}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{A8CDFF1C-4878-43be-B5FD-F8091C1C60D0}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{d3162b92-9365-467a-956b-92703aca08af}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{374DE290-123F-4565-9164-39C4925E467B}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{088e3905-0323-4b02-9826-5d99428e115f}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{374DE290-123F-4565-9164-39C4925E467B}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{088e3905-0323-4b02-9826-5d99428e115f}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{3ADD1653-EB32-4cb0-BBD7-DFA0ABB5ACCA}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{24ad3ad4-a569-4530-98e1-ab02f9417aa8}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{3ADD1653-EB32-4cb0-BBD7-DFA0ABB5ACCA}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{24ad3ad4-a569-4530-98e1-ab02f9417aa8}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{1CF1260C-4DD0-4ebb-811F-33C572699FDE}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{3dfdf296-dbec-4fb4-81d1-6a3438bcf4de}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{1CF1260C-4DD0-4ebb-811F-33C572699FDE}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{3dfdf296-dbec-4fb4-81d1-6a3438bcf4de}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{0DB7E03F-FC29-4DC6-9020-FF41B59E513A}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{0DB7E03F-FC29-4DC6-9020-FF41B59E513A}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer\\NameSpace\\{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}"
+      }
+    ],
+    "note": "Toggle hidden when build >= 22621 (constructor gate: e1 collapsed on 22621+, e5 shown instead). on-order per source (B4BFCC3A before 0DB7E03F), off-order per source (0DB7E03F before B4BFCC3A)."
+  },
+  {
+    "id": "explorer.shortcut_suffix",
+    "category": "explorer",
+    "name_en": "Remove The \"-Shortcut\" Ending From New Shortcuts",
+    "name_ru": "Убрать окончания \"-Ярлык\" у новых ярлыков",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\NamingTemplates",
+        "name": "ShortcutNameTemplate",
+        "type": "sz",
+        "value": "%s.lnk"
+      }
+    ],
+    "off": [
+      {
+        "op": "delete_key",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\NamingTemplates"
+      }
+    ]
+  },
+  {
+    "id": "explorer.this_pc_desktop_icon",
+    "category": "explorer",
+    "name_en": "Show \"This PC\" on The Desktop",
+    "name_ru": "Показывать иконку \"Этот ПК\" на рабочем столе",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\HideDesktopIcons\\NewStartPanel",
+        "name": "{20D04FE0-3AEA-1069-A2D8-08002B30309D}",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\HideDesktopIcons\\NewStartPanel",
+        "name": "{20D04FE0-3AEA-1069-A2D8-08002B30309D}",
+        "type": "dword",
+        "value": 1
+      }
+    ]
+  },
+  {
+    "id": "personal.boot_no_animation",
+    "category": "personal",
+    "name_en": "Disable Animation in Bootloader",
+    "name_ru": "Выключить анимацию в загрузчике системы",
+    "risk": "high",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "cmd",
+        "run": "bcdedit /set \"{globalsettings}\" custom:16000069 true"
+      }
+    ],
+    "off": [
+      {
+        "op": "cmd",
+        "run": "bcdedit /set \"{globalsettings}\" custom:16000069 false"
+      }
+    ],
+    "note": "bcdedit меняет конфигурацию загрузки; эффект только после перезагрузки (в коде RebootNotify не вызывается)."
+  },
+  {
+    "id": "personal.boot_no_logo",
+    "category": "personal",
+    "name_en": "Disable Windows Logo in Bootloader",
+    "name_ru": "Выключить логотип Windows в загрузчике системы",
+    "risk": "high",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "cmd",
+        "run": "bcdedit /set \"{globalsettings}\" custom:16000067 true"
+      }
+    ],
+    "off": [
+      {
+        "op": "cmd",
+        "run": "bcdedit /set \"{globalsettings}\" custom:16000067 false"
+      }
+    ],
+    "note": "bcdedit меняет конфигурацию загрузки; эффект только после перезагрузки (в коде RebootNotify не вызывается)."
+  },
+  {
+    "id": "personal.clipboard_history",
+    "category": "personal",
+    "name_en": "Enable Clipboard",
+    "name_ru": "Включить буфер обмена",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Microsoft\\Clipboard",
+        "name": "EnableClipboardHistory",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "off": [],
+    "note": "One-shot via Start Quick Setup batch; no off path in source. Actually enables clipboard history (Win+V). Loc key quick.main.t14 (control t13)."
+  },
+  {
+    "id": "personal.dark_theme",
+    "category": "personal",
+    "name_en": "Enable dark theme",
+    "name_ru": "Включить тёмную тему",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": true,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        "name": "AppsUseLightTheme",
+        "type": "dword",
+        "value": 0
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        "name": "SystemUsesLightTheme",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        "name": "AppsUseLightTheme",
+        "type": "dword",
+        "value": 1
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        "name": "SystemUsesLightTheme",
+        "type": "dword",
+        "value": 1
+      }
+    ]
+  },
+  {
+    "id": "personal.disable_lockscreen_blur",
+    "category": "personal",
+    "name_en": "Disable Blur on The Lock Screen",
+    "name_ru": "Выключить размытие на экране блокировки",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+        "name": "DisableAcrylicBackgroundOnLogon",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+        "name": "DisableAcrylicBackgroundOnLogon",
+        "type": "dword",
+        "value": 0
+      }
+    ]
+  },
+  {
+    "id": "personal.disable_search_highlights",
+    "category": "personal",
+    "name_en": "Remove Ads In Start Menu And Taskbar Search",
+    "name_ru": "Убрать рекламу в \"Меню Пуск\" и на панели задач",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": true,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\SearchSettings",
+        "name": "IsDynamicSearchBoxEnabled",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "off": [],
+    "note": "One-shot via Start Quick Setup batch; no off path in source. Loc key quick.main.t9 (control t8)."
+  },
+  {
+    "id": "personal.disable_transparency",
+    "category": "personal",
+    "name_en": "Disable transparency",
+    "name_ru": "Выключить прозрачность",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        "name": "EnableTransparency",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        "name": "EnableTransparency",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "note": "Инвертированные значения: on ставит EnableTransparency=0."
+  },
+  {
+    "id": "personal.edu_themes",
+    "category": "personal",
+    "name_en": "Enable Windows 11 Hidden Themes",
+    "name_ru": "Включить скрытые темы из Windows 11",
+    "risk": "low",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 22000,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\PolicyManager\\current\\device\\Education",
+        "name": "EnableEduThemes",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\PolicyManager\\current\\device\\Education",
+        "name": "EnableEduThemes",
+        "type": "dword",
+        "value": 0
+      }
+    ]
+  },
+  {
+    "id": "personal.folder_default_name",
+    "category": "personal",
+    "name_en": "Default Name For New Folders and New Files",
+    "name_ru": "Название новых папок и файлов по умолчанию",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "params": [
+      {
+        "key": "folder_name",
+        "label_en": "Default Name For New Folders and New Files",
+        "label_ru": "Название новых папок и файлов по умолчанию",
+        "default": "New File"
+      }
+    ],
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\NamingTemplates",
+        "name": "RenameNameTemplate",
+        "type": "sz",
+        "value": "{folder_name}"
+      }
+    ],
+    "off": [
+      {
+        "op": "delete_value",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\NamingTemplates",
+        "name": "RenameNameTemplate"
+      }
+    ]
+  },
+  {
+    "id": "personal.hide_taskview_widgets",
+    "category": "personal",
+    "name_en": "Hide The Task View And Widgets Button",
+    "name_ru": "Скрыть кнопки \"Просмотр задач\" и \"Виджеты\"",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": true,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "ShowTaskViewButton",
+        "type": "dword",
+        "value": 0
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "TaskbarDa",
+        "type": "dword",
+        "value": 0
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "TaskbarMn",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "off": [],
+    "note": "One-shot via Start Quick Setup batch; no off path in source. Loc key quick.main.t8 (control t7)."
+  },
+  {
+    "id": "personal.selection_color",
+    "category": "personal",
+    "name_en": "Change Selection Color",
+    "name_ru": "Изменить цвет выделения",
+    "risk": "low",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "params": [
+      {
+        "key": "highlight",
+        "label_en": "Highlight color (R G B)",
+        "label_ru": "Цвет выделения (R G B)",
+        "default": "51 153 255"
+      },
+      {
+        "key": "hot_tracking",
+        "label_en": "Hot tracking color (R G B)",
+        "label_ru": "Цвет активного выделения (R G B)",
+        "default": "0 102 204"
+      }
+    ],
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Control Panel\\Colors",
+        "name": "HightLight",
+        "type": "sz",
+        "value": "{highlight}"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Control Panel\\Colors",
+        "name": "Hilight",
+        "type": "sz",
+        "value": "{highlight}"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Control Panel\\Colors",
+        "name": "HotTrackingColor",
+        "type": "sz",
+        "value": "{hot_tracking}"
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Control Panel\\Colors",
+        "name": "HightLight",
+        "type": "sz",
+        "value": "51 153 255"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Control Panel\\Colors",
+        "name": "Hilight",
+        "type": "sz",
+        "value": "51 153 255"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Control Panel\\Colors",
+        "name": "HotTrackingColor",
+        "type": "sz",
+        "value": "0 102 204"
+      }
+    ],
+    "note": "NEEDS_REVIEW: в исходнике это ComboBox из 8 фиксированных пресетов (highlight/hot_tracking): 0=51 153 255 / 0 102 204 (Standard), 1=0 100 100 / 0 100 100 (Cyan), 2=180 0 180 / 110 0 110 (Purple), 3=0 90 30 / 0 90 30 (Green), 4=100 40 0 / 100 40 0 (Orange), 5=135 0 0 / 135 0 0 (Red), 6=15, 0, 120 / 15, 0, 120 (Blue), 7=40 40 40 / 40 40 40 (Black). Смоделировано как два свободных текстовых параметра; возможно нужен enum-параметр."
+  },
+  {
+    "id": "personal.small_window_buttons",
+    "category": "personal",
+    "name_en": "Small Window Buttons",
+    "name_ru": "Включить маленькие кнопки окон",
+    "risk": "low",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Control Panel\\Desktop\\WindowMetrics",
+        "name": "CaptionHeight",
+        "type": "sz",
+        "value": "-270"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Control Panel\\Desktop\\WindowMetrics",
+        "name": "CaptionWidth",
+        "type": "sz",
+        "value": "-270"
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Control Panel\\Desktop\\WindowMetrics",
+        "name": "CaptionHeight",
+        "type": "sz",
+        "value": "-330"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Control Panel\\Desktop\\WindowMetrics",
+        "name": "CaptionWidth",
+        "type": "sz",
+        "value": "-330"
+      }
+    ]
+  },
+  {
+    "id": "personal.taskbar_end_task",
+    "category": "personal",
+    "name_en": "Add *End Task* Button to the Taskbar",
+    "name_ru": "Добавить кнопку *Завершить задачу* на панели задач",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\\TaskbarDeveloperSettings",
+        "name": "TaskbarEndTask",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\\TaskbarDeveloperSettings",
+        "name": "TaskbarEndTask",
+        "type": "dword",
+        "value": 0
+      }
+    ]
+  },
+  {
+    "id": "personal.verbose_status",
+    "category": "personal",
+    "name_en": "Enable Super-Detailed System Information",
+    "name_ru": "Включить суперподробные сведения о системе",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+        "name": "verbosestatus",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+        "name": "verbosestatus",
+        "type": "dword",
+        "value": 0
+      }
+    ]
+  },
+  {
+    "id": "contextmenu.add_to_favorites",
+    "category": "contextmenu",
+    "name_en": "Add to Favorites",
+    "name_ru": "Добавить в избранные",
+    "risk": "medium",
+    "reboot": false,
+    "explorer_restart": true,
+    "min_build": 22000,
+    "on": [
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\*\\shell\\pintohomefile"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\*\\shell\\pintohomefile",
+        "name": "ProgrammaticAccessOnly",
+        "type": "sz",
+        "value": ""
+      },
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Drive\\shell\\pintohomefile"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Drive\\shell\\pintohomefile",
+        "name": "ProgrammaticAccessOnly",
+        "type": "sz",
+        "value": ""
+      },
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Folder\\shell\\pintohomefile"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Folder\\shell\\pintohomefile",
+        "name": "ProgrammaticAccessOnly",
+        "type": "sz",
+        "value": ""
+      },
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Network\\shell\\pintohomefile"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Network\\shell\\pintohomefile",
+        "name": "ProgrammaticAccessOnly",
+        "type": "sz",
+        "value": ""
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Drive\\shell\\pintohome"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Folder\\shell\\pintohome"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Network\\shell\\pintohome"
+      }
+    ],
+    "off": [
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\AllFilesystemObjects\\shell\\pintohome"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\AllFilesystemObjects\\shell\\pintohome",
+        "name": "CommandStateHandler",
+        "type": "sz",
+        "value": "{b455f46e-e4af-4035-b0a4-cf18d2f6f28e}"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\AllFilesystemObjects\\shell\\pintohome",
+        "name": "CommandStateSync",
+        "type": "sz",
+        "value": ""
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\AllFilesystemObjects\\shell\\pintohome",
+        "name": "MUIVerb",
+        "type": "sz",
+        "value": "@shell32.dll,-51377"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\AllFilesystemObjects\\shell\\pintohome\\command"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\AllFilesystemObjects\\shell\\pintohome\\command",
+        "name": "DelegateExecute",
+        "type": "sz",
+        "value": "{b455f46e-e4af-4035-b0a4-cf18d2f6f28e}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Drive\\shell\\pintohome"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Drive\\shell\\pintohome",
+        "name": "CommandStateHandler",
+        "type": "sz",
+        "value": "{b455f46e-e4af-4035-b0a4-cf18d2f6f28e}"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Drive\\shell\\pintohome",
+        "name": "CommandStateSync",
+        "type": "sz",
+        "value": ""
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Drive\\shell\\pintohome",
+        "name": "MUIVerb",
+        "type": "sz",
+        "value": "@shell32.dll,-51377"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Drive\\shell\\pintohome",
+        "name": "NeverDefault",
+        "type": "sz",
+        "value": ""
+      },
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Drive\\shell\\pintohome\\command"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Drive\\shell\\pintohome\\command",
+        "name": "DelegateExecute",
+        "type": "sz",
+        "value": "{b455f46e-e4af-4035-b0a4-cf18d2f6f28e}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Folder\\shell\\pintohome"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Folder\\shell\\pintohome",
+        "name": "AppliesTo",
+        "type": "sz",
+        "value": "System.ParsingName:<>\"::{679f85cb-0220-4080-b29b-5540cc05aab6}\" AND System.ParsingName:<>\"::{645FF040-5081-101B-9F08-00AA002F954E}\" AND System.IsFolder:=System.StructuredQueryType.Boolean#True"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Folder\\shell\\pintohome",
+        "name": "MUIVerb",
+        "type": "sz",
+        "value": "@shell32.dll,-51377"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Folder\\shell\\pintohome\\command"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Folder\\shell\\pintohome\\command",
+        "name": "DelegateExecute",
+        "type": "sz",
+        "value": "{b455f46e-e4af-4035-b0a4-cf18d2f6f28e}"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Network\\shell\\pintohome"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Network\\shell\\pintohome",
+        "name": "CommandStateHandler",
+        "type": "sz",
+        "value": "{b455f46e-e4af-4035-b0a4-cf18d2f6f28e}"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Network\\shell\\pintohome",
+        "name": "CommandStateSync",
+        "type": "sz",
+        "value": ""
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Network\\shell\\pintohome",
+        "name": "MUIVerb",
+        "type": "sz",
+        "value": "@shell32.dll,-51377"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Network\\shell\\pintohome",
+        "name": "NeverDefault",
+        "type": "sz",
+        "value": ""
+      },
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Network\\shell\\pintohome\\command"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Network\\shell\\pintohome\\command",
+        "name": "DelegateExecute",
+        "type": "sz",
+        "value": "{b455f46e-e4af-4035-b0a4-cf18d2f6f28e}"
+      }
+    ],
+    "note": "HKCR via HKCU"
+  },
+  {
+    "id": "contextmenu.copy_as_path",
+    "category": "contextmenu",
+    "name_en": "Copy as path",
+    "name_ru": "Копировать как путь",
+    "risk": "medium",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "delete_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\AllFilesystemObjects\\shellex\\ContextMenuHandlers\\CopyAsPathMenu"
+      }
+    ],
+    "off": [
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\AllFilesystemObjects\\shellex\\ContextMenuHandlers\\CopyAsPathMenu"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\AllFilesystemObjects\\shellex\\ContextMenuHandlers\\CopyAsPathMenu",
+        "name": "",
+        "type": "sz",
+        "value": "{f3d06e7c-1e45-4a26-847e-f9fcdee59be0}"
+      }
+    ],
+    "note": "HKCR via HKCU"
+  },
+  {
+    "id": "contextmenu.defender_scan",
+    "category": "contextmenu",
+    "name_en": "Scan with Microsoft Defender",
+    "name_ru": "Проверить с использованием Microsoft Defender",
+    "risk": "medium",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "delete_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\CLSID\\{09A47860-11B0-4DA5-AFA5-26D86198A780}\\InprocServer32"
+      },
+      {
+        "op": "delete_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\CLSID\\{09A47860-11B0-4DA5-AFA5-26D86198A780}\\Version"
+      }
+    ],
+    "off": [
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\CLSID\\{09A47860-11B0-4DA5-AFA5-26D86198A780}\\InprocServer32"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\CLSID\\{09A47860-11B0-4DA5-AFA5-26D86198A780}\\InprocServer32",
+        "name": "",
+        "type": "sz",
+        "value": "C:\\Program Files\\Windows Defender\\shellext.dll"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\CLSID\\{09A47860-11B0-4DA5-AFA5-26D86198A780}\\InprocServer32",
+        "name": "ThreadingModel",
+        "type": "sz",
+        "value": "Apartment"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\CLSID\\{09A47860-11B0-4DA5-AFA5-26D86198A780}\\Version"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\CLSID\\{09A47860-11B0-4DA5-AFA5-26D86198A780}\\Version",
+        "name": "",
+        "type": "sz",
+        "value": "10.0.22621.1"
+      }
+    ],
+    "note": "HKCR via HKCU"
+  },
+  {
+    "id": "contextmenu.nvidia_control_panel",
+    "category": "contextmenu",
+    "name_en": "NVIDIA Control Panel",
+    "name_ru": "Панель управления NVIDIA",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\NVIDIA Corporation\\Global\\NvCplApi\\Policies",
+        "name": "ContextUIPolicy",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\NVIDIA Corporation\\Global\\NvCplApi\\Policies",
+        "name": "ContextUIPolicy",
+        "type": "dword",
+        "value": 2
+      }
+    ]
+  },
+  {
+    "id": "contextmenu.old_context_menu",
+    "category": "contextmenu",
+    "name_en": "Enable The Old Context Menu",
+    "name_ru": "Включить старое контекстное меню",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": true,
+    "min_build": 22000,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\\InprocServer32",
+        "name": "",
+        "type": "sz",
+        "value": ""
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\HideDesktopIcons\\NewStartPanel",
+        "name": "{20D04FE0-3AEA-1069-A2D8-08002B30309D}",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "off": [
+      {
+        "op": "delete_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\\InprocServer32"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\HideDesktopIcons\\NewStartPanel",
+        "name": "{20D04FE0-3AEA-1069-A2D8-08002B30309D}",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "note": "HKCR via HKCU"
+  },
+  {
+    "id": "contextmenu.open_in_new_tab",
+    "category": "contextmenu",
+    "name_en": "Open in new tab",
+    "name_ru": "Открыть в новой вкладке",
+    "risk": "medium",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 22000,
+    "on": [
+      {
+        "op": "delete_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Folder\\shell\\opennewtab"
+      }
+    ],
+    "off": [
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Folder\\shell\\opennewtab"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Folder\\shell\\opennewtab",
+        "name": "CommandStateHandler",
+        "type": "sz",
+        "value": "{11dbb47c-a525-400b-9e80-a54615a090c0}"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Folder\\shell\\opennewtab",
+        "name": "CommandStateSync",
+        "type": "sz",
+        "value": ""
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Folder\\shell\\opennewtab",
+        "name": "LaunchExplorerFlags",
+        "type": "dword",
+        "value": 32
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Folder\\shell\\opennewtab",
+        "name": "MUIVerb",
+        "type": "sz",
+        "value": "@windows.storage.dll,-8519"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Folder\\shell\\opennewtab",
+        "name": "MultiSelectModel",
+        "type": "sz",
+        "value": "Document"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Folder\\shell\\opennewtab",
+        "name": "OnlyInBrowserWindow",
+        "type": "sz",
+        "value": ""
+      },
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Folder\\shell\\opennewtab\\command"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Folder\\shell\\opennewtab\\command",
+        "name": "DelegateExecute",
+        "type": "sz",
+        "value": "{11dbb47c-a525-400b-9e80-a54615a090c0}"
+      }
+    ],
+    "note": "HKCR via HKCU"
+  },
+  {
+    "id": "contextmenu.open_in_terminal",
+    "category": "contextmenu",
+    "name_en": "Open in Terminal",
+    "name_ru": "Открыть в терминале",
+    "risk": "medium",
+    "reboot": false,
+    "explorer_restart": true,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Blocked",
+        "name": "{9F156763-7844-4DC4-B2B1-901F640F5155}",
+        "type": "sz",
+        "value": ""
+      }
+    ],
+    "off": [
+      {
+        "op": "delete_value",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Blocked",
+        "name": "{9F156763-7844-4DC4-B2B1-901F640F5155}"
+      }
+    ],
+    "note": "Исправлено при портировании: апстрим сносил весь общий ключ Blocked, задевая соседние твики."
+  },
+  {
+    "id": "contextmenu.pin_to_start",
+    "category": "contextmenu",
+    "name_en": "Pin to Start menu",
+    "name_ru": "Закрепить на начальном экране",
+    "risk": "medium",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "delete_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Classes\\Folder\\shellex\\ContextMenuHandlers\\PintoStartScreen"
+      },
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\exefile\\shellex\\ContextMenuHandlers\\PintoStartScreen"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\exefile\\shellex\\ContextMenuHandlers\\PintoStartScreen",
+        "name": "",
+        "type": "sz",
+        "value": ""
+      }
+    ],
+    "off": [
+      {
+        "op": "create_key",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Classes\\Folder\\shellex\\ContextMenuHandlers\\PintoStartScreen"
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Classes\\Folder\\shellex\\ContextMenuHandlers\\PintoStartScreen",
+        "name": "",
+        "type": "sz",
+        "value": "{470C0EBD-5D73-4d58-9CED-E91E22E23282}"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\exefile\\shellex\\ContextMenuHandlers\\PintoStartScreen",
+        "name": "",
+        "type": "sz",
+        "value": "{470C0EBD-5D73-4d58-9CED-E91E22E23282}"
+      }
+    ],
+    "note": "HKCR via HKCU (exefile-часть; Folder-часть в исходнике пишется в HKLM\\SOFTWARE\\Classes)"
+  },
+  {
+    "id": "contextmenu.pin_to_taskbar",
+    "category": "contextmenu",
+    "name_en": "Pin to Taskbar",
+    "name_ru": "Закрепить на панели задач",
+    "risk": "medium",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "delete_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\*\\shellex\\ContextMenuHandlers\\{90AA3A4E-1CBA-4233-B8BB-535773D48449}"
+      }
+    ],
+    "off": [
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\*\\shellex\\ContextMenuHandlers\\{90AA3A4E-1CBA-4233-B8BB-535773D48449}"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\*\\shellex\\ContextMenuHandlers\\{90AA3A4E-1CBA-4233-B8BB-535773D48449}",
+        "name": "",
+        "type": "sz",
+        "value": "Taskband Pin"
+      }
+    ],
+    "note": "HKCR via HKCU"
+  },
+  {
+    "id": "contextmenu.remove_menu_delay",
+    "category": "contextmenu",
+    "name_en": "Remove Context Menu Delay",
+    "name_ru": "Убрать задержку контекстного меню",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": true,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Control Panel\\Desktop",
+        "name": "MenuShowDelay",
+        "type": "sz",
+        "value": "50"
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Control Panel\\Desktop",
+        "name": "MenuShowDelay",
+        "type": "sz",
+        "value": "400"
+      }
+    ]
+  },
+  {
+    "id": "contextmenu.restore_previous_versions",
+    "category": "contextmenu",
+    "name_en": "Restore previous versions",
+    "name_ru": "Восстановить прежнюю версию",
+    "risk": "medium",
+    "reboot": false,
+    "explorer_restart": true,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Blocked",
+        "name": "{596AB062-B4D2-4215-9F74-E9109B0A8153}",
+        "type": "sz",
+        "value": ""
+      }
+    ],
+    "off": [
+      {
+        "op": "delete_value",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Blocked",
+        "name": "{596AB062-B4D2-4215-9F74-E9109B0A8153}"
+      }
+    ],
+    "note": "Исправлено при портировании: апстрим сносил весь общий ключ Blocked, задевая соседние твики."
+  },
+  {
+    "id": "contextmenu.send_to",
+    "category": "contextmenu",
+    "name_en": "Send to",
+    "name_ru": "Отправить",
+    "risk": "medium",
+    "reboot": false,
+    "explorer_restart": true,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\AllFilesystemObjects\\shellex\\ContextMenuHandlers\\SendTo"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\AllFilesystemObjects\\shellex\\ContextMenuHandlers\\SendTo",
+        "name": "",
+        "type": "sz",
+        "value": ""
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\AllFilesystemObjects\\shellex\\ContextMenuHandlers\\SendTo",
+        "name": "",
+        "type": "sz",
+        "value": "{7BA4C740-9E81-11CF-99D3-00AA004AE837}"
+      }
+    ],
+    "note": "HKCR via HKCU"
+  },
+  {
+    "id": "contextmenu.share",
+    "category": "contextmenu",
+    "name_en": "Share",
+    "name_ru": "Поделиться",
+    "risk": "medium",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "delete_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\AllFilesystemObjects\\shellex\\ContextMenuHandlers\\ModernSharing"
+      }
+    ],
+    "off": [
+      {
+        "op": "create_key",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\AllFilesystemObjects\\shellex\\ContextMenuHandlers\\ModernSharing"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\AllFilesystemObjects\\shellex\\ContextMenuHandlers\\ModernSharing",
+        "name": "",
+        "type": "sz",
+        "value": "{e2bf9676-5f8f-435c-97eb-11607a5bedf7}"
+      }
+    ],
+    "note": "HKCR via HKCU"
+  },
+  {
+    "id": "telemetry.app_diagnostics",
+    "category": "telemetry",
+    "name_en": "Disable App Diagnostics",
+    "name_ru": "Отключить диагностику приложений",
+    "risk": "low",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\appDiagnostics",
+        "name": "Value",
+        "type": "sz",
+        "value": "Deny"
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\appDiagnostics",
+        "name": "Value",
+        "type": "sz",
+        "value": "Allow"
+      }
+    ],
+    "note": "Turning this toggle off also force-turns-off the master toggle telemetry.disable_all (handler cascade); when t2..t6 are all on, t1 is auto-set on."
+  },
+  {
+    "id": "telemetry.keystroke_collection",
+    "category": "telemetry",
+    "name_en": "Disable Keystroke Data Collection",
+    "name_ru": "Отключить сбор данных о нажатиях клавиш",
+    "risk": "low",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\InputPersonalization",
+        "name": "RestrictImplicitTextCollection",
+        "type": "dword",
+        "value": 0
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\InputPersonalization",
+        "name": "RestrictImplicitInkCollection",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\InputPersonalization",
+        "name": "RestrictImplicitTextCollection",
+        "type": "dword",
+        "value": 1
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\InputPersonalization",
+        "name": "RestrictImplicitInkCollection",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "note": "Off-branch force-turns-off master toggle telemetry.disable_all (handler cascade). Note: values are inverted vs tweak name by design (0 = restricted = telemetry off)."
+  },
+  {
+    "id": "telemetry.perf_collection",
+    "category": "telemetry",
+    "name_en": "Disable System Performance Data Collection",
+    "name_ru": "Отключить сбор данных о производительности системы",
+    "risk": "low",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WDI\\{9c5a40da-b965-4fc3-8781-88dd50a6299d}",
+        "name": "ScenarioExecutionEnabled",
+        "type": "dword",
+        "value": 0
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\DeviceHealthAttestationService",
+        "name": "EnableDeviceHealthAttestationService",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WDI\\{9c5a40da-b965-4fc3-8781-88dd50a6299d}",
+        "name": "ScenarioExecutionEnabled",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "note": "NEEDS_REVIEW: asymmetric revert - the off-branch does NOT restore EnableDeviceHealthAttestationService to 1 (only ScenarioExecutionEnabled is reverted). Off-branch also force-disables master toggle t1."
+  },
+  {
+    "id": "telemetry.speech_updates",
+    "category": "telemetry",
+    "name_en": "Disable Voice Data Updates",
+    "name_ru": "Отключить обновление голосовых данных",
+    "risk": "low",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Speech",
+        "name": "AllowSpeechModelUpdate",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Speech",
+        "name": "AllowSpeechModelUpdate",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "note": "Off-branch force-turns-off master toggle telemetry.disable_all (handler cascade)."
+  },
+  {
+    "id": "telemetry.user_activity",
+    "category": "telemetry",
+    "name_en": "Disable Collection And Publication Of User Activity Data",
+    "name_ru": "Отключить сбор и публикацию данных об активности пользователя",
+    "risk": "low",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+        "name": "UploadUserActivities",
+        "type": "dword",
+        "value": 0
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+        "name": "PublishUserActivities",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+        "name": "UploadUserActivities",
+        "type": "dword",
+        "value": 1
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+        "name": "PublishUserActivities",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "note": "Off-branch force-turns-off master toggle telemetry.disable_all (handler cascade)."
+  },
+  {
+    "id": "winupdate.block_version",
+    "category": "winupdate",
+    "name_en": "Block Updates On a Specific Version of Windows",
+    "name_ru": "Заблокировать обновления на определённой версии Windows",
+    "risk": "medium",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate",
+        "name": "TargetReleaseVersion",
+        "type": "dword",
+        "value": 1
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate",
+        "name": "TargetReleaseVersionInfo",
+        "type": "sz",
+        "value": "{version}"
+      }
+    ],
+    "off": [
+      {
+        "op": "delete_value",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate",
+        "name": "TargetReleaseVersion"
+      },
+      {
+        "op": "delete_value",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate",
+        "name": "TargetReleaseVersionInfo"
+      }
+    ],
+    "note": "Исправлено при портировании: апстрим не ставил TargetReleaseVersion=1, без него политика не работает.",
+    "params": [
+      {
+        "key": "version",
+        "label_en": "Version to hold (22H2/23H2/24H2/25H2)",
+        "label_ru": "Версия для фиксации (22H2/23H2/24H2/25H2)",
+        "default": "25H2"
+      }
+    ]
+  },
+  {
+    "id": "winupdate.clean_cache",
+    "category": "winupdate",
+    "name_en": "Clean Windows Update Cache",
+    "name_ru": "Очистить кэш Windows Update",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "cmd",
+        "run": "cmd.exe /k del /f /s /q %windir%\\SoftwareDistribution\\Download\\*"
+      }
+    ],
+    "off": [],
+    "note": "One-shot button (wupd), disabled after click; no revert. Loc: label sr.main.sr7l, button sr.main.b4. Verbatim command deletes the Windows Update download cache."
+  },
+  {
+    "id": "winupdate.disable",
+    "category": "winupdate",
+    "name_en": "Disable Windows Update",
+    "name_ru": "Отключить Windows Update",
+    "risk": "high",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU",
+        "name": "NoAutoUpdate",
+        "type": "dword",
+        "value": 1
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate",
+        "name": "DoNotConnectToWindowsUpdateInternetLocations",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU",
+        "name": "NoAutoUpdate",
+        "type": "dword",
+        "value": 0
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate",
+        "name": "DoNotConnectToWindowsUpdateInternetLocations",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "note": "Fully disables automatic updates via policy; system stops receiving security patches until reverted."
+  },
+  {
+    "id": "winupdate.exclude_drivers",
+    "category": "winupdate",
+    "name_en": "Disable Driver Installation via Windows Update",
+    "name_ru": "Отключить обновление драйверов через центр обновления",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate",
+        "name": "ExcludeWUDriversInQualityUpdate",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate",
+        "name": "ExcludeWUDriversInQualityUpdate",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "note": "Исправлено при портировании: апстрим мазал лишний HKCU-запрос."
+  },
+  {
+    "id": "winupdate.pause_updates",
+    "category": "winupdate",
+    "name_en": "Pause Windows Update Service",
+    "name_ru": "Приостановить службу Windows Update",
+    "risk": "high",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings",
+        "name": "ActiveHoursStart",
+        "type": "dword",
+        "value": 9
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings",
+        "name": "ActiveHoursEnd",
+        "type": "dword",
+        "value": 2
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings",
+        "name": "PauseFeatureUpdatesStartTime",
+        "type": "sz",
+        "value": "2015-01-01T00:00:00Z"
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings",
+        "name": "PauseQualityUpdatesStartTime",
+        "type": "sz",
+        "value": "2015-01-01T00:00:00Z"
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings",
+        "name": "PauseUpdatesExpiryTime",
+        "type": "sz",
+        "value": "2077-01-01T00:00:00Z"
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings",
+        "name": "PauseFeatureUpdatesEndTime",
+        "type": "sz",
+        "value": "2077-01-01T00:00:00Z"
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings",
+        "name": "PauseQualityUpdatesEndTime",
+        "type": "sz",
+        "value": "2077-01-01T00:00:00Z"
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings",
+        "name": "PauseUpdatesStartTime",
+        "type": "sz",
+        "value": "2015-01-01T00:00:00Z"
+      }
+    ],
+    "off": [
+      {
+        "op": "delete_value",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings",
+        "name": "PauseFeatureUpdatesStartTime"
+      },
+      {
+        "op": "delete_value",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings",
+        "name": "PauseQualityUpdatesStartTime"
+      },
+      {
+        "op": "delete_value",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings",
+        "name": "PauseUpdatesExpiryTime"
+      },
+      {
+        "op": "delete_value",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings",
+        "name": "PauseFeatureUpdatesEndTime"
+      },
+      {
+        "op": "delete_value",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings",
+        "name": "PauseQualityUpdatesEndTime"
+      },
+      {
+        "op": "delete_value",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings",
+        "name": "PauseUpdatesStartTime"
+      }
+    ],
+    "note": "Пауза до 2077 года. off синтезирован при портировании (апстрим был односторонним)."
+  },
+  {
+    "id": "winupdate.reserved_storage",
+    "category": "winupdate",
+    "name_en": "Disable Reserved Storage for Updates",
+    "name_ru": "Отключить зарезервированное хранилище для обновлений",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ReserveManager",
+        "name": "ShippedWithReserves",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ReserveManager",
+        "name": "ShippedWithReserves",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "note": "Upstream checkReg reads 'ReserveManage' (missing trailing 'r'), so in-app state detection for this toggle is broken. Code fires no reboot notify, though reclaiming the reserved space actually takes effect after reboot."
+  },
+  {
+    "id": "sysrec.battery_report",
+    "category": "sysrec",
+    "name_en": "Make a Report of The Battery Characteristics",
+    "name_ru": "Сделать отчёт о характеристиках батареи",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "cmd",
+        "run": "powercfg /batteryreport /output \"%USERPROFILE%\\Desktop\\battery-report.html\""
+      }
+    ],
+    "off": [],
+    "note": "Отчёт пишется на рабочий стол пользователя (battery-report.html)."
+  },
+  {
+    "id": "sysrec.boot_advanced_options",
+    "category": "sysrec",
+    "name_en": "Additional Options on Each Boot",
+    "name_ru": "Дополнительные параметры при каждой загрузке системы",
+    "risk": "high",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "cmd",
+        "run": "bcdedit /set \"{globalsettings}\" advancedoptions true"
+      }
+    ],
+    "off": [
+      {
+        "op": "cmd",
+        "run": "bcdedit /set \"{globalsettings}\" advancedoptions false"
+      }
+    ],
+    "note": "Источник: sr4_Toggled. Трогает конфигурацию загрузки (bcdedit)."
+  },
+  {
+    "id": "sysrec.chkdsk_timeout_60",
+    "category": "sysrec",
+    "name_en": "Set Chkdsk Timeout to 1 Minute",
+    "name_ru": "Установить тайм-аут для Chkdsk на 1 минуту",
+    "risk": "medium",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "name": "AutoChkTimeout",
+        "type": "dword",
+        "value": 60
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "name": "AutoChkTimeout",
+        "type": "dword",
+        "value": 8
+      }
+    ],
+    "note": "Источник: t9_Toggled. Параметр влияет на поведение проверки диска при загрузке."
+  },
+  {
+    "id": "sysrec.compact_os",
+    "category": "sysrec",
+    "name_en": "Apply Compact OS System Compression",
+    "name_ru": "Применить сжатие системы Compact OS",
+    "risk": "medium",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "cmd",
+        "run": "compact /compactos:always"
+      }
+    ],
+    "off": [
+      {
+        "op": "cmd",
+        "run": "compact /compactos:never"
+      }
+    ],
+    "note": "Источник: sr5_Toggled. В оригинале запускается с /k (окно консоли остаётся открытым) и тумблер блокируется после первого переключения (sr5.IsEnabled = false) - повторное переключение из UI невозможно."
+  },
+  {
+    "id": "sysrec.disable_bing_search",
+    "category": "sysrec",
+    "name_en": "Disable Online Search in Start via Bing",
+    "name_ru": "Отключить онлайн поиск через Bing",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Policies\\Microsoft\\Windows\\Explorer",
+        "name": "DisableSearchBoxSuggestions",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Policies\\Microsoft\\Windows\\Explorer",
+        "name": "DisableSearchBoxSuggestions",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "note": "Источник: st5_Toggled (имя из категории stask, тумблер живёт на странице System & Recovery)."
+  },
+  {
+    "id": "sysrec.disable_bitlocker_auto_encryption",
+    "category": "sysrec",
+    "name_en": "Disable BitLocker Automatic Encryption",
+    "name_ru": "Выключить авто-шифрование BitLocker",
+    "risk": "high",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SYSTEM\\CurrentControlSet\\Control\\BitLocker",
+        "name": "PreventDeviceEncryption",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SYSTEM\\CurrentControlSet\\Control\\BitLocker",
+        "name": "PreventDeviceEncryption",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "note": "Источник: sr6_Toggled. Затрагивает защиту диска (BitLocker)."
+  },
+  {
+    "id": "sysrec.disable_memory_integrity",
+    "category": "sysrec",
+    "name_en": "Disable Core Isolation / Memory Integrity",
+    "name_ru": "Отключить изоляцию ядра / целостность памяти",
+    "risk": "high",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios",
+        "name": "HypervisorEnforcedCodeIntegrity",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios",
+        "name": "HypervisorEnforcedCodeIntegrity",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "note": "Источник: t10_Toggled. Отключает механизм защиты (HVCI)."
+  },
+  {
+    "id": "sysrec.disable_pagefile",
+    "category": "sysrec",
+    "name_en": "Disable Page File",
+    "name_ru": "Отключить файл подкачки",
+    "risk": "medium",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management",
+        "name": "PagingFiles",
+        "type": "multi_sz",
+        "value": []
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management",
+        "name": "PagingFiles",
+        "type": "multi_sz",
+        "value": [
+          "?:\\pagefile.sys"
+        ]
+      }
+    ],
+    "note": "NEEDS_REVIEW: источник t12_Toggled пишет RegistryValueKind.MultiString, в схеме нет типа multi_sz - записан как multi_sz, требуется поддержка в движке применения. on ставит пустой массив, off возвращает \"?:\\pagefile.sys\"."
+  },
+  {
+    "id": "sysrec.disable_sleep_timeouts",
+    "category": "sysrec",
+    "name_en": "Disable Sleep & Screen timeout",
+    "name_ru": "Отключить таймер спящего режима и отключения дисплея",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "cmd",
+        "run": "powercfg -change -monitor-timeout-ac 0"
+      },
+      {
+        "op": "cmd",
+        "run": "powercfg -change -monitor-timeout-dc 0"
+      },
+      {
+        "op": "cmd",
+        "run": "powercfg -change -standby-timeout-ac 0"
+      },
+      {
+        "op": "cmd",
+        "run": "powercfg -change -standby-timeout-dc 0"
+      }
+    ],
+    "off": [
+      {
+        "op": "cmd",
+        "run": "powercfg -change -monitor-timeout-ac 10"
+      },
+      {
+        "op": "cmd",
+        "run": "powercfg -change -monitor-timeout-dc 5"
+      },
+      {
+        "op": "cmd",
+        "run": "powercfg -change -standby-timeout-ac 30"
+      },
+      {
+        "op": "cmd",
+        "run": "powercfg -change -standby-timeout-dc 15"
+      }
+    ],
+    "note": "Источник: t13_Toggled. Значения off - жёстко зашитые в коде дефолты (10/5/30/15 минут), а не реальные предыдущие настройки пользователя."
+  },
+  {
+    "id": "sysrec.disable_smartscreen",
+    "category": "sysrec",
+    "name_en": "Disable Smart Screen",
+    "name_ru": "Отключить Smart Screen",
+    "risk": "high",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+        "name": "EnableSmartScreen",
+        "type": "dword",
+        "value": 0
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer",
+        "name": "SmartScreenEnabled",
+        "type": "sz",
+        "value": "Off"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Attachments",
+        "name": "SaveZoneInformation",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+        "name": "EnableSmartScreen",
+        "type": "dword",
+        "value": 1
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer",
+        "name": "SmartScreenEnabled",
+        "type": "sz",
+        "value": "Warn"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Attachments",
+        "name": "SaveZoneInformation",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "note": "Источник: t14_Toggled. Отключает защиту SmartScreen; SaveZoneInformation=1 также гасит предупреждения зоны безопасности для скачанных файлов."
+  },
+  {
+    "id": "sysrec.disable_sticky_keys",
+    "category": "sysrec",
+    "name_en": "Disable Sticky Keys",
+    "name_ru": "Отключить залипание клавиш",
+    "risk": "low",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Control Panel\\Accessibility\\StickyKeys",
+        "name": "Flags",
+        "type": "sz",
+        "value": "506"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Control Panel\\Accessibility\\Keyboard Response",
+        "name": "Flags",
+        "type": "sz",
+        "value": "122"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Control Panel\\Accessibility\\ToggleKeys",
+        "name": "Flags",
+        "type": "sz",
+        "value": "58"
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Control Panel\\Accessibility\\StickyKeys",
+        "name": "Flags",
+        "type": "sz",
+        "value": "510"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Control Panel\\Accessibility\\Keyboard Response",
+        "name": "Flags",
+        "type": "sz",
+        "value": "126"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Control Panel\\Accessibility\\ToggleKeys",
+        "name": "Flags",
+        "type": "sz",
+        "value": "62"
+      }
+    ],
+    "note": "Источник: t16_Toggled. Оригинал вызывает RebootNotify(1) после переключения."
+  },
+  {
+    "id": "sysrec.disable_uac",
+    "category": "sysrec",
+    "name_en": "Disable User Account Control",
+    "name_ru": "Отключить контроль учётных записей (UAC)",
+    "risk": "high",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+        "name": "EnableLUA",
+        "type": "dword",
+        "value": 0
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Attachments",
+        "name": "SaveZoneInformation",
+        "type": "dword",
+        "value": 1
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Associations",
+        "name": "LowRiskFileTypes",
+        "type": "sz",
+        "value": ".exe;.msi;.bat;"
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+        "name": "EnableLUA",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "note": "NEEDS_REVIEW: асимметрия - off в исходнике (t15_Toggled) возвращает только EnableLUA=1, значения SaveZoneInformation и LowRiskFileTypes не откатываются. На build >= 22621 приложение показывает предупреждение о поломке drag-and-drop на панели задач перед включением. EnableLUA требует перезагрузки."
+  },
+  {
+    "id": "sysrec.disable_vbs",
+    "category": "sysrec",
+    "name_en": "Disable Virtualization-based Security",
+    "name_ru": "Выключить Virtualization-based Security",
+    "risk": "high",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard",
+        "name": "EnableVirtualizationBasedSecurity",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "off": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard",
+        "name": "EnableVirtualizationBasedSecurity",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "note": "Источник: t18_Toggled. Отключает механизм защиты (VBS)."
+  },
+  {
+    "id": "sysrec.dism_restorehealth",
+    "category": "sysrec",
+    "name_en": "Repair System Using DISM",
+    "name_ru": "Восстановить систему с помощью DISM",
+    "risk": "low",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "cmd",
+        "run": "DISM /Online /Cleanup-Image /RestoreHealth"
+      }
+    ],
+    "off": [],
+    "note": "Источник: dism_Click (кнопка). off ничего не делает - действие одноразовое. После запуска оригинал требует перезагрузку (RebootNotify(3)), кнопка блокируется."
+  },
+  {
+    "id": "sysrec.hibernation_off",
+    "category": "sysrec",
+    "name_en": "Disable Hibernation",
+    "name_ru": "Отключить гибернацию",
+    "risk": "medium",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "cmd",
+        "run": "powercfg /h off"
+      }
+    ],
+    "off": [
+      {
+        "op": "cmd",
+        "run": "powercfg /h on"
+      }
+    ],
+    "note": "Источник: t11_Toggled. Отключение гибернации также отключает быстрый запуск."
+  },
+  {
+    "id": "sysrec.legacy_boot_menu",
+    "category": "sysrec",
+    "name_en": "Enable Old OS Bootloader",
+    "name_ru": "Включить старый загрузчик системы",
+    "risk": "high",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "cmd",
+        "run": "bcdedit /set \"{current}\" bootmenupolicy legacy"
+      }
+    ],
+    "off": [
+      {
+        "op": "cmd",
+        "run": "bcdedit /set \"{current}\" bootmenupolicy standard"
+      }
+    ],
+    "note": "Источник: sr1_Toggled. Трогает конфигурацию загрузки (bcdedit)."
+  },
+  {
+    "id": "sysrec.sfc_scannow",
+    "category": "sysrec",
+    "name_en": "Repair System Using SFC",
+    "name_ru": "Восстановить систему с помощью SFC",
+    "risk": "low",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "cmd",
+        "run": "sfc /scannow"
+      }
+    ],
+    "off": [],
+    "note": "Источник: sfc_Click (кнопка). off ничего не делает - действие одноразовое. Оригинал запускает с /k и после запуска требует перезагрузку (RebootNotify(3)), кнопка блокируется."
+  },
+  {
+    "id": "components.directplay",
+    "category": "components",
+    "name_en": "Install DirectPlay",
+    "name_ru": "Установить DirectPlay",
+    "risk": "medium",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "cmd",
+        "run": "cmd.exe /C dism /online /Enable-Feature /FeatureName:DirectPlay /All"
+      }
+    ],
+    "off": [],
+    "note": "One-way Install button (dp_Click); no off action in source."
+  },
+  {
+    "id": "components.netfx3",
+    "category": "components",
+    "name_en": "Install .NET Framework 2.0, 3.0, 3.5",
+    "name_ru": "Установить .NET Framework 2.0, 3.0, 3.5",
+    "risk": "medium",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "cmd",
+        "run": "dism /online /enable-feature /featurename:NetFx3 /all"
+      }
+    ],
+    "off": [],
+    "note": "Исправлено при портировании: в апстриме команда была битой (/C вместо -Command, висячая кавычка)."
+  },
+  {
+    "id": "components.old_photo_viewer",
+    "category": "components",
+    "name_en": "Enable Old Windows Photo Viewer",
+    "name_ru": "Включить старый просмотрщик фото",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Applications\\photoviewer.dll\\shell\\open",
+        "name": "MuiVerb",
+        "type": "sz",
+        "value": "@photoviewer.dll,-3043",
+        "note": "HKCR merged"
+      },
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "Software\\Classes\\Applications\\photoviewer.dll\\shell\\open\\command",
+        "name": "",
+        "type": "sz",
+        "value": "%SystemRoot%\\System32\\rundll32.exe \"%ProgramFiles%\\Windows Photo Viewer\\PhotoViewer.dll\", ImageViewer_Fullscreen %1",
+        "note": "HKCR merged"
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows Photo Viewer\\Capabilities\\FileAssociations",
+        "name": ".bmp",
+        "type": "sz",
+        "value": "PhotoViewer.FileAssoc.Tiff"
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows Photo Viewer\\Capabilities\\FileAssociations",
+        "name": ".gif",
+        "type": "sz",
+        "value": "PhotoViewer.FileAssoc.Tiff"
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows Photo Viewer\\Capabilities\\FileAssociations",
+        "name": ".jpeg",
+        "type": "sz",
+        "value": "PhotoViewer.FileAssoc.Tiff"
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows Photo Viewer\\Capabilities\\FileAssociations",
+        "name": ".jpg",
+        "type": "sz",
+        "value": "PhotoViewer.FileAssoc.Tiff"
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows Photo Viewer\\Capabilities\\FileAssociations",
+        "name": ".png",
+        "type": "sz",
+        "value": "PhotoViewer.FileAssoc.Tiff"
+      }
+    ],
+    "off": [],
+    "note": "One-way Enable button (pv_Click); no off action in source. HKCR (Registry.ClassesRoot) ops mapped to HKCU\\Software\\Classes per extraction rules."
+  },
+  {
+    "id": "components.powershell_scripts",
+    "category": "components",
+    "name_en": "Enable Third-Party PowerShell Scripts",
+    "name_ru": "Включить сторонние скрипты PowerShell",
+    "risk": "medium",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "cmd",
+        "run": "powershell.exe -Command Set-ExecutionPolicy RemoteSigned -Force"
+      }
+    ],
+    "off": [],
+    "note": "One-way Enable button (pwsh_Click); no off action in source. Security-relevant: relaxes script execution policy (restore default would be Set-ExecutionPolicy Restricted)."
+  },
+  {
+    "id": "components.winsxs_cleanup",
+    "category": "components",
+    "name_en": "Reset Outdated Components and WinSXS Cache",
+    "name_ru": "Сбросить устаревшие компоненты и кэш WinSXS",
+    "risk": "medium",
+    "reboot": true,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "cmd",
+        "run": "cmd.exe /C dism /Online /Cleanup-Image /StartComponentCleanup /ResetBase"
+      }
+    ],
+    "off": [],
+    "note": "One-way Reset button (sxs_Click). RebootNotify(3) = reboot after the process finishes. /ResetBase makes all currently installed updates non-uninstallable - effectively irreversible."
+  },
+  {
+    "id": "components.xbox_dvr",
+    "category": "components",
+    "name_en": "Disable Xbox DVR Pop-up Overlay (ms-gamingoverlay)",
+    "name_ru": "Отключить всплывающее окно Xbox DVR (ms-gamingoverlay)",
+    "risk": "low",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKCU",
+        "path": "System\\GameConfigStore",
+        "name": "GameDVR_Enabled",
+        "type": "dword",
+        "value": 0
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR",
+        "name": "AllowGameDVR",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "off": [],
+    "note": "One-way Apply button (dvr_Click); no off action in source (re-enable would be GameDVR_Enabled=1 / AllowGameDVR=1)."
+  }
+]

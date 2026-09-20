@@ -539,8 +539,24 @@ class Session(QObject):
             except Exception:  # noqa: BLE001 — AppX может не быть, странице не мешает
                 _LOGGER.warning("список UWP не прочитан", exc_info=True)
                 uwp = []
+            sys_tweaks: t.List[t.Dict[str, t.Any]] = []
+            try:
+                from core.tweaks import TweaksEngine, load_db
+
+                engine = TweaksEngine(store=store)
+                for tw in engine.available(load_db()):
+                    sys_tweaks.append({
+                        "id": tw.id, "category": tw.category,
+                        "name_en": tw.name_en, "name_ru": tw.name_ru,
+                        "risk": tw.risk, "reboot": tw.reboot,
+                        "explorer_restart": tw.explorer_restart,
+                        "one_way": not tw.off, "params": list(tw.params),
+                        "note": tw.note, "status": engine.status(tw),
+                    })
+            except Exception:  # noqa: BLE001 — база не обязана ломать страницу
+                _LOGGER.warning("база твиков не прочитана", exc_info=True)
             return {"startup": entries, "services": services,
-                    "backups": backups, "uwp": uwp}
+                    "backups": backups, "uwp": uwp, "sys_tweaks": sys_tweaks}
 
         self._run("tweaks_load", work)
 
@@ -603,6 +619,27 @@ class Session(QObject):
             if not result.success:
                 raise RuntimeError(result.message)
             return {"action": "uwp_remove", "target": result.target,
+                    "snapshot": result.snapshot}
+
+        self._run("tweaks_action", work)
+
+    def apply_tweak(self, tweak_id: str, enable: bool,
+                    params: t.Optional[t.Dict[str, str]] = None) -> None:
+        """Применить/выключить системный твик со снапшотом прежних значений."""
+
+        def work() -> t.Dict[str, t.Any]:
+            from core.executor import Executor
+
+            executor = Executor(store=self.backups(), journal=self.journal())
+            result = executor.execute_actions([{
+                "type": "tweak_apply",
+                "id": tweak_id,
+                "enable": enable,
+                "params": params or {},
+            }])[0]
+            if not result.success:
+                raise RuntimeError(result.message)
+            return {"action": "tweak_apply", "target": tweak_id,
                     "snapshot": result.snapshot}
 
         self._run("tweaks_action", work)

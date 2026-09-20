@@ -752,11 +752,12 @@ class DedupTab(EmptyTab):
 
 
 class TweaksTab(EmptyTab):
-    """Твики: автозагрузка и службы — чтение, отключение со снапшотом, откат.
+    """Твики: системные твики, автозагрузка, службы, UWP — со снапшотами.
 
-    M4/M5: списки читаются из реестра и SCM по-настоящему; отключение записи
-    автозагрузки идёт со снапшотом на диск (раздел «Можно вернуть» переживает
-    перезапуски). Службы пока только читаются — их отключение следующим заходом.
+    Секция «Твики системы» — декларативная база core/tweaks_db.json:
+    тумблер знает своё текущее состояние (on/off/unknown), включение и
+    выключение идут со снапшотом прежних значений, откат — кнопкой
+    «Вернуть» в разделе «Можно вернуть».
     """
 
     refreshRequested = Signal()
@@ -764,9 +765,13 @@ class TweaksTab(EmptyTab):
     restoreSnapshotRequested = Signal(str)     # имя снапшота
     disableServiceRequested = Signal(str)      # имя службы
     removeUwpRequested = Signal(str)           # PackageFullName
+    applyTweakRequested = Signal(str, bool)    # id твика, включить/выключить
 
     _MAX_SERVICES = 60
     _MAX_UWP = 60
+
+    _TWEAK_CATEGORIES = ("explorer", "personal", "contextmenu", "telemetry",
+                         "winupdate", "sysrec", "components")
 
     def __init__(self, parent: QWidget | None = None) -> None:
         self._status_label: Optional[QLabel] = None
@@ -776,6 +781,7 @@ class TweaksTab(EmptyTab):
         self._services: List[object] = []
         self._backups: List[Dict[str, object]] = []
         self._uwp: List[object] = []
+        self._sys_tweaks: List[Dict[str, object]] = []
         super().__init__(parent)
 
     def _result_expands(self) -> bool:
@@ -812,12 +818,15 @@ class TweaksTab(EmptyTab):
 
     def set_tweaks(self, startup: List[object], services: List[object],
                    backups: List[Dict[str, object]],
-                   uwp: Optional[List[object]] = None) -> None:
-        """Показать списки: автозагрузка, службы, UWP, снапшоты отката."""
+                   uwp: Optional[List[object]] = None,
+                   sys_tweaks: Optional[List[Dict[str, object]]] = None
+                   ) -> None:
+        """Показать списки: системные твики, автозагрузка, службы, UWP."""
         self._startup = list(startup)
         self._services = list(services)
         self._backups = list(backups)
         self._uwp = list(uwp or [])
+        self._sys_tweaks = list(sys_tweaks or [])
         self._render_rows()
         self.setStats("startup", len(self._startup))
         self.setStats("services", len(self._services))
@@ -837,6 +846,18 @@ class TweaksTab(EmptyTab):
         def put(widget: QWidget) -> None:
             # Строчки идут до растяжки: стрейч всегда последний.
             self._rows_layout.insertWidget(self._rows_layout.count() - 1, widget)
+
+        if self._sys_tweaks:
+            put(section(ctx().tr("tweaks.sys_section"), self))
+            put(hint(ctx().tr("tweaks.sys_hint"), self))
+            for cat in self._TWEAK_CATEGORIES:
+                group = [tw for tw in self._sys_tweaks
+                         if tw.get("category") == cat]
+                if not group:
+                    continue
+                put(hint(ctx().tr(f"tweaks.cat_{cat}"), self))
+                for tw in group:
+                    put(self._tweak_row(tw))
 
         put(section(ctx().tr("tweaks.startup_section"), self))
         if not self._startup:
@@ -946,6 +967,48 @@ class TweaksTab(EmptyTab):
                 lambda _checked=False, n=service.name:
                     self.disableServiceRequested.emit(n))
             layout.addWidget(disable)
+        return row
+
+    def _tweak_row(self, tw: Dict[str, object]) -> QFrame:
+        """Строка системного твика: имя, риск, статус, кнопка действия."""
+        row = QFrame(self)
+        row.setObjectName("categoryCard")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(10)
+        is_ru = str(ctx().locale()).startswith("ru")
+        name_text = str(tw.get("name_ru") if is_ru else tw.get("name_en"))
+        name = body(name_text, row)
+        name.setSizePolicy(QSizePolicy.Policy.Ignored,
+                           QSizePolicy.Policy.Preferred)
+        name.setWordWrap(True)
+        layout.addWidget(name, 3)
+        flags: List[str] = []
+        if str(tw.get("risk", "low")) != "low":
+            flags.append(ctx().tr(f"tweaks.risk_{tw['risk']}"))
+        if tw.get("reboot"):
+            flags.append(ctx().tr("tweaks.flag_reboot"))
+        elif tw.get("explorer_restart"):
+            flags.append(ctx().tr("tweaks.flag_explorer"))
+        if flags:
+            layout.addWidget(hint(" · ".join(flags), row))
+        status = str(tw.get("status", "unknown"))
+        layout.addWidget(hint(ctx().tr(f"tweaks.state_{status}"), row))
+        tw_id = str(tw.get("id", ""))
+        if tw.get("one_way"):
+            act = button(ctx().tr("tweaks.apply_button"), row)
+            act.clicked.connect(
+                lambda _c=False, i=tw_id: self.applyTweakRequested.emit(i, True))
+        elif status == "on":
+            act = button(ctx().tr("tweaks.turn_off"), row)
+            act.clicked.connect(
+                lambda _c=False, i=tw_id: self.applyTweakRequested.emit(i, False))
+        else:
+            act = button(ctx().tr("tweaks.turn_on"), row)
+            act.clicked.connect(
+                lambda _c=False, i=tw_id: self.applyTweakRequested.emit(i, True))
+        act.setMinimumHeight(30)
+        layout.addWidget(act)
         return row
 
     def _uwp_row(self, pkg) -> QFrame:

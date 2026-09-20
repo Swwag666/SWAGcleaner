@@ -1952,3 +1952,65 @@ class TestStage4TweaksUi:
         page.set_tweaks([], [], [], [])
         texts = [w.text() for w in page.findChildren(QLabel)]
         assert any(ctx().tr("tweaks.empty_uwp") in x for x in texts)
+
+
+class TestStage45TweaksUi:
+    """Этап 4.5: секция «Твики системы» — группы, статусы, сигналы."""
+
+    def _tw(self, **kw):
+        base = {"id": "explorer.file_extensions", "category": "explorer",
+                "name_en": "Show File Extensions",
+                "name_ru": "Показывать расширения файлов",
+                "risk": "low", "reboot": False, "explorer_restart": True,
+                "one_way": False, "params": [], "note": "", "status": "off"}
+        base.update(kw)
+        return base
+
+    def test_section_renders_grouped_and_emits(self, qapp: t.Any) -> None:
+        page = TweaksTab()
+        page.set_tweaks([], [], [], [], [
+            self._tw(),
+            self._tw(id="telemetry.app_diagnostics", category="telemetry",
+                     name_ru="Диагностика приложений", status="on",
+                     risk="medium"),
+        ])
+        texts = [w.text() for w in page.findChildren(QLabel)]
+        assert any(ctx().tr("tweaks.sys_section") in x for x in texts)
+        assert any(ctx().tr("tweaks.cat_explorer") in x for x in texts)
+        assert any(ctx().tr("tweaks.cat_telemetry") in x for x in texts)
+        assert any("расширения" in x for x in texts)
+        fired: t.List[t.Tuple[str, bool]] = []
+        page.applyTweakRequested.connect(lambda i, e: fired.append((i, e)))
+        # Выключенный твик предлагает «Включить», включённый — «Выключить».
+        on_btns = [b for b in page.findChildren(QPushButton)
+                   if getattr(b, "fullText", b.text)() ==
+                   ctx().tr("tweaks.turn_on")]
+        off_btns = [b for b in page.findChildren(QPushButton)
+                    if getattr(b, "fullText", b.text)() ==
+                    ctx().tr("tweaks.turn_off")]
+        assert len(on_btns) == 1 and len(off_btns) == 1
+        on_btns[0].click()
+        assert fired == [("explorer.file_extensions", True)]
+        off_btns[0].click()
+        assert fired[-1] == ("telemetry.app_diagnostics", False)
+
+    def test_one_way_shows_apply(self, qapp: t.Any) -> None:
+        page = TweaksTab()
+        page.set_tweaks([], [], [], [], [
+            self._tw(id="sysrec.sfc_scannow", category="sysrec",
+                     name_ru="Проверка системных файлов", one_way=True,
+                     status="unknown")])
+        fired: t.List[t.Tuple[str, bool]] = []
+        page.applyTweakRequested.connect(lambda i, e: fired.append((i, e)))
+        apply_btns = [b for b in page.findChildren(QPushButton)
+                      if getattr(b, "fullText", b.text)() ==
+                      ctx().tr("tweaks.apply_button")]
+        assert len(apply_btns) == 1
+        apply_btns[0].click()
+        assert fired == [("sysrec.sfc_scannow", True)]
+
+    def test_empty_sys_tweaks_no_section(self, qapp: t.Any) -> None:
+        page = TweaksTab()
+        page.set_tweaks([], [], [], [], [])
+        texts = [w.text() for w in page.findChildren(QLabel)]
+        assert not any(ctx().tr("tweaks.sys_section") in x for x in texts)

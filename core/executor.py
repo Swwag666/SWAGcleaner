@@ -13,8 +13,10 @@
   Disabled (без остановки работающей службы, правило 8.6);
 - uwp_remove: {"type", "package"} — снапшот манифеста → Remove-AppxPackage
   per-user (пакет остаётся staged, откат мгновенный);
+- tweak_apply: {"type", "id", "enable", "params"} — снапшот прежних
+  значений всех затрагиваемых ключей → применение набора операций твика;
 - startup_restore / backup_restore: {"type", "snapshot"} — вернуть из
-  снапшота; маршрут (реестр/файл/служба/uwp) определяется по данным
+  снапшота; маршрут (реестр/файл/служба/uwp/твик) определяется по данным
   снапшота, поэтому одна кнопка «Вернуть» покрывает все виды.
 """
 from __future__ import annotations
@@ -47,7 +49,8 @@ class Executor:
                  journal: t.Optional[t.Any] = None,
                  registry: t.Optional[t.Any] = None,
                  services: t.Optional[t.Any] = None,
-                 uwp: t.Optional[t.Any] = None) -> None:
+                 uwp: t.Optional[t.Any] = None,
+                 tweaks_engine: t.Optional[t.Any] = None) -> None:
         self._store = store
         self._journal = journal
         self._startup = StartupManager(registry=registry, store=store)
@@ -55,6 +58,7 @@ class Executor:
         # действие действительно дошло до исполнения.
         self._services = services
         self._uwp = uwp
+        self._tweaks_engine = tweaks_engine
         self._executed: t.List[ExecutedAction] = []
 
     def executed(self) -> t.List[ExecutedAction]:
@@ -71,6 +75,12 @@ class Executor:
             from core.uwp import UwpController
             self._uwp = UwpController()
         return self._uwp
+
+    def _engine(self) -> t.Any:
+        if self._tweaks_engine is None:
+            from core.tweaks import TweaksEngine
+            self._tweaks_engine = TweaksEngine(store=self._store)
+        return self._tweaks_engine
 
     def _log(self, action: ExecutedAction) -> None:
         if self._journal is None:
@@ -102,6 +112,8 @@ class Executor:
                 return self._disable_service(action)
             if atype == "uwp_remove":
                 return self._remove_uwp(action)
+            if atype == "tweak_apply":
+                return self._apply_tweak(action)
         except Exception as exc:  # noqa: BLE001 — ошибка действия не роняет список
             result = ExecutedAction(atype, target, False, str(exc))
             self._log(result)
@@ -155,6 +167,25 @@ class Executor:
         self._log(result)
         return result
 
+    def _apply_tweak(self, action: t.Dict[str, t.Any]) -> ExecutedAction:
+        """Твик из базы: снапшот прежних значений → операции."""
+        from core.tweaks import load_db
+
+        tweak_id = str(action.get("id", ""))
+        enable = bool(action.get("enable", True))
+        params = action.get("params") or {}
+        tweaks = {tw.id: tw for tw in load_db()}
+        tweak = tweaks.get(tweak_id)
+        if tweak is None:
+            raise ValueError(f"твик не найден в базе: {tweak_id}")
+        snapshot = self._engine().apply(tweak, enable, params)
+        result = ExecutedAction(
+            "tweak_apply", tweak_id, True,
+            "твик применён" if enable else "твик выключен",
+            snapshot=snapshot)
+        self._log(result)
+        return result
+
     def _restore_backup(self, action: t.Dict[str, t.Any]) -> ExecutedAction:
         """Откат по снапшоту: маршрут определяется данными, а не именем."""
         if self._store is None:
@@ -176,6 +207,12 @@ class Executor:
             self._store.remove(snapshot)
             result = ExecutedAction("uwp_restore", name, True,
                                     "приложение возвращено")
+            self._log(result)
+            return result
+        if kind == "tweak":
+            tweak_id = self._engine().restore(snapshot)
+            result = ExecutedAction("tweak_restore", tweak_id, True,
+                                    "твик возвращён как было")
             self._log(result)
             return result
         # Реестр и файл автозагрузки разбирает StartupManager сам.

@@ -478,6 +478,9 @@ class MainWindow(QMainWindow):
             remove_uwp = getattr(page, "removeUwpRequested", None)
             if remove_uwp is not None:
                 remove_uwp.connect(self._ask_remove_uwp)
+            apply_twk = getattr(page, "applyTweakRequested", None)
+            if apply_twk is not None:
+                apply_twk.connect(self._ask_apply_tweak)
 
     def _on_progress_tick(self, percent: int) -> None:
         page = self._work_page
@@ -875,6 +878,26 @@ class MainWindow(QMainWindow):
         sounds.play("click")
         self._session.remove_uwp(full_name)
 
+    def _ask_apply_tweak(self, tweak_id: str, enable: bool) -> None:
+        """Системный твик: подтверждение с риском, затем apply со снапшотом."""
+        if self.is_busy():
+            sounds.play("error")
+            return
+        risk = "high" if any(
+            tw.get("id") == tweak_id and tw.get("risk") == "high"
+            for tw in getattr(self._current_page(), "_sys_tweaks", [])) \
+            else "medium"
+        items = [(tweak_id, risk)]
+        note = self._context.tr("tweaks.confirm_tweak_note")
+        if not ConfirmDialog.ask(self, items, note=note):
+            self._assistant.say(
+                self._context.tr("character.lines.cancelled"), "idle")
+            return
+        self._work_page = self._current_page()
+        self.set_busy(True)
+        sounds.play("click")
+        self._session.apply_tweak(tweak_id, enable)
+
     def _finish_tweaks(self, result: dict, page: QWidget) -> None:
         self._work_page = None
         self.set_busy(False)
@@ -882,7 +905,8 @@ class MainWindow(QMainWindow):
             page.set_tweaks(result.get("startup", []),
                             result.get("services", []),
                             result.get("backups", []),
-                            result.get("uwp", []))
+                            result.get("uwp", []),
+                            result.get("sys_tweaks", []))
         sounds.play("done")
         self._assistant.say(
             self._context.tr("tweaks.loaded_status").format(
@@ -896,9 +920,12 @@ class MainWindow(QMainWindow):
         self._work_page = None
         self.set_busy(False)
         action = str(result.get("action", ""))
-        key = ("tweaks.disabled_status"
-               if action.endswith("disable") or action == "uwp_remove"
-               else "tweaks.restored_status")
+        if action == "tweak_apply":
+            key = "tweaks.tweak_status"
+        else:
+            key = ("tweaks.disabled_status"
+                   if action.endswith("disable") or action == "uwp_remove"
+                   else "tweaks.restored_status")
         text = self._context.tr(key).format(name=result.get("target", ""))
         if page is not None and hasattr(page, "setStatus"):
             page.setStatus(text)

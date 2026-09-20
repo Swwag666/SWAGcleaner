@@ -29,9 +29,12 @@
   (пояснение AI), `--json`.
 - **Дубликаты фото** — точные хеши (SHA-256 в Python-слое, BLAKE3 в ядре) и похожие
   (perceptual hashing через `imagehash`).
-- **Твики** — автозагрузка (реестр и папки Startup) и службы отключаются со снапшотом
-  и кнопкой «Вернуть»; приложения Store удаляются per-user с возвратом. Отключение —
-  только по одному пункту и после подтверждения, критичные службы не трогаются.
+- **Твики** — секция «Твики системы»: 69 готовых твиков в 7 категориях (проводник,
+  персонализация, контекстное меню, телеметрия, обновления, система, компоненты) —
+  тумблер знает текущее состояние, изменение идёт со снапшотом прежних значений.
+  Автозагрузка (реестр и папки Startup) и службы отключаются со снапшотом и кнопкой
+  «Вернуть»; приложения Store удаляются per-user с возвратом. Отключение — только по
+  одному пункту и после подтверждения, критичные службы не трогаются.
 
 ## Стек
 
@@ -42,7 +45,7 @@
 | Мост | NDJSON-протокол поверх stdin/stdout, один долгоживущий процесс |
 | AI (опция) | stdlib `urllib` → Ollama / OpenAI-совместимый API |
 | Сборка | PyInstaller (spec подкладывает `swagscan.exe`) |
-| Тесты | pytest (314) + `cargo test` (54) |
+| Тесты | pytest (328) + `cargo test` (54) |
 | Полигон | VirtualBox + Windows 11 24H2 (тесты удаления не на живом железе) |
 
 ## Как работает чистка (политика удаления)
@@ -93,7 +96,7 @@
 
 Интерфейс — настоящий: боковое меню, пять страниц, две темы, ru/en, пиксельный шрифт Handjet,
 звуки, помощница в стиле визуальной новеллы, диалог подтверждения, живые счётчики, фоновые
-задачи, 314 + 54 теста.
+задачи, 328 + 54 теста.
 
 Ядро сканирования — настоящее и проверенное: Rust-обход, категории, дубликаты BLAKE3, удаление
 в две дорожки, dry-run, отмена; мост и протокол покрыты интеграционными тестами; на живой машине
@@ -111,7 +114,11 @@
 возвращается кнопкой «Вернуть»; файлы папки автозагрузки переезжают в бэкап и ездят
 обратно. Службы отключаются по одной (только режим запуска, работающая не глушится) со
 снапшотом прежнего режима; критичные системные службы не предлагаются. Приложения из
-Store удаляются у пользователя с мгновенным возвратом из staged-копии. Полный реестр
+Store удаляются у пользователя с мгновенным возвратом из staged-копии. Отдельная
+секция — **69 системных твиков** (проводник, персонализация, контекстное меню,
+телеметрия, обновления, система, компоненты): тумблер читает текущее состояние из
+системы, применение снимает снапшот прежних значений, «Вернуть» восстанавливает
+именно их. Команды вне реестра — только из белого списка (bcdedit, powercfg, DISM). Полный реестр
 заглушек — раздел 7.1 в `context.md`.
 
 Python-слой `core/`: журнал, дисковые бэкапы, автозагрузка, службы и UWP — настоящие
@@ -152,7 +159,7 @@ cargo +stable-x86_64-pc-windows-gnu test               # 52 теста
 ## Тесты
 
 ```bash
-# весь набор Python (314 тестов: модели, ядро, UI, AI, мост до Rust)
+# весь набор Python (328 тестов: модели, ядро, UI, AI, мост до Rust)
 ./venv/Scripts/python.exe -m pytest -o addopts="" -q -p no:cacheprovider
 # Rust-ядро (52 теста)
 cd rust/swagscan && cargo +stable-x86_64-pc-windows-gnu test
@@ -219,7 +226,7 @@ action is logged. The **tweaks page** is real: startup items are read from the r
 Startup folders, disabling saves an on-disk snapshot (survives restarts) and a "Restore" button
 brings the entry back; services are listed read-only. The scan core itself
 is real too — Rust scanner with categories, BLAKE3 duplicates, two-lane deletion, dry-run and
-cancellation, covered by 314 pytest + 54 cargo tests, byte-exact against the Python reference.
+cancellation, covered by 328 pytest + 54 cargo tests, byte-exact against the Python reference.
 The VirtualBox polygon (Win11 24H2) runs the core end to end from host shared folders; the built
 `.exe` was verified inside the VM (`--self-test`, `--disk --candidates`, GUI screenshots in
 `shots/polygon-2026-09-16/`). Of the old Python `core/` modules, processes and the Python
