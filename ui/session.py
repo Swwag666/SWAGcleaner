@@ -194,6 +194,72 @@ class Session(QObject):
             self._store = BackupStore.disk()
         return self._store
 
+    # ---------- AI (этап 5: настройки в UI, модель по выбору) ----------
+
+    def ai(self) -> t.Any:
+        """Фасад AI-слоя: один на приложение, настройки из ai.json."""
+        if getattr(self, "_ai", None) is None:
+            from ai import AiAssistant, load_settings
+            self._ai = AiAssistant(load_settings())
+        return self._ai
+
+    def ai_settings(self) -> t.Any:
+        """Текущие настройки AI (для заполнения раздела настроек)."""
+        return self.ai().settings
+
+    def save_ai_settings(self, settings: t.Any) -> bool:
+        """Сохранить настройки AI: файл + горячая замена в ассистенте."""
+        from ai import save_settings
+        ok = save_settings(settings)
+        self.ai().set_settings(settings)
+        self.ai().invalidate()
+        try:
+            self.journal().log("ai_settings", settings.provider,
+                               "ok" if ok else "fail",
+                               enabled=bool(settings.enabled),
+                               model=settings.model)
+        except Exception:  # noqa: BLE001 — журнал не должен ронять настройку
+            _LOGGER.warning("строка журнала ai_settings не записалась",
+                            exc_info=True)
+        return ok
+
+    def list_ai_models(self, settings: t.Any) -> t.List[str]:
+        """Каталог моделей сервера; вызывается только из фонового потока."""
+        from ai.provider import make_provider
+        return make_provider(settings).list_models()
+
+    def test_ai(self, settings: t.Any) -> str:
+        """Проверка связи: каталог моделей или ping. Текст для человека."""
+        from ai.provider import AiUnavailable, make_provider
+        provider = make_provider(settings)
+        try:
+            names = provider.list_models(timeout_sec=5.0)
+        except AiUnavailable as exc:
+            return str(exc)
+        except Exception as exc:  # noqa: BLE001 — любой сбой в человекочитаемый текст
+            return str(exc)
+        if names:
+            return ctx().tr("settings.ai_test_ok").format(count=len(names))
+        if provider.ping(timeout_sec=5.0):
+            return ctx().tr("settings.ai_test_ping")
+        return ctx().tr("settings.ai_test_fail")
+
+    def test_ai_task(self, settings: t.Any) -> None:
+        """Проверка связи фоном: итог taskFinished("ai_test")."""
+        self._run("ai_test", lambda: {"text": self.test_ai(settings)})
+
+    def list_ai_models_task(self, settings: t.Any) -> None:
+        """Каталог моделей фоном: итог taskFinished("ai_models")."""
+
+        def work() -> t.Dict[str, t.Any]:
+            from ai.provider import AiUnavailable
+            try:
+                return {"names": self.list_ai_models(settings), "error": ""}
+            except AiUnavailable as exc:
+                return {"names": [], "error": str(exc)}
+
+        self._run("ai_models", work)
+
     # ---------- состояние ----------
 
     def client(self) -> SwagscanClient:
@@ -322,7 +388,17 @@ class Session(QObject):
                 app.display_name: app.uninstall_string
                 for app in apps if app.uninstall_string
             }
-            return {"apps": len(apps), "recs": recs}
+            # Объяснение плана: правила всегда (работают офлайн и на тапке),
+            # модель - только если включена и отвечает.
+            from ai.rules import explain_advisor
+            rules_text = explain_advisor(len(apps), recs, ctx().tr)
+            ai_text = ""
+            assistant = self.ai()
+            if assistant.available():
+                ai_text = assistant.explain({"apps": len(apps),
+                                             "recs": recs})
+            return {"apps": len(apps), "recs": recs,
+                    "rules_text": rules_text, "ai_text": ai_text}
 
         self._run("advisor", work)
 

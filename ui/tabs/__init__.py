@@ -19,10 +19,12 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -1035,6 +1037,7 @@ class TweaksTab(EmptyTab):
             presets = load_presets()
         except Exception:  # noqa: BLE001 — пресеты не обязаны ломать страницу
             presets = []
+        layout.addWidget(self._recs_hint(presets, row))
         for preset in presets:
             line = QHBoxLayout()
             name = preset.name_ru if is_ru else preset.name_en
@@ -1051,6 +1054,23 @@ class TweaksTab(EmptyTab):
             line.addStretch(1)
             layout.addLayout(line)
         return row
+
+    def _recs_hint(self, presets: List[object], parent: QWidget) -> QLabel:
+        """Правила-фундамент: какие пакеты подходят под железо (без модели)."""
+        from ai.rules import recommend_tweaks, system_facts
+        is_ru = str(ctx().locale()).startswith("ru")
+        names = {p.id: (p.name_ru if is_ru else p.name_en) for p in presets}
+        try:
+            recs = recommend_tweaks(system_facts(), set(names))
+        except Exception:  # noqa: BLE001 — правила не обязаны ломать страницу
+            recs = []
+        if not recs:
+            label = hint("", parent)
+            label.setVisible(False)
+            return label
+        reasons = "; ".join(
+            f"{names.get(pid, pid)} - {ctx().tr(why)}" for pid, why in recs)
+        return hint(ctx().tr("tweaks.recs_hint").format(names=reasons), parent)
 
     def _apps_section(self) -> QFrame:
         """Установка приложений через winget: чекбоксы каталога + кнопка."""
@@ -1200,12 +1220,24 @@ class SettingsTab(EmptyTab):
     themeChanged = Signal(str)
     fontChanged = Signal(str)
     soundsChanged = Signal(bool)
+    aiSaveRequested = Signal(object)     # AiSettings из виджетов
+    aiTestRequested = Signal(object)     # проверить связь
+    aiModelsRequested = Signal(object)   # подтянуть каталог моделей
 
     def __init__(self, parent: QWidget | None = None) -> None:
         self._lang_combo: Optional[QComboBox] = None
         self._theme_combo: Optional[QComboBox] = None
         self._font_combo: Optional[QComboBox] = None
         self._sounds_check: Optional[QCheckBox] = None
+        self._ai_enabled: Optional[QCheckBox] = None
+        self._ai_provider: Optional[QComboBox] = None
+        self._ai_url: Optional[QLineEdit] = None
+        self._ai_model: Optional[QComboBox] = None
+        self._ai_key: Optional[QLineEdit] = None
+        self._ai_timeout: Optional[QSpinBox] = None
+        self._ai_status: Optional[QLabel] = None
+        self._ai_remote_warn: Optional[QLabel] = None
+        self._ai_key_label: Optional[QLabel] = None
         super().__init__(parent)
 
     def _add_result_area(self) -> None:
@@ -1235,8 +1267,166 @@ class SettingsTab(EmptyTab):
         layout.addWidget(self._sounds_check)
         layout.addWidget(hint(ctx().tr("settings.sounds_note"), self))
 
+        self._add_ai_section(layout)
+
         self._layout.addWidget(frame)
         self._fill_combos()
+
+    def _add_ai_section(self, layout: QVBoxLayout) -> None:
+        """AI: провайдер, адрес, модель (каталог с сервера), ключ, таймаут."""
+        self._add_section_label("settings.ai_section", layout)
+        layout.addWidget(hint(ctx().tr("settings.ai_hint"), self))
+
+        self._ai_enabled = QCheckBox(ctx().tr("settings.ai_enabled"), self)
+        layout.addWidget(self._ai_enabled)
+
+        self._add_section_label("settings.ai_provider_label", layout)
+        self._ai_provider = QComboBox(self)
+        self._ai_provider.addItem(ctx().tr("settings.ai_provider_ollama"),
+                                  "ollama")
+        self._ai_provider.addItem(ctx().tr("settings.ai_provider_openai"),
+                                  "openai")
+        self._ai_provider.currentIndexChanged.connect(self._on_ai_changed)
+        layout.addWidget(self._ai_provider)
+
+        self._add_section_label("settings.ai_url_label", layout)
+        self._ai_url = QLineEdit(self)
+        self._ai_url.setPlaceholderText("http://localhost:11434")
+        self._ai_url.textEdited.connect(self._on_ai_changed)
+        layout.addWidget(self._ai_url)
+
+        self._add_section_label("settings.ai_model_label", layout)
+        model_row = QHBoxLayout()
+        self._ai_model = QComboBox(self)
+        self._ai_model.setEditable(True)
+        model_row.addWidget(self._ai_model, 1)
+        refresh = QPushButton(ctx().tr("settings.ai_models_refresh"), self)
+        refresh.setMinimumHeight(30)
+        refresh.clicked.connect(self._emit_ai_models)
+        model_row.addWidget(refresh)
+        layout.addLayout(model_row)
+
+        self._ai_key_label = self._add_section_label("settings.ai_key_label",
+                                                     layout)
+        self._ai_key = QLineEdit(self)
+        self._ai_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._ai_key.setPlaceholderText("sk-...")
+        self._ai_key.textEdited.connect(self._on_ai_changed)
+        layout.addWidget(self._ai_key)
+
+        self._add_section_label("settings.ai_timeout_label", layout)
+        self._ai_timeout = QSpinBox(self)
+        self._ai_timeout.setRange(5, 600)
+        self._ai_timeout.setValue(60)
+        layout.addWidget(self._ai_timeout)
+
+        self._ai_remote_warn = hint(ctx().tr("settings.ai_remote_warn"), self)
+        self._ai_remote_warn.setVisible(False)
+        layout.addWidget(self._ai_remote_warn)
+
+        buttons = QHBoxLayout()
+        test = QPushButton(ctx().tr("settings.ai_test"), self)
+        test.setMinimumHeight(30)
+        test.clicked.connect(self._emit_ai_test)
+        buttons.addWidget(test)
+        save = QPushButton(ctx().tr("settings.ai_save"), self)
+        save.setMinimumHeight(30)
+        save.clicked.connect(self._emit_ai_save)
+        buttons.addWidget(save)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
+
+        self._ai_status = hint("", self)
+        layout.addWidget(self._ai_status)
+
+    # ---------- AI: виджеты -> настройки и обратно ----------
+
+    def _on_ai_changed(self, *_args) -> None:
+        """Провайдер/адрес поменялись: видимость ключа и предупреждения."""
+        if self._ai_key is not None and self._ai_provider is not None:
+            is_openai = self._ai_provider.currentData() == "openai"
+            self._ai_key.setVisible(bool(is_openai))
+            if self._ai_key_label is not None:
+                self._ai_key_label.setVisible(bool(is_openai))
+        if self._ai_remote_warn is not None:
+            settings = self.collect_ai_settings()
+            self._ai_remote_warn.setVisible(bool(settings.is_remote()))
+
+    def collect_ai_settings(self) -> t.Any:
+        """Собрать AiSettings из виджетов (импорт тут, чтобы не тащить ai в шапку)."""
+        from ai.provider import AiSettings
+        model = ""
+        if self._ai_model is not None:
+            model = self._ai_model.currentText().strip()
+        return AiSettings(
+            provider=str(self._ai_provider.currentData() or "ollama")
+            if self._ai_provider is not None else "ollama",
+            base_url=(self._ai_url.text().strip().rstrip("/")
+                      if self._ai_url is not None else "") or "http://localhost:11434",
+            model=model or "llama3.1",
+            api_key=self._ai_key.text().strip() if self._ai_key is not None else "",
+            timeout_sec=self._ai_timeout.value() if self._ai_timeout is not None else 60,
+            enabled=bool(self._ai_enabled.isChecked())
+            if self._ai_enabled is not None else False,
+        )
+
+    def setAiSettings(self, settings: t.Any) -> None:
+        """Заполнить виджет из настроек, не поднимая сигналы сохранения."""
+        if self._ai_enabled is not None:
+            self._ai_enabled.blockSignals(True)
+            self._ai_enabled.setChecked(bool(settings.enabled))
+            self._ai_enabled.blockSignals(False)
+        if self._ai_provider is not None:
+            self._ai_provider.blockSignals(True)
+            index = self._ai_provider.findData(settings.provider)
+            self._ai_provider.setCurrentIndex(max(index, 0))
+            self._ai_provider.blockSignals(False)
+        if self._ai_url is not None:
+            self._ai_url.blockSignals(True)
+            self._ai_url.setText(settings.base_url)
+            self._ai_url.blockSignals(False)
+        if self._ai_model is not None:
+            self._ai_model.blockSignals(True)
+            self._ai_model.clear()
+            self._ai_model.addItem(settings.model)
+            self._ai_model.setCurrentText(settings.model)
+            self._ai_model.blockSignals(False)
+        if self._ai_key is not None:
+            self._ai_key.blockSignals(True)
+            self._ai_key.setText(settings.api_key)
+            self._ai_key.blockSignals(False)
+        if self._ai_timeout is not None:
+            self._ai_timeout.blockSignals(True)
+            self._ai_timeout.setValue(int(settings.timeout_sec))
+            self._ai_timeout.blockSignals(False)
+        self._on_ai_changed()
+
+    def setAiModels(self, names: t.List[str]) -> None:
+        """Каталог моделей с сервера в выпадающий список (текущая остаётся)."""
+        if self._ai_model is None:
+            return
+        current = self._ai_model.currentText().strip()
+        self._ai_model.blockSignals(True)
+        self._ai_model.clear()
+        for name in names:
+            self._ai_model.addItem(name)
+        if current and self._ai_model.findText(current) < 0:
+            self._ai_model.insertItem(0, current)
+        self._ai_model.setCurrentText(current)
+        self._ai_model.blockSignals(False)
+
+    def setAiStatus(self, text: str) -> None:
+        if self._ai_status is not None:
+            self._ai_status.setText(text)
+
+    def _emit_ai_save(self) -> None:
+        self.aiSaveRequested.emit(self.collect_ai_settings())
+
+    def _emit_ai_test(self) -> None:
+        self.aiTestRequested.emit(self.collect_ai_settings())
+
+    def _emit_ai_models(self) -> None:
+        self.aiModelsRequested.emit(self.collect_ai_settings())
 
     def _on_sounds_toggled(self, enabled: bool) -> None:
         ctx().setSounds(enabled)

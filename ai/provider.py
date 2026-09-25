@@ -343,6 +343,15 @@ class Provider(ABC):
     def ping(self, timeout_sec: float = 1.5) -> bool:
         """Быстрая проверка «жив ли сервис». Никогда не бросает."""
 
+    def list_models(self, timeout_sec: float = 5.0) -> t.List[str]:
+        """Имена моделей, доступных на сервере. Пусто, если сервис молчит.
+
+        Не абстрактный: провайдер без каталога моделей честно отдаёт пустой
+        список, а UI оставляет ручное поле ввода. Ollama и OpenAI-совместимые
+        сервера каталог имеют — см. переопределения.
+        """
+        return []
+
 
 class OllamaProvider(Provider):
     """Локальный Ollama: POST {base}/api/chat без стрима."""
@@ -388,6 +397,26 @@ class OllamaProvider(Provider):
             LOGGER.info("AI: Ollama не отвечает: %s", exc)
             return False
         return isinstance(data.get("models"), list) or bool(data)
+
+    def list_models(self, timeout_sec: float = 5.0) -> t.List[str]:
+        """Каталог скачанных моделей: GET {base}/api/tags."""
+        url = _join_url(self._settings.base_url, OLLAMA_TAGS_PATH, self.label)
+        data = _get_json(url, timeout_sec, self.label)
+        models = data.get("models")
+        if not isinstance(models, list):
+            raise AiUnavailable(
+                f"{self.label} вернула неожиданный формат каталога моделей: "
+                f"{_brief(data)}"
+            )
+        names: t.List[str] = []
+        for item in models:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("model")
+            else:
+                name = item
+            if isinstance(name, str) and name.strip():
+                names.append(name.strip())
+        return names
 
 
 class OpenAIProvider(Provider):
@@ -444,6 +473,29 @@ class OpenAIProvider(Provider):
         if not settings.api_key:
             LOGGER.info("AI: внешний эндпоинт без ключа — сгодится для локальных прокси-серверов")
         return True
+
+    def list_models(self, timeout_sec: float = 5.0) -> t.List[str]:
+        """Каталог моделей эндпоинта: GET {base}/models (OpenAI-совместимый)."""
+        settings = self._settings
+        url = _join_url(settings.base_url, "/models", self.label)
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("Accept", "application/json")
+        req.add_header("User-Agent", USER_AGENT)
+        if settings.api_key:
+            req.add_header("Authorization", f"Bearer {settings.api_key}")
+        data = _request_json(req, timeout_sec, self.label, url)
+        items = data.get("data")
+        if not isinstance(items, list):
+            raise AiUnavailable(
+                f"{self.label} вернул неожиданный формат каталога моделей: "
+                f"{_brief(data)}"
+            )
+        names: t.List[str] = []
+        for item in items:
+            name = item.get("id") if isinstance(item, dict) else item
+            if isinstance(name, str) and name.strip():
+                names.append(name.strip())
+        return names
 
 
 def make_provider(settings: AiSettings) -> Provider:

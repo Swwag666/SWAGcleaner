@@ -48,7 +48,8 @@
     "risk_low": "Low",
     "risk_medium": "Medium",
     "risk_high": "High",
-    "reason_placeholder": "Explanation will appear here"
+    "reason_placeholder": "Explanation will appear here",
+    "ai_note": "The model adds:"
   },
   "cleaner": {
     "title": "Cleaner",
@@ -181,7 +182,8 @@
     "hidepart_title": "Hide drive letters",
     "hidepart_note": "Selected letters disappear from This PC (drives stay accessible by path). B and C are not offered - hiding them is asking for trouble. Explorer restart required.",
     "hidepart_empty": "Nothing to hide: no drives besides the system one.",
-    "hidepart_apply": "Hide selected"
+    "hidepart_apply": "Hide selected",
+    "recs_hint": "For your hardware the rules suggest packs: {names}."
   },
   "journal": {
     "title": "Deletion journal",
@@ -251,7 +253,28 @@
     "restore_button": "Restore from backup",
     "backup_info": "Backups are stored locally and kept only for rollback.",
     "ollama_label": "Ollama (optional)",
-    "ollama_note": "Later — local advisor with Ollama. Not active yet."
+    "ollama_note": "Later — local advisor with Ollama. Not active yet.",
+    "ai_section": "AI: model and connection",
+    "ai_hint": "Ollama - any model you pulled (ollama pull ...). API - your key, your model, your endpoint. Disabled - the advisor speaks by rules, offline.",
+    "ai_enabled": "Enable AI (model explanations and answers)",
+    "ai_provider_label": "Provider",
+    "ai_provider_ollama": "Ollama (local)",
+    "ai_provider_openai": "OpenAI-compatible API",
+    "ai_url_label": "Server address",
+    "ai_model_label": "Model",
+    "ai_models_refresh": "Pull list",
+    "ai_key_label": "API key",
+    "ai_timeout_label": "Response timeout, sec",
+    "ai_remote_warn": "Your data will leave this machine. Enable only if that is deliberate.",
+    "ai_test": "Test connection",
+    "ai_save": "Save AI settings",
+    "ai_test_ok": "Connection is alive, models in catalog: {count}.",
+    "ai_test_ping": "Server responds but the model catalog is unavailable - type the model manually.",
+    "ai_test_fail": "No connection. Check the address; for Ollama - is «ollama serve» running and a model pulled?",
+    "ai_models_fail": "Catalog pull failed: {error}",
+    "ai_models_count": "Models in catalog: {count}.",
+    "ai_saved": "AI settings saved.",
+    "ai_save_fail": "AI settings did not save: no write access to the profile folder."
   },
   "status": {
     "ready": "Ready",
@@ -307,5 +330,14 @@
     "dupes_photo": "Exact photo duplicates",
     "admin_note": "needs administrator rights",
     "regrows_note": "grows back"
+  },
+  "rules": {
+    "advisor_apps": "Programs inspected: {count}.",
+    "advisor_clean": "No recommendations: the rules found no known bloatware.",
+    "advisor_recs": "Recommendations: {total} (remove: {remove}, explore: {explore}).",
+    "rec_remove": "{name} - remove. {reason}",
+    "rec_explore": "{name} - explore before deciding. {reason}",
+    "why_privacy": "telemetry is excess on any hardware",
+    "why_performance": "RAM or cores are tight - visual effects are a luxury"
   }
 }

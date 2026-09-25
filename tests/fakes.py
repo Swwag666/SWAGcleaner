@@ -75,6 +75,23 @@ class FakeCoreSession(QObject):
     def request_cancel(self) -> None:
         self.cancel_requests += 1
 
+    # ---------- AI-контракт (этап 5) ----------
+
+    def ai_settings(self) -> t.Any:
+        from ai.provider import AiSettings
+        return AiSettings()
+
+    def save_ai_settings(self, settings: t.Any) -> bool:
+        self.saved_ai = settings
+        return True
+
+    def test_ai_task(self, settings: t.Any) -> None:
+        self.taskFinished.emit("ai_test", {"text": "fake ok"})
+
+    def list_ai_models_task(self, settings: t.Any) -> None:
+        self.taskFinished.emit("ai_models", {"names": ["fake:1b"],
+                                             "error": ""})
+
     def describe_summary(self, summary: CategorySummary,
                          with_risk: bool = True) -> str:
         lane = "в корзину" if summary.lane == "trash" else "без корзины"

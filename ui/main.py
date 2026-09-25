@@ -499,6 +499,17 @@ class MainWindow(QMainWindow):
             shut_cancel = getattr(page, "shutdownCancelRequested", None)
             if shut_cancel is not None:
                 shut_cancel.connect(self._ask_shutdown_cancel)
+            # Настройки AI: сохранение, проверка связи, каталог моделей.
+            ai_save = getattr(page, "aiSaveRequested", None)
+            if ai_save is not None:
+                ai_save.connect(self._on_ai_save)
+            ai_test = getattr(page, "aiTestRequested", None)
+            if ai_test is not None:
+                ai_test.connect(self._ask_ai_test)
+            ai_models = getattr(page, "aiModelsRequested", None)
+            if ai_models is not None:
+                ai_models.connect(self._ask_ai_models)
+                page.setAiSettings(self._session.ai_settings())
 
     def _on_progress_tick(self, percent: int) -> None:
         page = self._work_page
@@ -527,6 +538,10 @@ class MainWindow(QMainWindow):
                 self._finish_tweaks(result, page)
             elif name == "tweaks_action":
                 self._finish_tweaks_action(result, page)
+            elif name == "ai_test":
+                self._finish_ai_test(result, page)
+            elif name == "ai_models":
+                self._finish_ai_models(result, page)
         except Exception:  # noqa: BLE001 - см. docstring
             _LOGGER.exception("обработчик итога задачи упал: %s", name)
             self._work_page = None
@@ -1036,6 +1051,60 @@ class MainWindow(QMainWindow):
         sounds.play("click")
         self._session.cancel_shutdown()
 
+    def _on_ai_save(self, settings: object) -> None:
+        """Сохранение настроек AI: файл + горячая замена в ассистенте."""
+        ok = self._session.save_ai_settings(settings)
+        text = (self._context.tr("settings.ai_saved") if ok
+                else self._context.tr("settings.ai_save_fail"))
+        page = self._current_page()
+        if page is not None and hasattr(page, "setAiStatus"):
+            page.setAiStatus(text)
+        self._assistant.say(text, "idle")
+
+    def _ask_ai_test(self, settings: object) -> None:
+        """Проверка связи с Ollama/API — фоном, сеть может жевать."""
+        if self.is_busy():
+            sounds.play("error")
+            return
+        self._work_page = self._current_page()
+        self.set_busy(True)
+        sounds.play("click")
+        self._session.test_ai_task(settings)
+
+    def _ask_ai_models(self, settings: object) -> None:
+        """Каталог моделей сервера — фоном."""
+        if self.is_busy():
+            sounds.play("error")
+            return
+        self._work_page = self._current_page()
+        self.set_busy(True)
+        sounds.play("click")
+        self._session.list_ai_models_task(settings)
+
+    def _finish_ai_test(self, result: dict, page: QWidget) -> None:
+        self._work_page = None
+        self.set_busy(False)
+        text = str(result.get("text", ""))
+        if page is not None and hasattr(page, "setAiStatus"):
+            page.setAiStatus(text)
+        self._assistant.say(text, "idle")
+
+    def _finish_ai_models(self, result: dict, page: QWidget) -> None:
+        self._work_page = None
+        self.set_busy(False)
+        names = list(result.get("names") or [])
+        error = str(result.get("error") or "")
+        if page is not None and hasattr(page, "setAiModels"):
+            page.setAiModels(names)
+        if page is not None and hasattr(page, "setAiStatus"):
+            if error:
+                page.setAiStatus(
+                    self._context.tr("settings.ai_models_fail").format(error=error))
+            else:
+                page.setAiStatus(
+                    self._context.tr("settings.ai_models_count").format(
+                        count=len(names)))
+
     def _finish_tweaks(self, result: dict, page: QWidget) -> None:
         self._work_page = None
         self.set_busy(False)
@@ -1097,15 +1166,24 @@ class MainWindow(QMainWindow):
         if hasattr(page, "setStatus"):
             page.setStatus(self._context.tr("advisor.scan_done"))
         if hasattr(page, "setPlan"):
-            if result["recs"]:
-                lines = [
-                    f"{r.get('display_name', r.get('name', '?'))}: "
-                    f"{r.get('description', '')}"
-                    for r in result["recs"][:10]
-                ]
-                page.setPlan("\n".join(lines))
-            else:
-                page.setPlan(self._context.tr("advisor.no_plan"))
+            # База - детерминированный текст правил (работает без модели);
+            # модель, если включена и ответила, добавляет свой абзац сверху.
+            plan = str(result.get("rules_text") or "")
+            if not plan:
+                if result["recs"]:
+                    lines = [
+                        f"{r.get('display_name', r.get('name', '?'))}: "
+                        f"{r.get('description', '')}"
+                        for r in result["recs"][:10]
+                    ]
+                    plan = "\n".join(lines)
+                else:
+                    plan = self._context.tr("advisor.no_plan")
+            ai_text = str(result.get("ai_text") or "").strip()
+            if ai_text:
+                plan = (self._context.tr("advisor.ai_note") + "\n"
+                        + ai_text + "\n\n" + plan)
+            page.setPlan(plan)
         sounds.play("done")
         self._assistant.say(
             self._context.tr("session.advisor_apps").format(count=result["apps"])

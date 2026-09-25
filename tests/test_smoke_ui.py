@@ -339,7 +339,8 @@ class TestPages:
 
     def test_settings_page_has_three_controls(self, qapp: t.Any) -> None:
         combos = SettingsTab().findChildren(QComboBox)
-        assert len(combos) == 3  # язык, тема, шрифт
+        # язык, тема, шрифт + провайдер AI и редактируемый список моделей
+        assert len(combos) == 5
 
     def test_settings_switches_language(self, qapp: t.Any) -> None:
         ctx().setLocale("ru")
