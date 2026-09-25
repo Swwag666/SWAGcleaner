@@ -51,12 +51,20 @@ def cpu_count() -> int:
 
 
 def system_facts() -> t.Dict[str, int]:
-    """Факты о машине для правил и для промптов модели."""
-    from core.tweaks import current_build
+    """Факты о машине для правил и для промптов модели.
+
+    На не-Windows билд недоступен (winreg нет) - честно ноль, правила
+    от этого не ломаются: ветки производительности смотрят ОЗУ и ядра.
+    """
+    try:
+        from core.tweaks import current_build
+        build = current_build()
+    except Exception:  # noqa: BLE001 - не-Windows: факта о билде нет
+        build = 0
     return {
         "ram_gb": ram_gb(),
         "cpus": cpu_count(),
-        "build": current_build(),
+        "build": build,
     }
 
 

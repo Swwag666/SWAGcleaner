@@ -119,6 +119,98 @@ extern "system" {
     fn RemoveDirectoryW(lp_path_name: *const u16) -> i32;
 }
 
+extern "system" {
+    fn CreateFileW(
+        lp_file_name: *const u16,
+        dw_desired_access: u32,
+        dw_share_mode: u32,
+        lp_security_attributes: *mut c_void,
+        dw_creation_disposition: u32,
+        dw_flags_and_attributes: u32,
+        h_template_file: HANDLE,
+    ) -> HANDLE;
+    fn ReadFile(
+        h_file: HANDLE,
+        lp_buffer: *mut u8,
+        n_number_of_bytes_to_read: u32,
+        lp_number_of_bytes_read: *mut u32,
+        lp_overlapped: *mut c_void,
+    ) -> i32;
+    fn SetFilePointerEx(
+        h_file: HANDLE,
+        li_distance_to_move: i64,
+        lp_new_file_pointer: *mut i64,
+        dw_move_method: u32,
+    ) -> i32;
+    fn CloseHandle(h_object: HANDLE) -> i32;
+}
+
+/// Сырой дескриптор тома (\\.\C:) для MFT-режима: права администратора.
+pub struct VolumeHandle(pub HANDLE);
+
+impl VolumeHandle {
+    pub fn is_valid(&self) -> bool {
+        !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE
+    }
+}
+
+impl Drop for VolumeHandle {
+    fn drop(&mut self) {
+        if self.is_valid() {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+pub fn open_volume(drive: &str) -> Option<VolumeHandle> {
+    let letter = match drive.chars().next() {
+        Some(c) => c.to_uppercase().next()?,
+        None => return None,
+    };
+    let path = format!("\\\\.\\{letter}:");
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_WRITE: u32 = 0x2;
+    const OPEN_EXISTING: u32 = 3;
+    let handle = unsafe {
+        CreateFileW(
+            wide(&path).as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null_mut(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    let vol = VolumeHandle(handle);
+    if vol.is_valid() {
+        Some(vol)
+    } else {
+        None
+    }
+}
+
+/// Точное чтение по смещению: том читается только с явной позицией.
+pub fn read_at(vol: &VolumeHandle, offset: u64, buf: &mut [u8]) -> bool {
+    if buf.is_empty() {
+        return true;
+    }
+    unsafe {
+        if SetFilePointerEx(vol.0, offset as i64, std::ptr::null_mut(), 0) == 0 {
+            return false;
+        }
+        let mut done: u32 = 0;
+        if ReadFile(vol.0, buf.as_mut_ptr(), buf.len() as u32, &mut done,
+                    std::ptr::null_mut()) == 0 {
+            return false;
+        }
+        done as usize == buf.len()
+    }
+}
+
 #[link(name = "shell32")]
 extern "system" {
     fn SHFileOperationW(lp: *const SHFILEOPSTRUCTW) -> i32;

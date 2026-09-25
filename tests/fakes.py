@@ -92,6 +92,49 @@ class FakeCoreSession(QObject):
         self.taskFinished.emit("ai_models", {"names": ["fake:1b"],
                                              "error": ""})
 
+    # ---------- контракт этапов 6/7 ----------
+
+    def redist_status_task(self) -> None:
+        self.taskFinished.emit("redist_status",
+                               {"status": {"vc2015_x64": True}})
+
+    def install_redists(self, rids: t.Sequence[str]) -> None:
+        self.redist_installs = list(rids)
+        self.taskFinished.emit("redists_install",
+                               {"results": [], "ok": len(rids),
+                                "total": len(rids)})
+
+    def config_list(self) -> t.List[t.Dict[str, t.Any]]:
+        return list(getattr(self, "configs", []))
+
+    def config_meta(self, name: str) -> t.Dict[str, t.Any]:
+        for cfg in getattr(self, "configs", []):
+            if cfg["name"] == name:
+                return cfg
+        raise KeyError(name)
+
+    def config_save_task(self, name: str, note: str = "") -> None:
+        self.taskFinished.emit("config_save", {"name": name, "path": "x",
+                                               "tweaks": 0, "apps": 0,
+                                               "redists": 0})
+
+    def config_apply_task(self, name: str) -> None:
+        self.config_applies = list(getattr(self, "config_applies", []))
+        self.config_applies.append(name)
+        self.taskFinished.emit("config_apply", {"name": name, "tweaks": [],
+                                                "apps": [], "redists": [],
+                                                "ok": 0, "fail": 0,
+                                                "cancelled": False})
+
+    def config_export(self, name: str, path: str) -> str:
+        return path
+
+    def config_import(self, path: str) -> t.Dict[str, t.Any]:
+        return {"name": "импорт", "tweaks": [], "apps": [], "redists": []}
+
+    def config_delete(self, name: str) -> bool:
+        return True
+
     def describe_summary(self, summary: CategorySummary,
                          with_risk: bool = True) -> str:
         lane = "в корзину" if summary.lane == "trash" else "без корзины"

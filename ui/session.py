@@ -260,6 +260,136 @@ class Session(QObject):
 
         self._run("ai_models", work)
 
+    # ---------- этап 6: зависимости и рантаймы ----------
+
+    def redist_status_task(self) -> None:
+        """Детект «уже стоит» фоном: итог taskFinished("redist_status")."""
+
+        def work() -> t.Dict[str, t.Any]:
+            from core import redists
+            return {"status": redists.detect_all()}
+
+        self._run("redist_status", work)
+
+    def install_redists(self, rids: t.Sequence[str]) -> None:
+        """Поставить выбранные зависимости winget'ом, по одной, с отменой."""
+
+        def work() -> t.Dict[str, t.Any]:
+            from core import redists
+            from core.appinstall import AppInstaller
+            ids = redists.winget_ids(list(rids))
+            if not ids:
+                return {"results": [], "ok": 0, "total": 0}
+            installer = AppInstaller()
+
+            def progress(i: int, total: int, wid: str) -> None:
+                self.progressTick.emit(int((i + 1) * 100 / max(total, 1)))
+
+            results = installer.install_many(ids, progress=progress,
+                                             cancel=self._cancel)
+            ok = sum(1 for r in results if r.get("ok"))
+            self.journal().log("redists_install", ", ".join(ids),
+                               "ok" if ok == len(results) else "fail",
+                               ok=ok, total=len(results))
+            return {"results": results, "ok": ok, "total": len(results)}
+
+        self._run("redists_install", work)
+
+    # ---------- этап 7: конфиги системы ----------
+
+    def config_list(self) -> t.List[t.Dict[str, t.Any]]:
+        from core import sysconfig
+        return sysconfig.list_configs()
+
+    def config_meta(self, name: str) -> t.Dict[str, t.Any]:
+        """Полный конфиг по имени: для текста подтверждения."""
+        from core import sysconfig
+        return sysconfig.load(name)
+
+    def config_save_task(self, name: str, note: str = "") -> None:
+        """Снимок текущего состояния системы в конфиг, фоном."""
+
+        def work() -> t.Dict[str, t.Any]:
+            from core import redists, sysconfig
+            from core.appinstall import CATALOG, AppInstaller
+            from core.tweaks import TweaksEngine, current_build, load_db
+            engine = TweaksEngine(store=self.backups())
+            tweaks: t.List[t.Dict[str, t.Any]] = []
+            for tw in load_db():
+                try:
+                    on = engine.status(tw) == "on"
+                except Exception:  # noqa: BLE001 - твик без статуса не берём
+                    on = False
+                if on:
+                    tweaks.append({"id": tw.id, "params": dict(tw.params or {})})
+            catalog_ids = {a.winget_id for a in CATALOG}
+            apps = sorted(AppInstaller().installed_ids() & catalog_ids)
+            reds = [rid for rid, state in redists.detect_all().items()
+                    if state is True]
+            cfg = sysconfig.build_config(name, tweaks, apps, reds, note=note,
+                                         build=current_build())
+            path = sysconfig.save(cfg)
+            self.journal().log("config_save", name, "ok",
+                               tweaks=len(tweaks), apps=len(apps),
+                               redists=len(reds))
+            return {"name": name, "path": str(path), "tweaks": len(tweaks),
+                    "apps": len(apps), "redists": len(reds)}
+
+        self._run("config_save", work)
+
+    def config_apply_task(self, name: str) -> None:
+        """Применить конфиг поitem'но: твики со снапшотами, пакеты winget'ом."""
+
+        def work() -> t.Dict[str, t.Any]:
+            from core import redists, sysconfig
+            from core.appinstall import AppInstaller
+            from core.tweaks import TweaksEngine, load_db
+            cfg = sysconfig.load(name)
+            engine = TweaksEngine(store=self.backups())
+            by_id = {tw.id: tw for tw in load_db()}
+
+            def apply_tweak(tid: str, params: t.Dict[str, t.Any]) -> bool:
+                engine.apply(by_id[tid], True, params or None)
+                return True
+
+            def install_apps(ids: t.List[str]) -> t.List[t.Dict[str, t.Any]]:
+                return AppInstaller().install_many(ids, cancel=self._cancel)
+
+            def install_reds(rids: t.List[str]) -> t.List[t.Dict[str, t.Any]]:
+                return AppInstaller().install_many(
+                    redists.winget_ids(rids), cancel=self._cancel)
+
+            def progress(done: int, total: int, label: str) -> None:
+                self.progressTick.emit(int(done * 100 / max(total, 1)))
+
+            report = sysconfig.apply_config(
+                cfg, apply_tweak, install_apps, install_reds,
+                known_tweaks=set(by_id), progress=progress,
+                cancel=self._cancel)
+            self.journal().log("config_apply", name,
+                               "ok" if not report["fail"] else "fail",
+                               ok=report["ok"], fail=report["fail"])
+            return {"name": name, **report}
+
+        self._run("config_apply", work)
+
+    def config_export(self, name: str, path: str) -> str:
+        from core import sysconfig
+        self.journal().log("config_export", name, "ok", path=path)
+        return str(sysconfig.export(name, path))
+
+    def config_import(self, path: str) -> t.Dict[str, t.Any]:
+        from core import sysconfig
+        cfg = sysconfig.import_config(path)
+        self.journal().log("config_import", cfg["name"], "ok", path=path)
+        return cfg
+
+    def config_delete(self, name: str) -> bool:
+        from core import sysconfig
+        done = sysconfig.delete(name)
+        self.journal().log("config_delete", name, "ok" if done else "fail")
+        return done
+
     # ---------- состояние ----------
 
     def client(self) -> SwagscanClient:

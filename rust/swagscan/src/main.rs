@@ -2,6 +2,7 @@ mod agg;
 mod cats;
 mod emit;
 mod hash;
+mod mft;
 mod pathx;
 mod purge;
 mod scan;
@@ -264,6 +265,36 @@ fn handle(
         }
         "drives" => {
             ev.result_ok(id, drives_json());
+        }
+        "mft" => {
+            // Этап 6 (R2): снимок тома через $MFT, секунды вместо минут.
+            let drive = str_field(cmd, "drive").unwrap_or_else(|| "C".into());
+            let limit = usize_field(cmd, "top", 40).clamp(1, 5000);
+            match mft::read_volume(&drive, cancel) {
+                Ok((files, stats)) => {
+                    let mut top: Vec<&mft::MftFile> =
+                        files.iter().filter(|f| !f.is_dir).collect();
+                    top.sort_by(|a, b| b.size.cmp(&a.size));
+                    let items: Vec<String> = top
+                        .iter()
+                        .take(limit)
+                        .map(|f| {
+                            format!("{{\"path\":{},\"size\":{}}}", q(&f.path), f.size)
+                        })
+                        .collect();
+                    ev.result_ok(
+                        id,
+                        format!(
+                            "{{\"files\":{},\"dirs\":{},\"bytes\":{},\"records\":{},\"ms\":{},\"record_size\":{},\"cluster\":{},\"image_bytes\":{},\"top\":[{}]}}",
+                            stats.files, stats.dirs, stats.bytes,
+                            stats.records, stats.ms, stats.record_size,
+                            stats.cluster, stats.image_bytes,
+                            items.join(",")
+                        ),
+                    );
+                }
+                Err(reason) => ev.result_err(id, &reason),
+            }
         }
         other => ev.result_err(id, &format!("unknown cmd: {other}")),
     }

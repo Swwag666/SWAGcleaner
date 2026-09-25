@@ -18,16 +18,23 @@ _project_root = Path(__file__).resolve().parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-from PySide6.QtCore import QSettings
+try:  # Qt есть не везде: Linux-плечо мульти-ОС прогона идёт без PySide6.
+    from PySide6.QtCore import QSettings
+    HAS_QT = True
+except ImportError:  # pragma: no cover - не-Windows без Qt
+    QSettings = None  # type: ignore[assignment]
+    HAS_QT = False
 
 from core.models import AppInfo
 
 # Язык, тема и шрифт сохраняются в QSettings. Во время тестов уводим их в
 # временную папку: прогон не должен трогать реальные настройки пользователя
 # и не должен зависеть от того, что он выбирал в прошлый раз.
-_SETTINGS_DIR = tempfile.mkdtemp(prefix="swagcleaner-tests-")
-QSettings.setDefaultFormat(QSettings.Format.IniFormat)
-QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, _SETTINGS_DIR)
+if HAS_QT:
+    _SETTINGS_DIR = tempfile.mkdtemp(prefix="swagcleaner-tests-")
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope,
+                      _SETTINGS_DIR)
 
 
 class FakeInstalledProvider:
@@ -60,6 +67,10 @@ def qapp() -> t.Any:
     Контекст — одиночка, поэтому создаём его ровно один раз на сессию
     и дальше только переключаем локаль внутри тестов.
     """
+    if not HAS_QT:
+        pytest.skip("PySide6 нет: UI-тесты на этой ОС не живут")
+    if not HAS_QT:
+        pytest.skip("PySide6 нет: UI-тесты на этой ОС не живут")
     from PySide6.QtWidgets import QApplication
 
     from ui import sounds

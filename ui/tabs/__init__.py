@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -774,12 +775,20 @@ class TweaksTab(EmptyTab):
     gpeditRequested = Signal()
     shutdownSetRequested = Signal(int)         # минуты
     shutdownCancelRequested = Signal()
+    installRedistsRequested = Signal(list)     # rid зависимостей
+    refreshRedistsRequested = Signal()         # пересчитать «уже стоит»
+    configSaveRequested = Signal(str, str)     # имя, заметка
+    configApplyRequested = Signal(str)         # имя конфига
+    configExportRequested = Signal(str)        # имя конфига
+    configImportRequested = Signal(str)        # путь к файлу
+    configDeleteRequested = Signal(str)        # имя конфига
+    configRefreshRequested = Signal()
 
     _MAX_SERVICES = 60
     _MAX_UWP = 60
 
     _TWEAK_CATEGORIES = ("explorer", "personal", "contextmenu", "telemetry",
-                         "winupdate", "sysrec", "components")
+                         "winupdate", "sysrec", "components", "security")
 
     def __init__(self, parent: QWidget | None = None) -> None:
         self._status_label: Optional[QLabel] = None
@@ -789,6 +798,12 @@ class TweaksTab(EmptyTab):
         self._services: List[object] = []
         self._backups: List[Dict[str, object]] = []
         self._uwp: List[object] = []
+        self._redist_boxes: Dict[str, QCheckBox] = {}
+        self._config_combo: Optional[QComboBox] = None
+        self._config_apply_btn: Optional[QPushButton] = None
+        self._config_delete_btn: Optional[QPushButton] = None
+        self._config_export_btn: Optional[QPushButton] = None
+        self._configs_meta: Dict[str, Dict[str, object]] = {}
         self._sys_tweaks: List[Dict[str, object]] = []
         super().__init__(parent)
 
@@ -868,6 +883,8 @@ class TweaksTab(EmptyTab):
                 for tw in group:
                     put(self._tweak_row(tw))
             put(self._apps_section())
+            put(self._redists_section())
+            put(self._configs_section())
             put(self._activation_section())
             put(self._timer_section())
 
@@ -1106,6 +1123,194 @@ class TweaksTab(EmptyTab):
     def _emit_apps(self) -> None:
         ids = [wid for wid, box in self._app_boxes if box.isChecked()]
         self.installAppsRequested.emit(ids)
+
+    def _redists_section(self) -> QFrame:
+        """Этап 6: зависимости и рантаймы - всем, геймеру, прогеру."""
+        from core.redists import GROUPS, REDISTS
+        frame = QFrame(self)
+        frame.setObjectName("categoryCard")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(6)
+        layout.addWidget(section(ctx().tr("tweaks.redists_section"), frame))
+        layout.addWidget(hint(ctx().tr("tweaks.redists_hint"), frame))
+
+        groups_row = QHBoxLayout()
+        for group in GROUPS:
+            btn = QPushButton(ctx().tr(f"tweaks.redists_group_{group}"), frame)
+            btn.setMinimumHeight(30)
+            btn.clicked.connect(
+                lambda _checked=False, g=group: self._pick_redist_group(g))
+            groups_row.addWidget(btn)
+        groups_row.addStretch(1)
+        layout.addLayout(groups_row)
+
+        grid = QGridLayout()
+        grid.setSpacing(6)
+        for index, entry in enumerate(REDISTS):
+            label = entry.name_ru if str(ctx().locale()).startswith("ru") \
+                else entry.name_en
+            box = QCheckBox(label, frame)
+            self._redist_boxes[entry.rid] = box
+            grid.addWidget(box, index // 3, index % 3)
+        layout.addLayout(grid)
+
+        buttons = QHBoxLayout()
+        refresh = QPushButton(ctx().tr("tweaks.redists_refresh"), frame)
+        refresh.setMinimumHeight(30)
+        refresh.clicked.connect(lambda: self.refreshRedistsRequested.emit())
+        buttons.addWidget(refresh)
+        install = QPushButton(ctx().tr("tweaks.redists_install"), frame)
+        install.setMinimumHeight(30)
+        install.clicked.connect(self._emit_redists)
+        buttons.addWidget(install)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
+        return frame
+
+    def _pick_redist_group(self, group: str) -> None:
+        from core.redists import group_ids
+        wanted = set(group_ids(group))
+        for rid, box in self._redist_boxes.items():
+            box.setChecked(rid in wanted)
+
+    def _emit_redists(self) -> None:
+        rids = [rid for rid, box in self._redist_boxes.items()
+                if box.isChecked()]
+        if rids:
+            self.installRedistsRequested.emit(rids)
+
+    def setRedistStatus(self, status: Dict[str, object]) -> None:
+        """Детект «уже стоит»: приписка к подписи чекбокса."""
+        from core.redists import REDISTS
+        for entry in REDISTS:
+            box = self._redist_boxes.get(entry.rid)
+            if box is None:
+                continue
+            base = entry.name_ru if str(ctx().locale()).startswith("ru") \
+                else entry.name_en
+            state = status.get(entry.rid)
+            if state is True:
+                box.setText(f"{base} - {ctx().tr('tweaks.redists_installed')}")
+            elif state is False:
+                box.setText(f"{base} - {ctx().tr('tweaks.redists_missing')}")
+            else:
+                box.setText(base)
+
+    def _configs_section(self) -> QFrame:
+        """Этап 7: конфиги системы - снимок, файл, применение с защитой."""
+        frame = QFrame(self)
+        frame.setObjectName("categoryCard")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(6)
+        layout.addWidget(section(ctx().tr("tweaks.configs_section"), frame))
+        layout.addWidget(hint(ctx().tr("tweaks.configs_hint"), frame))
+
+        self._config_combo = QComboBox(frame)
+        self._config_combo.currentIndexChanged.connect(self._sync_config_buttons)
+        layout.addWidget(self._config_combo)
+
+        row1 = QHBoxLayout()
+        save = QPushButton(ctx().tr("tweaks.configs_save"), frame)
+        save.setMinimumHeight(30)
+        save.clicked.connect(self._ask_config_save)
+        row1.addWidget(save)
+        refresh = QPushButton(ctx().tr("tweaks.configs_refresh"), frame)
+        refresh.setMinimumHeight(30)
+        refresh.clicked.connect(lambda: self.configRefreshRequested.emit())
+        row1.addWidget(refresh)
+        row1.addStretch(1)
+        layout.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        self._config_apply_btn = QPushButton(
+            ctx().tr("tweaks.configs_apply"), frame)
+        self._config_apply_btn.setMinimumHeight(30)
+        self._config_apply_btn.clicked.connect(self._emit_config_apply)
+        row2.addWidget(self._config_apply_btn)
+        self._config_export_btn = QPushButton(
+            ctx().tr("tweaks.configs_export"), frame)
+        self._config_export_btn.setMinimumHeight(30)
+        self._config_export_btn.clicked.connect(self._emit_config_export)
+        row2.addWidget(self._config_export_btn)
+        import_btn = QPushButton(ctx().tr("tweaks.configs_import"), frame)
+        import_btn.setMinimumHeight(30)
+        import_btn.clicked.connect(self._ask_config_import)
+        row2.addWidget(import_btn)
+        self._config_delete_btn = QPushButton(
+            ctx().tr("tweaks.configs_delete"), frame)
+        self._config_delete_btn.setMinimumHeight(30)
+        self._config_delete_btn.clicked.connect(self._emit_config_delete)
+        row2.addWidget(self._config_delete_btn)
+        row2.addStretch(1)
+        layout.addLayout(row2)
+        self._sync_config_buttons()
+        return frame
+
+    def _sync_config_buttons(self, *_args) -> None:
+        has = self._config_combo is not None and self._config_combo.count() > 0
+        for btn in (self._config_apply_btn, self._config_export_btn,
+                    self._config_delete_btn):
+            if btn is not None:
+                btn.setEnabled(bool(has))
+
+    def current_config_name(self) -> str:
+        if self._config_combo is None:
+            return ""
+        return str(self._config_combo.currentData() or "")
+
+    def setConfigs(self, entries: List[Dict[str, object]]) -> None:
+        """Список конфигов профиля в комбобокс; мета - для подтверждения."""
+        self._configs_meta = {str(e["name"]): e for e in entries}
+        current = self.current_config_name()
+        if self._config_combo is None:
+            return
+        self._config_combo.blockSignals(True)
+        self._config_combo.clear()
+        for entry in entries:
+            # Имя живёт в itemData: на экране счётчики, наружу - чистое имя.
+            self._config_combo.addItem(
+                f"{entry['name']}  ({entry['tweaks']} тв / "
+                f"{entry['apps']} пр / {entry['redists']} зав)",
+                str(entry["name"]))
+        names = [str(e["name"]) for e in entries]
+        if current in names:
+            self._config_combo.setCurrentIndex(names.index(current))
+        self._config_combo.blockSignals(False)
+        self._sync_config_buttons()
+
+    def _ask_config_save(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(
+            self, ctx().tr("tweaks.configs_save_title"),
+            ctx().tr("tweaks.configs_save_label"))
+        name = name.strip()
+        if ok and name:
+            self.configSaveRequested.emit(name, "")
+
+    def _ask_config_import(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        path, _ok = QFileDialog.getOpenFileName(
+            self, ctx().tr("tweaks.configs_import"), "",
+            "SWAGcleaner config (*.json);;All files (*)")
+        if path:
+            self.configImportRequested.emit(path)
+
+    def _emit_config_apply(self) -> None:
+        name = self.current_config_name()
+        if name:
+            self.configApplyRequested.emit(name)
+
+    def _emit_config_export(self) -> None:
+        name = self.current_config_name()
+        if name:
+            self.configExportRequested.emit(name)
+
+    def _emit_config_delete(self) -> None:
+        name = self.current_config_name()
+        if name:
+            self.configDeleteRequested.emit(name)
 
     def _activation_section(self) -> QFrame:
         """Активация Windows (HWID), Office (Ohook) и ручной KMS."""

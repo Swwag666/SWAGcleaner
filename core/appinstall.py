@@ -86,6 +86,36 @@ class AppInstaller:
                 "already": already, "rc": rc,
                 "tail": out.strip()[-300:]}
 
+    def installed_ids(self, timeout: int = 180) -> t.Set[str]:
+        """Id пакетов, которые winget видит установленными.
+
+        Парсим таблицу «winget list»: строки после разделителя из тире,
+        id - вторая колонка с точкой в имени. Ошибка/таймаут - пустое
+        множество: снимок конфига тогда просто не включит приложения.
+        """
+        argv = [self._exe(), "list", "--accept-source-agreements",
+                "--disable-interactivity"]
+        try:
+            result = self._runner(argv, capture_output=True, timeout=timeout)
+        except (subprocess.TimeoutExpired, OSError):
+            return set()
+        out = result.stdout or b""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", errors="replace")
+        found: t.Set[str] = set()
+        started = False
+        for line in out.splitlines():
+            if not started:
+                if set(line.strip()) and set(line.strip()) <= {"-"}:
+                    started = True
+                continue
+            parts = line.split()
+            for token in parts:
+                if "." in token and any(c.isalnum() for c in token):
+                    found.add(token)
+                    break
+        return found
+
     def install_many(self, ids: t.Sequence[str],
                      progress: t.Optional[t.Callable[[int, int, str],
                                                      None]] = None,

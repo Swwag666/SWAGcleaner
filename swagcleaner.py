@@ -197,6 +197,47 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="вместе с --tweak-lab: включая медленные (SFC/DISM/compact)",
     )
+    parser.add_argument(
+        "--config-save",
+        type=str,
+        default=None,
+        metavar="ИМЯ",
+        help="снять текущее состояние системы (твики/приложения/зависимости) в конфиг",
+    )
+    parser.add_argument(
+        "--config-list",
+        action="store_true",
+        help="показать конфиги профиля",
+    )
+    parser.add_argument(
+        "--config-apply",
+        type=str,
+        default=None,
+        metavar="ИМЯ",
+        help="применить конфиг поitem'но со снапшотами (CLI = явное подтверждение)",
+    )
+    parser.add_argument(
+        "--config-export",
+        type=str,
+        nargs=2,
+        default=None,
+        metavar=("ИМЯ", "ФАЙЛ"),
+        help="выгрузить конфиг в файл (переживёт переустановку Windows)",
+    )
+    parser.add_argument(
+        "--config-import",
+        type=Path,
+        default=None,
+        metavar="ФАЙЛ",
+        help="принять конфиг из файла с валидацией",
+    )
+    parser.add_argument(
+        "--mft",
+        type=str,
+        default=None,
+        metavar="БУКВА",
+        help="этап 6: снимок тома через $MFT (нужны права администратора)",
+    )
     return parser.parse_args(argv)
 
 
@@ -492,6 +533,89 @@ def main(argv: list[str] | None = None) -> int:
         from core.tweaklab import run_lab
         report = run_lab(args.tweak_lab, include_slow=args.tweak_lab_slow)
         return 0 if not report["failed"] else 1
+
+    if args.config_list:
+        from core import sysconfig
+        for entry in sysconfig.list_configs():
+            print(f"- {entry['name']}: твиков {entry['tweaks']}, "
+                  f"приложений {entry['apps']}, зависимостей {entry['redists']}")
+        return 0
+
+    if args.config_save is not None:
+        from core import redists, sysconfig
+        from core.appinstall import CATALOG, AppInstaller
+        from core.tweaks import TweaksEngine, current_build, load_db
+        from core.backup import BackupStore
+        engine = TweaksEngine(store=BackupStore.disk())
+        tweaks = []
+        for tw in load_db():
+            try:
+                on = engine.status(tw) == "on"
+            except Exception:  # noqa: BLE001 - твик без статуса не берём
+                on = False
+            if on:
+                tweaks.append({"id": tw.id, "params": dict(tw.params or {})})
+        catalog_ids = {a.winget_id for a in CATALOG}
+        apps = sorted(AppInstaller().installed_ids() & catalog_ids)
+        reds = [rid for rid, state in redists.detect_all().items()
+                if state is True]
+        cfg = sysconfig.build_config(args.config_save, tweaks, apps, reds,
+                                     build=current_build())
+        path = sysconfig.save(cfg)
+        print(f"Конфиг «{cfg['name']}»: твиков {len(tweaks)}, "
+              f"приложений {len(apps)}, зависимостей {len(reds)} -> {path}")
+        return 0
+
+    if args.config_apply is not None:
+        from core import redists, sysconfig
+        from core.appinstall import AppInstaller
+        from core.tweaks import TweaksEngine, load_db
+        from core.backup import BackupStore
+        cfg = sysconfig.load(args.config_apply)
+        engine = TweaksEngine(store=BackupStore.disk())
+        by_id = {tw.id: tw for tw in load_db()}
+
+        def apply_tweak(tid, params):
+            engine.apply(by_id[tid], True, params or None)
+            return True
+
+        def install_apps(ids):
+            return AppInstaller().install_many(ids)
+
+        def install_reds(rids):
+            return AppInstaller().install_many(redists.winget_ids(rids))
+
+        report = sysconfig.apply_config(cfg, apply_tweak, install_apps,
+                                        install_reds, known_tweaks=set(by_id))
+        print(f"Конфиг «{cfg['name']}»: применено {report['ok']}, "
+              f"неудач {report['fail']}")
+        for rep in report["tweaks"] + report["apps"] + report["redists"]:
+            if not rep["ok"]:
+                print(f"  - {rep['id']}: {rep.get('error', '?')}")
+        return 0 if not report["fail"] else 1
+
+    if args.config_export is not None:
+        from core import sysconfig
+        name, dest = args.config_export
+        done = sysconfig.export(name, dest)
+        print(f"Выгружено: {done}")
+        return 0
+
+    if args.config_import is not None:
+        from core import sysconfig
+        cfg = sysconfig.import_config(args.config_import)
+        print(f"Принят конфиг «{cfg['name']}»: твиков {len(cfg['tweaks'])}, "
+              f"приложений {len(cfg['apps'])}, зависимостей {len(cfg['redists'])}")
+        return 0
+
+    if args.mft is not None:
+        from core.swagscan import get_client
+        client = get_client()
+        result = client.command("mft", {"drive": args.mft, "top": 10},
+                                timeout_sec=600)
+        import json as _json
+        print(_json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
 
     if args.disk is not None:
         roots = [str(Path(p).resolve()) for p in args.disk] if args.disk else []

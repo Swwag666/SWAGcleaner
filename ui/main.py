@@ -499,6 +499,33 @@ class MainWindow(QMainWindow):
             shut_cancel = getattr(page, "shutdownCancelRequested", None)
             if shut_cancel is not None:
                 shut_cancel.connect(self._ask_shutdown_cancel)
+            # Этап 6: зависимости - установка и детект «уже стоит».
+            redists_install = getattr(page, "installRedistsRequested", None)
+            if redists_install is not None:
+                redists_install.connect(self._ask_install_redists)
+            redists_refresh = getattr(page, "refreshRedistsRequested", None)
+            if redists_refresh is not None:
+                redists_refresh.connect(self._ask_redist_status)
+            # Этап 7: конфиги системы - снятие, применение, файлы.
+            cfg_save = getattr(page, "configSaveRequested", None)
+            if cfg_save is not None:
+                cfg_save.connect(self._ask_config_save)
+            cfg_apply = getattr(page, "configApplyRequested", None)
+            if cfg_apply is not None:
+                cfg_apply.connect(self._ask_config_apply)
+            cfg_export = getattr(page, "configExportRequested", None)
+            if cfg_export is not None:
+                cfg_export.connect(self._on_config_export)
+            cfg_import = getattr(page, "configImportRequested", None)
+            if cfg_import is not None:
+                cfg_import.connect(self._on_config_import)
+            cfg_delete = getattr(page, "configDeleteRequested", None)
+            if cfg_delete is not None:
+                cfg_delete.connect(self._ask_config_delete)
+            cfg_refresh = getattr(page, "configRefreshRequested", None)
+            if cfg_refresh is not None:
+                cfg_refresh.connect(self._refresh_configs)
+                page.setConfigs(self._session.config_list())
             # Настройки AI: сохранение, проверка связи, каталог моделей.
             ai_save = getattr(page, "aiSaveRequested", None)
             if ai_save is not None:
@@ -542,6 +569,14 @@ class MainWindow(QMainWindow):
                 self._finish_ai_test(result, page)
             elif name == "ai_models":
                 self._finish_ai_models(result, page)
+            elif name == "redist_status":
+                self._finish_redist_status(result, page)
+            elif name == "redists_install":
+                self._finish_redists_install(result, page)
+            elif name == "config_save":
+                self._finish_config_save(result, page)
+            elif name == "config_apply":
+                self._finish_config_apply(result, page)
         except Exception:  # noqa: BLE001 - см. docstring
             _LOGGER.exception("обработчик итога задачи упал: %s", name)
             self._work_page = None
@@ -1104,6 +1139,203 @@ class MainWindow(QMainWindow):
                 page.setAiStatus(
                     self._context.tr("settings.ai_models_count").format(
                         count=len(names)))
+
+    # ---------- этап 6: зависимости ----------
+
+    def _ask_redist_status(self) -> None:
+        if self.is_busy():
+            sounds.play("error")
+            return
+        self._work_page = self._current_page()
+        self.set_busy(True)
+        self._session.redist_status_task()
+
+    def _ask_install_redists(self, rids: list) -> None:
+        """Установка зависимостей - с подтверждением списка (миссклики)."""
+        if self.is_busy():
+            sounds.play("error")
+            return
+        from core.redists import entry
+        is_ru = str(self._context.locale()).startswith("ru")
+        items = [entry(r).name_ru if is_ru else entry(r).name_en
+                 for r in rids if r]
+        if not items:
+            return
+        if not ConfirmDialog.ask(
+                self, items,
+                note=self._context.tr("tweaks.redists_confirm_note")):
+            return
+        self._work_page = self._current_page()
+        self.set_busy(True)
+        sounds.play("click")
+        self._session.install_redists(rids)
+
+    def _finish_redist_status(self, result: dict, page: QWidget) -> None:
+        self._work_page = None
+        self.set_busy(False)
+        if page is not None and hasattr(page, "setRedistStatus"):
+            page.setRedistStatus(result.get("status") or {})
+
+    def _finish_redists_install(self, result: dict, page: QWidget) -> None:
+        text = self._context.tr("tweaks.redists_done").format(
+            ok=result.get("ok", 0), total=result.get("total", 0))
+        if page is not None and hasattr(page, "setStatus"):
+            page.setStatus(text)
+        self._assistant.say(text, "idle")
+        sounds.play("done" if result.get("ok", 0) == result.get("total", 0)
+                    else "error")
+        # Сразу пересчитать «уже стоит»: детект дешёвый, картина честная.
+        self._work_page = page
+        self.set_busy(True)
+        self._session.redist_status_task()
+
+    # ---------- этап 7: конфиги системы ----------
+
+    def _refresh_configs(self) -> None:
+        page = self._current_page()
+        if page is not None and hasattr(page, "setConfigs"):
+            page.setConfigs(self._session.config_list())
+
+    def _refresh_configs_on(self, page: QWidget) -> None:
+        if page is not None and hasattr(page, "setConfigs"):
+            page.setConfigs(self._session.config_list())
+
+    def _ask_config_save(self, name: str, note: str) -> None:
+        if self.is_busy():
+            sounds.play("error")
+            return
+        self._work_page = self._current_page()
+        self.set_busy(True)
+        sounds.play("click")
+        self._session.config_save_task(name, note)
+
+    def _finish_config_save(self, result: dict, page: QWidget) -> None:
+        self._work_page = None
+        self.set_busy(False)
+        self._refresh_configs_on(page)
+        text = self._context.tr("tweaks.configs_saved").format(
+            name=result.get("name", ""), tweaks=result.get("tweaks", 0),
+            apps=result.get("apps", 0), redists=result.get("redists", 0))
+        if page is not None and hasattr(page, "setStatus"):
+            page.setStatus(text)
+        self._assistant.say(text, "idle")
+        sounds.play("done")
+
+    def _ask_config_apply(self, name: str) -> None:
+        """Применение конфига - только через подтверждение со всем составом."""
+        if self.is_busy():
+            sounds.play("error")
+            return
+        try:
+            cfg = self._session.config_meta(name)
+        except Exception as exc:  # noqa: BLE001 - битый файл покажем словами
+            page = self._current_page()
+            if page is not None and hasattr(page, "setStatus"):
+                page.setStatus(
+                    self._context.tr("tweaks.configs_import_fail").format(
+                        error=exc))
+            sounds.play("error")
+            return
+        from core.tweaks import load_db
+        risks = {tw.id: tw.risk for tw in load_db()}
+        items = [self._context.tr("tweaks.configs_confirm_counts").format(
+            tweaks=len(cfg["tweaks"]), apps=len(cfg["apps"]),
+            redists=len(cfg["redists"]))]
+        high = [x["id"] for x in cfg["tweaks"]
+                if risks.get(x["id"]) == "high"]
+        if high:
+            items.append(self._context.tr("tweaks.configs_confirm_high").format(
+                count=len(high)))
+            items += [f"- {tid}" for tid in high[:10]]
+        items += [f"- {x['id']}" for x in cfg["tweaks"][:25]]
+        if len(cfg["tweaks"]) > 25:
+            items.append(self._context.tr("tweaks.configs_confirm_more").format(
+                count=len(cfg["tweaks"]) - 25))
+        items += [f"- app: {a}" for a in cfg["apps"][:15]]
+        items += [f"- redist: {r}" for r in cfg["redists"][:15]]
+        if not ConfirmDialog.ask(
+                self, items,
+                note=self._context.tr("tweaks.configs_confirm_note")):
+            return
+        self._work_page = self._current_page()
+        self.set_busy(True)
+        sounds.play("click")
+        self._session.config_apply_task(name)
+
+    def _finish_config_apply(self, result: dict, page: QWidget) -> None:
+        self._work_page = None
+        self.set_busy(False)
+        text = self._context.tr("tweaks.configs_applied").format(
+            name=result.get("name", ""), ok=result.get("ok", 0),
+            fail=result.get("fail", 0))
+        fails = [r for reps in (result.get("tweaks") or [],
+                                result.get("apps") or [],
+                                result.get("redists") or [])
+                 for r in reps if not r.get("ok")]
+        if fails:
+            text += "\n" + "\n".join(
+                f"- {r.get('id')}: {r.get('error', '?')}" for r in fails[:10])
+        if page is not None and hasattr(page, "setStatus"):
+            page.setStatus(text)
+        self._assistant.say(text, "idle")
+        sounds.play("done" if not fails else "error")
+
+    def _on_config_export(self, name: str) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        from core.sysconfig import slug
+        path, _ok = QFileDialog.getSaveFileName(
+            self, self._context.tr("tweaks.configs_export"),
+            f"{slug(name)}.json", "JSON (*.json)")
+        page = self._current_page()
+        if not path:
+            return
+        try:
+            done = self._session.config_export(name, path)
+        except Exception as exc:  # noqa: BLE001 - диск может быть чужим
+            if page is not None and hasattr(page, "setStatus"):
+                page.setStatus(
+                    self._context.tr("tweaks.configs_export_fail").format(
+                        error=exc))
+            sounds.play("error")
+            return
+        if page is not None and hasattr(page, "setStatus"):
+            page.setStatus(self._context.tr("tweaks.configs_exported").format(
+                path=done))
+        sounds.play("done")
+
+    def _on_config_import(self, path: str) -> None:
+        from core.sysconfig import ConfigError
+        page = self._current_page()
+        try:
+            cfg = self._session.config_import(path)
+        except (ConfigError, OSError, ValueError) as exc:
+            if page is not None and hasattr(page, "setStatus"):
+                page.setStatus(
+                    self._context.tr("tweaks.configs_import_fail").format(
+                        error=exc))
+            sounds.play("error")
+            return
+        self._refresh_configs_on(page)
+        if page is not None and hasattr(page, "setStatus"):
+            page.setStatus(self._context.tr("tweaks.configs_imported").format(
+                name=cfg["name"]))
+        sounds.play("done")
+
+    def _ask_config_delete(self, name: str) -> None:
+        if not ConfirmDialog.ask(
+                self,
+                [self._context.tr("tweaks.configs_delete_item").format(
+                    name=name)],
+                note=self._context.tr("tweaks.configs_delete_note")):
+            return
+        done = self._session.config_delete(name)
+        self._refresh_configs()
+        page = self._current_page()
+        if page is not None and hasattr(page, "setStatus"):
+            page.setStatus(
+                self._context.tr("tweaks.configs_deleted" if done
+                                 else "tweaks.configs_delete_fail").format(
+                    name=name))
 
     def _finish_tweaks(self, result: dict, page: QWidget) -> None:
         self._work_page = None

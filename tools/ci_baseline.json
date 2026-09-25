@@ -1,0 +1,12 @@
+{
+  "cargo": {
+    "passed": 56,
+    "failed": 0
+  },
+  "pytest": {
+    "tests": 387,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  }
+}

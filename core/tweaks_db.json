@@ -2982,5 +2982,100 @@
     ],
     "off": [],
     "note": "One-way Apply button (dvr_Click); no off action in source (re-enable would be GameDVR_Enabled=1 / AllowGameDVR=1)."
+  },
+  {
+    "id": "security.disable_defender",
+    "category": "security",
+    "name_en": "Disable Microsoft Defender (policy)",
+    "name_ru": "Отключить Microsoft Defender (политикой)",
+    "risk": "high",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows Defender",
+        "name": "DisableAntiSpyware",
+        "type": "dword",
+        "value": 1
+      },
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Real-Time Protection",
+        "name": "DisableRealtimeMonitoring",
+        "type": "dword",
+        "value": 1
+      }
+    ],
+    "off": [
+      {
+        "op": "delete_value",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows Defender",
+        "name": "DisableAntiSpyware"
+      },
+      {
+        "op": "delete_value",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Real-Time Protection",
+        "name": "DisableRealtimeMonitoring"
+      }
+    ],
+    "note": "Только политики: службы Defender критичные по правилу 8.6 и не трогаются. При включённом Tamper Protection Windows часть политик игнорирует - сначала выключи его в центре безопасности."
+  },
+  {
+    "id": "security.disable_firewall",
+    "category": "security",
+    "name_en": "Disable Windows Firewall (all profiles)",
+    "name_ru": "Отключить брандмауэр Windows (все профили)",
+    "risk": "high",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "cmd",
+        "run": "netsh advfirewall set allprofiles state off"
+      }
+    ],
+    "off": [
+      {
+        "op": "cmd",
+        "run": "netsh advfirewall set allprofiles state on"
+      }
+    ],
+    "note": "netsh из белого списка; обратимо одной кнопкой."
+  },
+  {
+    "id": "security.disable_smartscreen",
+    "category": "security",
+    "name_en": "Disable SmartScreen for apps",
+    "name_ru": "Отключить SmartScreen для приложений",
+    "risk": "medium",
+    "reboot": false,
+    "explorer_restart": false,
+    "min_build": 0,
+    "on": [
+      {
+        "op": "set",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer",
+        "name": "SmartScreenEnabled",
+        "type": "dword",
+        "value": 0
+      }
+    ],
+    "off": [
+      {
+        "op": "delete_value",
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer",
+        "name": "SmartScreenEnabled"
+      }
+    ],
+    "note": ""
   }
 ]
