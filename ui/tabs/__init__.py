@@ -766,6 +766,12 @@ class TweaksTab(EmptyTab):
     disableServiceRequested = Signal(str)      # имя службы
     removeUwpRequested = Signal(str)           # PackageFullName
     applyTweakRequested = Signal(str, bool)    # id твика, включить/выключить
+    applyPresetRequested = Signal(str)         # id пресета
+    installAppsRequested = Signal(list)        # список winget-id
+    activationRequested = Signal(str)          # windows|office|kms:<сервер>
+    gpeditRequested = Signal()
+    shutdownSetRequested = Signal(int)         # минуты
+    shutdownCancelRequested = Signal()
 
     _MAX_SERVICES = 60
     _MAX_UWP = 60
@@ -850,6 +856,7 @@ class TweaksTab(EmptyTab):
         if self._sys_tweaks:
             put(section(ctx().tr("tweaks.sys_section"), self))
             put(hint(ctx().tr("tweaks.sys_hint"), self))
+            put(self._presets_row())
             for cat in self._TWEAK_CATEGORIES:
                 group = [tw for tw in self._sys_tweaks
                          if tw.get("category") == cat]
@@ -858,6 +865,9 @@ class TweaksTab(EmptyTab):
                 put(hint(ctx().tr(f"tweaks.cat_{cat}"), self))
                 for tw in group:
                     put(self._tweak_row(tw))
+            put(self._apps_section())
+            put(self._activation_section())
+            put(self._timer_section())
 
         put(section(ctx().tr("tweaks.startup_section"), self))
         if not self._startup:
@@ -1009,6 +1019,127 @@ class TweaksTab(EmptyTab):
                 lambda _c=False, i=tw_id: self.applyTweakRequested.emit(i, True))
         act.setMinimumHeight(30)
         layout.addWidget(act)
+        return row
+
+    def _presets_row(self) -> QFrame:
+        """Пакеты твиков одной кнопкой: карточка с кнопками пресетов."""
+        from core.tweaks import load_presets
+        row = QFrame(self)
+        row.setObjectName("categoryCard")
+        layout = QVBoxLayout(row)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(6)
+        layout.addWidget(hint(ctx().tr("tweaks.presets_hint"), row))
+        is_ru = str(ctx().locale()).startswith("ru")
+        try:
+            presets = load_presets()
+        except Exception:  # noqa: BLE001 — пресеты не обязаны ломать страницу
+            presets = []
+        for preset in presets:
+            line = QHBoxLayout()
+            name = preset.name_ru if is_ru else preset.name_en
+            btn = button(name, row)
+            btn.setMinimumHeight(30)
+            btn.setToolTip(preset.desc_ru if is_ru else preset.desc_en)
+            btn.clicked.connect(
+                lambda _c=False, pid=preset.id:
+                    self.applyPresetRequested.emit(pid))
+            line.addWidget(btn)
+            line.addWidget(
+                hint(ctx().tr("tweaks.preset_count").format(
+                    count=len(preset.tweaks)), row))
+            line.addStretch(1)
+            layout.addLayout(line)
+        return row
+
+    def _apps_section(self) -> QFrame:
+        """Установка приложений через winget: чекбоксы каталога + кнопка."""
+        from PySide6.QtWidgets import QCheckBox
+        from core.appinstall import CATALOG
+        row = QFrame(self)
+        row.setObjectName("categoryCard")
+        layout = QVBoxLayout(row)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(6)
+        layout.addWidget(section(ctx().tr("tweaks.apps_section"), row))
+        layout.addWidget(hint(ctx().tr("tweaks.apps_hint"), row))
+        self._app_boxes: List[Tuple[str, object]] = []
+        grid = QHBoxLayout()
+        grid.setSpacing(10)
+        columns: List[QVBoxLayout] = []
+        for _ in range(3):
+            col = QVBoxLayout()
+            col.setSpacing(2)
+            columns.append(col)
+            grid.addLayout(col, 1)
+        for i, entry in enumerate(CATALOG):
+            box = QCheckBox(entry.name, row)
+            columns[i % 3].addWidget(box)
+            self._app_boxes.append((entry.winget_id, box))
+        layout.addLayout(grid)
+        install = button(ctx().tr("tweaks.apps_install_button"), row)
+        install.setMinimumHeight(30)
+        install.clicked.connect(self._emit_apps)
+        layout.addWidget(install)
+        return row
+
+    def _emit_apps(self) -> None:
+        ids = [wid for wid, box in self._app_boxes if box.isChecked()]
+        self.installAppsRequested.emit(ids)
+
+    def _activation_section(self) -> QFrame:
+        """Активация Windows (HWID), Office (Ohook) и ручной KMS."""
+        row = QFrame(self)
+        row.setObjectName("categoryCard")
+        layout = QVBoxLayout(row)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(6)
+        layout.addWidget(section(ctx().tr("tweaks.act_section"), row))
+        layout.addWidget(hint(ctx().tr("tweaks.act_hint"), row))
+        line = QHBoxLayout()
+        for key, what in (("tweaks.act_windows", "windows"),
+                          ("tweaks.act_office", "office"),
+                          ("tweaks.act_kms", "kms:kms.digiboy.ir")):
+            btn = button(ctx().tr(key), row)
+            btn.setMinimumHeight(30)
+            btn.clicked.connect(
+                lambda _c=False, w=what: self.activationRequested.emit(w))
+            line.addWidget(btn)
+        gpedit_btn = button(ctx().tr("tweaks.gpedit_button"), row)
+        gpedit_btn.setMinimumHeight(30)
+        gpedit_btn.setToolTip(ctx().tr("tweaks.gpedit_hint"))
+        gpedit_btn.clicked.connect(self.gpeditRequested.emit)
+        line.addWidget(gpedit_btn)
+        line.addStretch(1)
+        layout.addLayout(line)
+        return row
+
+    def _timer_section(self) -> QFrame:
+        """Таймер выключения: минуты + поставить/отменить."""
+        from PySide6.QtWidgets import QSpinBox
+        row = QFrame(self)
+        row.setObjectName("categoryCard")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(10)
+        layout.addWidget(section(ctx().tr("tweaks.timer_section"), row))
+        spin = QSpinBox(row)
+        spin.setRange(1, 1440)
+        spin.setValue(60)
+        spin.setSuffix(" " + ctx().tr("tweaks.timer_minutes"))
+        spin.setMinimumHeight(30)
+        self._shutdown_spin = spin
+        layout.addWidget(spin)
+        set_btn = button(ctx().tr("tweaks.timer_set"), row)
+        set_btn.setMinimumHeight(30)
+        set_btn.clicked.connect(
+            lambda _c=False: self.shutdownSetRequested.emit(spin.value()))
+        layout.addWidget(set_btn)
+        cancel_btn = button(ctx().tr("tweaks.timer_cancel"), row)
+        cancel_btn.setMinimumHeight(30)
+        cancel_btn.clicked.connect(self.shutdownCancelRequested.emit)
+        layout.addWidget(cancel_btn)
+        layout.addStretch(1)
         return row
 
     def _uwp_row(self, pkg) -> QFrame:

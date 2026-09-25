@@ -1,0 +1,47 @@
+[
+  {
+    "id": "privacy",
+    "name_en": "Privacy: cut the telemetry",
+    "name_ru": "Приватность: вырезать телеметрию",
+    "desc_en": "Disables app diagnostics, activity history, performance and keystroke collection, speech updates, Bing in search and SmartScreen.",
+    "desc_ru": "Отключает диагностику приложений, журнал активности, сбор производительности и клавиш, обновления речи, Bing в поиске и SmartScreen.",
+    "tweaks": [
+      "telemetry.app_diagnostics",
+      "telemetry.user_activity",
+      "telemetry.perf_collection",
+      "telemetry.keystroke_collection",
+      "telemetry.speech_updates",
+      "sysrec.disable_bing_search",
+      "sysrec.disable_smartscreen"
+    ]
+  },
+  {
+    "id": "performance",
+    "name_en": "Performance: snappy desktop",
+    "name_ru": "Производительность: отзывчивый рабочий стол",
+    "desc_en": "No transparency, instant menus, no search highlights, no widgets, hibernation off, shorter chkdsk timeout.",
+    "desc_ru": "Без прозрачности, мгновенные меню, без подсветок поиска и виджетов, гибернация выключена, таймаут chkdsk короче.",
+    "tweaks": [
+      "personal.disable_transparency",
+      "contextmenu.remove_menu_delay",
+      "personal.disable_search_highlights",
+      "personal.hide_taskview_widgets",
+      "sysrec.hibernation_off",
+      "sysrec.chkdsk_timeout_60"
+    ]
+  },
+  {
+    "id": "explorer_comfort",
+    "name_en": "Explorer comfort",
+    "name_ru": "Удобный проводник",
+    "desc_en": "File extensions visible, hidden files shown, opens to This PC, no -shortcut suffix, old context menu.",
+    "desc_ru": "Расширения файлов видны, скрытые файлы показаны, открывается в «Этот компьютер», без приставки «-Ярлык», классическое контекстное меню.",
+    "tweaks": [
+      "explorer.file_extensions",
+      "explorer.hidden_files",
+      "explorer.launch_to_this_pc",
+      "explorer.shortcut_suffix",
+      "contextmenu.old_context_menu"
+    ]
+  }
+]

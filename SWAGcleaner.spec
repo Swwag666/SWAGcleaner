@@ -39,6 +39,9 @@ datas = [
     # База системных твиков: без неё страница твиков потеряет секцию «Твики
     # системы» (core/tweaks.py ищет её рядом с собой).
     ("core/tweaks_db.json", "core"),
+    ("core/tweak_presets.json", "core"),
+    # MAS-скрипты активации - вкладываются как есть, запускает core/activation.py
+    ("assets/activation/*.cmd", "assets/activation"),
     ("assets/fonts/Handjet.ttf", "assets/fonts"),
     ("assets/fonts/OFL.txt", "assets/fonts"),
     # Картинки помощницы: каждая поза — отдельный файл. Исходники в

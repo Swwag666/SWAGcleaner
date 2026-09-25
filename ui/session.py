@@ -644,6 +644,146 @@ class Session(QObject):
 
         self._run("tweaks_action", work)
 
+    def apply_preset(self, preset_id: str) -> None:
+        """Применить пакет твиков: каждый со своим снапшотом, отчёт по каждому."""
+
+        def work() -> t.Dict[str, t.Any]:
+            from core.tweaks import TweaksEngine, load_db, load_presets
+
+            engine = TweaksEngine(store=self.backups())
+            presets = {p.id: p for p in load_presets()}
+            preset = presets.get(preset_id)
+            if preset is None:
+                raise ValueError(f"пресет не найден: {preset_id}")
+            results = engine.apply_preset(preset, load_db())
+            ok = sum(1 for r in results if r["ok"])
+            for r in results:
+                self.journal().log("tweak_preset_item", r["id"],
+                                   "ok" if r["ok"] else "fail",
+                                   preset=preset_id,
+                                   snapshot=r.get("snapshot", ""),
+                                   error=r.get("error", ""))
+            return {"action": "preset", "target": preset_id,
+                    "preset_ok": ok, "preset_total": len(results)}
+
+        self._run("tweaks_action", work)
+
+    def hide_drives(self, letters: t.Sequence[str]) -> None:
+        """Скрыть буквы дисков: битмаска → твик explorer.hide_drive_letters."""
+
+        def work() -> t.Dict[str, t.Any]:
+            from core.hidepart import letters_to_mask
+            from core.executor import Executor
+
+            mask = letters_to_mask(letters)
+            executor = Executor(store=self.backups(), journal=self.journal())
+            result = executor.execute_actions([{
+                "type": "tweak_apply",
+                "id": "explorer.hide_drive_letters",
+                "enable": True,
+                "params": {"mask": str(mask)},
+            }])[0]
+            if not result.success:
+                raise RuntimeError(result.message)
+            return {"action": "tweak_apply",
+                    "target": "explorer.hide_drive_letters",
+                    "snapshot": result.snapshot}
+
+        self._run("tweaks_action", work)
+
+    def current_hidden_drives(self) -> t.List[str]:
+        """Какие буквы сейчас скрыты (для диалога). Синхронно, быстро."""
+        try:
+            from core.hidepart import mask_to_letters
+            from core.tweaks import RegistryOps
+            cur = RegistryOps().get_value(
+                "HKCU",
+                r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
+                "NoDrives")
+            if cur is None:
+                return []
+            return mask_to_letters(int(cur[0]))
+        except Exception:  # noqa: BLE001 — диалог откроется с пустым выбором
+            return []
+
+    def schedule_shutdown(self, minutes: int) -> None:
+        """Поставить таймер выключения."""
+
+        def work() -> t.Dict[str, t.Any]:
+            from core.power import ShutdownTimer
+            seconds = ShutdownTimer().schedule(minutes)
+            self.journal().log("shutdown_timer", str(minutes))
+            return {"action": "shutdown_set", "target": str(minutes),
+                    "snapshot": "", "seconds": seconds}
+
+        self._run("tweaks_action", work)
+
+    def cancel_shutdown(self) -> None:
+        """Отменить отложенное выключение."""
+
+        def work() -> t.Dict[str, t.Any]:
+            from core.power import ShutdownTimer
+            ShutdownTimer().cancel()
+            self.journal().log("shutdown_timer_cancel", "")
+            return {"action": "shutdown_cancel", "target": "", "snapshot": ""}
+
+        self._run("tweaks_action", work)
+
+    def install_apps(self, winget_ids: t.Sequence[str]) -> None:
+        """Поставить выбранные приложения через winget (с отменой)."""
+
+        def work() -> t.Dict[str, t.Any]:
+            from core.appinstall import AppInstaller
+            installer = AppInstaller()
+            if not installer.winget_available():
+                raise RuntimeError("winget не найден в системе")
+            results = installer.install_many(list(winget_ids),
+                                             cancel=self._cancel)
+            ok = sum(1 for r in results if r["ok"])
+            self.journal().log("apps_install", ",".join(winget_ids),
+                               extra_ok=ok, total=len(results))
+            return {"action": "apps_install", "target": f"{ok}/{len(results)}",
+                    "snapshot": "", "apps_results": results}
+
+        self._run("tweaks_action", work)
+
+    def activate(self, what: str) -> None:
+        """Активация: windows (HWID) | office (Ohook) | kms:<сервер>."""
+
+        def work() -> t.Dict[str, t.Any]:
+            from core.activation import Activator
+            act = Activator()
+            if what == "windows":
+                res = act.activate_windows()
+            elif what == "office":
+                res = act.activate_office()
+            elif what.startswith("kms:"):
+                res = act.kms_activate(what[4:])
+            else:
+                raise ValueError(f"неизвестный вид активации: {what}")
+            self.journal().log("activation", what,
+                               "ok" if res.get("ok") else "fail",
+                               status=str(res.get("status")))
+            return {"action": "activation",
+                    "target": f"{what}:{res.get('status', '?')}",
+                    "snapshot": "", "activation": res}
+
+        self._run("tweaks_action", work)
+
+    def install_gpedit(self) -> None:
+        """Доустановить редактор групповых политик на Home-редакции."""
+
+        def work() -> t.Dict[str, t.Any]:
+            from core.gpedit import install_gpedit
+            res = install_gpedit()
+            self.journal().log("gpedit", f"{res['ok']}/{res['total']}",
+                               "ok" if not res["failed"] else "fail")
+            return {"action": "gpedit",
+                    "target": f"{res['ok']}/{res['total']}",
+                    "snapshot": "", "gpedit": res}
+
+        self._run("tweaks_action", work)
+
     def restore_backup(self, snapshot: str) -> None:
         """Вернуть из снапшота: запись реестра, файл папки, службу или UWP.
 

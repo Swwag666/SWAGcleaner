@@ -481,6 +481,24 @@ class MainWindow(QMainWindow):
             apply_twk = getattr(page, "applyTweakRequested", None)
             if apply_twk is not None:
                 apply_twk.connect(self._ask_apply_tweak)
+            preset = getattr(page, "applyPresetRequested", None)
+            if preset is not None:
+                preset.connect(self._ask_apply_preset)
+            apps = getattr(page, "installAppsRequested", None)
+            if apps is not None:
+                apps.connect(self._ask_install_apps)
+            act = getattr(page, "activationRequested", None)
+            if act is not None:
+                act.connect(self._ask_activation)
+            gpe = getattr(page, "gpeditRequested", None)
+            if gpe is not None:
+                gpe.connect(self._ask_gpedit)
+            shut_set = getattr(page, "shutdownSetRequested", None)
+            if shut_set is not None:
+                shut_set.connect(self._ask_shutdown_set)
+            shut_cancel = getattr(page, "shutdownCancelRequested", None)
+            if shut_cancel is not None:
+                shut_cancel.connect(self._ask_shutdown_cancel)
 
     def _on_progress_tick(self, percent: int) -> None:
         page = self._work_page
@@ -883,6 +901,10 @@ class MainWindow(QMainWindow):
         if self.is_busy():
             sounds.play("error")
             return
+        # Скрытие букв дисков - через свой диалог: сначала выбор букв.
+        if tweak_id == "explorer.hide_drive_letters" and enable:
+            self._ask_hide_drives()
+            return
         risk = "high" if any(
             tw.get("id") == tweak_id and tw.get("risk") == "high"
             for tw in getattr(self._current_page(), "_sys_tweaks", [])) \
@@ -897,6 +919,122 @@ class MainWindow(QMainWindow):
         self.set_busy(True)
         sounds.play("click")
         self._session.apply_tweak(tweak_id, enable)
+
+    def _ask_hide_drives(self) -> None:
+        """Диалог выбора букв → твик с битмаской → откат через снапшот."""
+        from core.hidepart import present_drives
+        from ui.dialog import HideDrivesDialog
+
+        letters = HideDrivesDialog.ask(self, present_drives(),
+                                       self._session.current_hidden_drives())
+        if letters is None:
+            self._assistant.say(
+                self._context.tr("character.lines.cancelled"), "idle")
+            return
+        self._work_page = self._current_page()
+        self.set_busy(True)
+        sounds.play("click")
+        self._session.hide_drives(letters)
+
+    def _ask_apply_preset(self, preset_id: str) -> None:
+        """Пакет твиков: подтверждение со списком содержимого пакета."""
+        if self.is_busy():
+            sounds.play("error")
+            return
+        from core.tweaks import load_db, load_presets
+        preset = next((p for p in load_presets() if p.id == preset_id), None)
+        if preset is None:
+            return
+        names = {tw.id: (tw.name_ru or tw.name_en) for tw in load_db()}
+        items = [(names.get(tid, tid), "medium") for tid in preset.tweaks]
+        note = self._context.tr("tweaks.confirm_preset_note")
+        if not ConfirmDialog.ask(self, items, note=note):
+            self._assistant.say(
+                self._context.tr("character.lines.cancelled"), "idle")
+            return
+        self._work_page = self._current_page()
+        self.set_busy(True)
+        sounds.play("click")
+        self._session.apply_preset(preset_id)
+
+    def _ask_install_apps(self, winget_ids: list) -> None:
+        """Установка приложений через winget — с подтверждением списка."""
+        if self.is_busy():
+            sounds.play("error")
+            return
+        if not winget_ids:
+            self._assistant.say(
+                self._context.tr("tweaks.apps_none"), "idle")
+            return
+        items = [(wid, "low") for wid in winget_ids]
+        note = self._context.tr("tweaks.confirm_apps_note")
+        if not ConfirmDialog.ask(self, items, note=note):
+            self._assistant.say(
+                self._context.tr("character.lines.cancelled"), "idle")
+            return
+        self._work_page = self._current_page()
+        self.set_busy(True)
+        sounds.play("click")
+        self._session.install_apps(winget_ids)
+
+    def _ask_activation(self, what: str) -> None:
+        """Активация: честное предупреждение, что это сторонний скрипт."""
+        if self.is_busy():
+            sounds.play("error")
+            return
+        items = [(what, "high")]
+        note = self._context.tr("tweaks.confirm_activation_note")
+        if not ConfirmDialog.ask(self, items, note=note):
+            self._assistant.say(
+                self._context.tr("character.lines.cancelled"), "idle")
+            return
+        self._work_page = self._current_page()
+        self.set_busy(True)
+        sounds.play("click")
+        self._session.activate(what)
+
+    def _ask_gpedit(self) -> None:
+        """Доустановка gpedit на Home — долго, честно предупреждаем."""
+        if self.is_busy():
+            sounds.play("error")
+            return
+        items = [("gpedit", "medium")]
+        note = self._context.tr("tweaks.confirm_gpedit_note")
+        if not ConfirmDialog.ask(self, items, note=note):
+            self._assistant.say(
+                self._context.tr("character.lines.cancelled"), "idle")
+            return
+        self._work_page = self._current_page()
+        self.set_busy(True)
+        sounds.play("click")
+        self._session.install_gpedit()
+
+    def _ask_shutdown_set(self, minutes: int) -> None:
+        """Таймер выключения: подтверждение — компьютер реально выключится."""
+        if self.is_busy():
+            sounds.play("error")
+            return
+        items = [(self._context.tr("tweaks.timer_item").format(
+            minutes=minutes), "high")]
+        note = self._context.tr("tweaks.confirm_timer_note")
+        if not ConfirmDialog.ask(self, items, note=note):
+            self._assistant.say(
+                self._context.tr("character.lines.cancelled"), "idle")
+            return
+        self._work_page = self._current_page()
+        self.set_busy(True)
+        sounds.play("click")
+        self._session.schedule_shutdown(minutes)
+
+    def _ask_shutdown_cancel(self) -> None:
+        """Отмена таймера — без подтверждения, это отмена опасного."""
+        if self.is_busy():
+            sounds.play("error")
+            return
+        self._work_page = self._current_page()
+        self.set_busy(True)
+        sounds.play("click")
+        self._session.cancel_shutdown()
 
     def _finish_tweaks(self, result: dict, page: QWidget) -> None:
         self._work_page = None
@@ -922,11 +1060,26 @@ class MainWindow(QMainWindow):
         action = str(result.get("action", ""))
         if action == "tweak_apply":
             key = "tweaks.tweak_status"
+        elif action == "preset":
+            key = "tweaks.preset_status"
+        elif action == "shutdown_set":
+            key = "tweaks.shutdown_set_status"
+        elif action == "shutdown_cancel":
+            key = "tweaks.shutdown_cancel_status"
+        elif action == "apps_install":
+            key = "tweaks.apps_status"
+        elif action == "activation":
+            key = "tweaks.activation_status"
+        elif action == "gpedit":
+            key = "tweaks.gpedit_status"
         else:
             key = ("tweaks.disabled_status"
                    if action.endswith("disable") or action == "uwp_remove"
                    else "tweaks.restored_status")
-        text = self._context.tr(key).format(name=result.get("target", ""))
+        text = self._context.tr(key).format(
+            name=result.get("target", ""),
+            done=result.get("preset_ok", result.get("target", "")),
+            total=result.get("preset_total", ""))
         if page is not None and hasattr(page, "setStatus"):
             page.setStatus(text)
         sounds.play("done")

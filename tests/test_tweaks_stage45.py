@@ -195,7 +195,8 @@ class TestStage45TweaksEngine:
             assert tw.on, f"у {tw.id} пустой on"
             for op in tuple(tw.on) + tuple(tw.off):
                 assert op.get("op") in ("set", "delete_value", "delete_key",
-                                        "create_key", "service", "cmd")
+                                        "create_key", "service", "cmd",
+                                        "delete_glob")
 
 
 class TestStage45ExecutorTweaks:

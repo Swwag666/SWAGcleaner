@@ -16,6 +16,7 @@ delete_value/delete_key/create_key), службы (service), внешние ко
 from __future__ import annotations
 
 import json
+import os
 import logging
 import subprocess
 import typing as t
@@ -29,7 +30,8 @@ _DB_PATH = Path(__file__).resolve().parent / "tweaks_db.json"
 # Команды, которые твикам разрешено запускать (только из этого списка,
 # без shell: строка режется shlex на argv).
 _CMD_WHITELIST = ("bcdedit", "powercfg", "reagentc", "schtasks", "dism",
-                  "sfc", "vssadmin", "netsh", "ipconfig", "control")
+                  "sfc", "vssadmin", "netsh", "ipconfig", "control",
+                  "compact")
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,33 @@ def load_db(path: t.Optional[Path] = None) -> t.List[Tweak]:
             off=tuple(item.get("off", ())),
         ))
     return out
+
+
+@dataclass(frozen=True)
+class TweakPreset:
+    """Пакет твиков одной кнопкой. Каждый твик снапшотится отдельно —
+    пакет не «монолит», откат гранулярный по каждому твику."""
+    id: str
+    name_en: str
+    name_ru: str
+    desc_en: str
+    desc_ru: str
+    tweaks: t.Tuple[str, ...] = ()
+
+
+_PRESETS_PATH = Path(__file__).resolve().parent / "tweak_presets.json"
+
+
+def load_presets(path: t.Optional[Path] = None) -> t.List[TweakPreset]:
+    raw = json.loads((path or _PRESETS_PATH).read_text(encoding="utf-8"))
+    return [TweakPreset(
+        id=str(p["id"]),
+        name_en=str(p.get("name_en", "")),
+        name_ru=str(p.get("name_ru", "")),
+        desc_en=str(p.get("desc_en", "")),
+        desc_ru=str(p.get("desc_ru", "")),
+        tweaks=tuple(str(x) for x in p.get("tweaks", ())),
+    ) for p in raw]
 
 
 def current_build() -> int:
@@ -192,12 +221,14 @@ class TweaksEngine:
                  registry: t.Optional[t.Any] = None,
                  services: t.Optional[t.Any] = None,
                  runner: t.Optional[t.Callable[..., t.Any]] = None,
-                 build: t.Optional[int] = None) -> None:
+                 build: t.Optional[int] = None,
+                 cmd_timeout: int = 300) -> None:
         self._store = store
         self._reg = registry if registry is not None else RegistryOps()
         self._services = services
         self._runner = runner if runner is not None else subprocess.run
         self._build = build if build is not None else current_build()
+        self._cmd_timeout = cmd_timeout
 
     # ---------- чтение ----------
 
@@ -221,10 +252,14 @@ class TweaksEngine:
         for op in ops:
             kind = op.get("op")
             if kind == "set":
+                want = op.get("value")
+                # Параметризованные значения в статусе не участвуют:
+                # маску/имя выбирает пользователь, эталона нет.
+                if isinstance(want, str) and "{" in want:
+                    continue
                 checked += 1
                 cur = self._reg.get_value(str(op["hive"]), str(op["path"]),
                                           str(op["name"]))
-                want = op.get("value")
                 if str(op.get("type", "dword")) == "dword":
                     want = int(want)
                 if cur is None or cur[0] != want:
@@ -276,6 +311,29 @@ class TweaksEngine:
             self._store.remove(snapshot)
             raise
         return snapshot
+
+    def apply_preset(self, preset: TweakPreset, tweaks_db: t.Sequence[Tweak],
+                     ) -> t.List[t.Dict[str, t.Any]]:
+        """Применить пакет: каждый твик со своим снапшотом.
+
+        Провал одного твика не роняет пакет — фиксируем и идём дальше;
+        успевшие примениться откатываются обычной кнопкой «Вернуть».
+        """
+        by_id = {tw.id: tw for tw in tweaks_db}
+        results: t.List[t.Dict[str, t.Any]] = []
+        for tweak_id in preset.tweaks:
+            tw = by_id.get(tweak_id)
+            if tw is None:
+                results.append({"id": tweak_id, "ok": False,
+                                "error": "нет в базе"})
+                continue
+            try:
+                snap = self.apply(tw, True)
+                results.append({"id": tweak_id, "ok": True, "snapshot": snap})
+            except Exception as exc:  # noqa: BLE001 — честный отчёт по каждому
+                results.append({"id": tweak_id, "ok": False,
+                                "error": str(exc)})
+        return results
 
     def restore(self, snapshot: str) -> str:
         """Откат твика по снапшоту прежних значений."""
@@ -345,9 +403,13 @@ class TweaksEngine:
                 if isinstance(value, str):
                     for key, val in params.items():
                         value = value.replace("{" + key + "}", val)
+                type_name = str(op.get("type", "dword"))
+                if type_name == "dword" and not isinstance(value, int):
+                    value = int(str(value), 0)
+                if type_name == "multi_sz" and isinstance(value, str):
+                    value = [v for v in value.split(";") if v]
                 self._reg.set_value(str(op["hive"]), str(op["path"]),
-                                    str(op["name"]), value,
-                                    str(op.get("type", "dword")))
+                                    str(op["name"]), value, type_name)
             elif kind == "delete_value":
                 self._reg.delete_value(str(op["hive"]), str(op["path"]),
                                        str(op["name"]))
@@ -358,6 +420,8 @@ class TweaksEngine:
             elif kind == "service":
                 self._services_ctl().set_start_mode(str(op["name"]),
                                                     str(op["mode"]))
+            elif kind == "delete_glob":
+                self._delete_glob(str(op["path"]))
             elif kind == "cmd":
                 self._run_cmd(str(op["run"]))
             else:
@@ -369,14 +433,39 @@ class TweaksEngine:
             self._services = WindowsServiceController()
         return self._services
 
+    @staticmethod
+    def _delete_glob(pattern: str) -> None:
+        """Удалить файлы по маске (переменные окружения раскрываются).
+
+        Для твиков вида «почистить кэш обновлений»: без cmd.exe, прямо
+        из Python. Только файлы, только внутри одного каталога.
+        """
+        import glob
+        expanded = os.path.expandvars(pattern)
+        for item in glob.glob(expanded):
+            p = Path(item)
+            try:
+                if p.is_file() or p.is_symlink():
+                    p.unlink()
+            except OSError as exc:
+                log.warning("delete_glob: %s: %s", p, exc)
+
     def _run_cmd(self, command: str) -> None:
         import shlex
-        argv = shlex.split(command, posix=False)
+        raw = shlex.split(command, posix=False)
+        # posix=False оставляет кавычки ВНУТРИ токенов (bcdedit и др.
+        # под Windows получают буквальные кавычки и падают) - снимаем.
+        argv = [a[1:-1] if len(a) >= 2 and a.startswith('"')
+                and a.endswith('"') else a for a in raw]
         exe = Path(argv[0]).name.lower().replace(".exe", "")
         if exe not in _CMD_WHITELIST:
             raise ValueError(f"команда твика вне белого списка: {argv[0]}")
-        result = self._runner(argv, capture_output=True, timeout=300)
+        result = self._runner(argv, capture_output=True,
+                              timeout=self._cmd_timeout)
         if result.returncode != 0:
-            err = result.stderr.decode("utf-8", errors="replace")[:200] \
-                if isinstance(result.stderr, bytes) else str(result.stderr)
+            # bcdedit и компания пишут ошибки в stdout, а не stderr.
+            raw = getattr(result, "stderr", None) \
+                or getattr(result, "stdout", None) or b""
+            err = raw.decode("utf-8", errors="replace")[:300] \
+                if isinstance(raw, bytes) else str(raw)
             raise RuntimeError(f"{argv[0]} rc={result.returncode}: {err}")

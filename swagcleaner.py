@@ -185,6 +185,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="не перезапускаться от администратора (отладка)",
     )
+    parser.add_argument(
+        "--tweak-lab",
+        type=Path,
+        default=None,
+        metavar="ОТЧЁТ.json",
+        help="полигон: прогнать все твики базы на живой системе, отчёт в JSON",
+    )
+    parser.add_argument(
+        "--tweak-lab-slow",
+        action="store_true",
+        help="вместе с --tweak-lab: включая медленные (SFC/DISM/compact)",
+    )
     return parser.parse_args(argv)
 
 
@@ -475,6 +487,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.advisor:
         _cli_advisor(installed_provider)
         return 0
+
+    if args.tweak_lab is not None:
+        from core.tweaklab import run_lab
+        report = run_lab(args.tweak_lab, include_slow=args.tweak_lab_slow)
+        return 0 if not report["failed"] else 1
 
     if args.disk is not None:
         roots = [str(Path(p).resolve()) for p in args.disk] if args.disk else []

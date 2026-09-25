@@ -2014,3 +2014,94 @@ class TestStage45TweaksUi:
         page.set_tweaks([], [], [], [], [])
         texts = [w.text() for w in page.findChildren(QLabel)]
         assert not any(ctx().tr("tweaks.sys_section") in x for x in texts)
+
+
+class TestStage47TweaksUi:
+    """Промт №27: пресеты, приложения, активация, таймер на странице твиков."""
+
+    def _page(self) -> TweaksTab:
+        page = TweaksTab()
+        page.set_tweaks([], [], [], [], [
+            {"id": "explorer.file_extensions", "category": "explorer",
+             "name_en": "Show File Extensions",
+             "name_ru": "Показывать расширения файлов", "risk": "low",
+             "reboot": False, "explorer_restart": True, "one_way": False,
+             "params": [], "note": "", "status": "off"}])
+        return page
+
+    def test_presets_row_emits(self, qapp: t.Any) -> None:
+        page = self._page()
+        fired: t.List[str] = []
+        page.applyPresetRequested.connect(lambda pid: fired.append(pid))
+        from core.tweaks import load_presets
+        count = len(load_presets())
+        texts = [getattr(b, "fullText", b.text)()
+                 for b in page.findChildren(QPushButton)]
+        preset_names = {p.name_ru for p in load_presets()}
+        hits = [x for x in texts if x in preset_names]
+        assert len(hits) == count
+        for b in page.findChildren(QPushButton):
+            if getattr(b, "fullText", b.text)() in preset_names:
+                b.click()
+                break
+        assert fired and fired[0] in {p.id for p in load_presets()}
+
+    def test_apps_section_emits_selected(self, qapp: t.Any) -> None:
+        from PySide6.QtWidgets import QCheckBox
+        page = self._page()
+        fired: t.List[list] = []
+        page.installAppsRequested.connect(lambda ids: fired.append(ids))
+        boxes = page.findChildren(QCheckBox)
+        assert len(boxes) >= 10
+        boxes[0].setChecked(True)
+        boxes[2].setChecked(True)
+        btn = [b for b in page.findChildren(QPushButton)
+               if getattr(b, "fullText", b.text)() ==
+               ctx().tr("tweaks.apps_install_button")][0]
+        btn.click()
+        assert len(fired) == 1 and len(fired[0]) == 2
+
+    def test_activation_buttons_emit(self, qapp: t.Any) -> None:
+        page = self._page()
+        fired: t.List[str] = []
+        page.activationRequested.connect(lambda w: fired.append(w))
+        btn = [b for b in page.findChildren(QPushButton)
+               if getattr(b, "fullText", b.text)() ==
+               ctx().tr("tweaks.act_windows")][0]
+        btn.click()
+        assert fired == ["windows"]
+
+    def test_timer_emits_minutes(self, qapp: t.Any) -> None:
+        from PySide6.QtWidgets import QSpinBox
+        page = self._page()
+        fired: t.List[int] = []
+        page.shutdownSetRequested.connect(lambda m: fired.append(m))
+        spin = page.findChildren(QSpinBox)[0]
+        spin.setValue(45)
+        btn = [b for b in page.findChildren(QPushButton)
+               if getattr(b, "fullText", b.text)() ==
+               ctx().tr("tweaks.timer_set")][0]
+        btn.click()
+        assert fired == [45]
+
+    def test_gpedit_button_emits(self, qapp: t.Any) -> None:
+        page = self._page()
+        fired: t.List[bool] = []
+        page.gpeditRequested.connect(lambda: fired.append(True))
+        btn = [b for b in page.findChildren(QPushButton)
+               if getattr(b, "fullText", b.text)() ==
+               ctx().tr("tweaks.gpedit_button")][0]
+        btn.click()
+        assert fired == [True]
+
+    def test_hide_drives_dialog(self, qapp: t.Any) -> None:
+        from PySide6.QtWidgets import QCheckBox
+        from ui.dialog import HideDrivesDialog
+        dlg = HideDrivesDialog(None, ["D", "E", "F"], ["E"])
+        boxes = dlg.findChildren(QCheckBox)
+        assert [b.text() for b in boxes] == ["D:", "E:", "F:"]
+        assert boxes[1].isChecked()
+        boxes[2].setChecked(True)
+        assert dlg.letters() == ["E", "F"]
+        dlg.deleteLater()
+

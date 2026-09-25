@@ -303,3 +303,54 @@ class ConfirmDialog(QDialog):
             return dialog.exec() == QDialog.DialogCode.Accepted
         finally:
             dialog.deleteLater()
+
+
+class HideDrivesDialog(QDialog):
+    """Выбор букв дисков для скрытия: чекбоксы по существующим дискам.
+
+    B и C не предлагаются (системный и исторический флоппи — прятать их
+    себе дороже). Возвращает список букв или None при отмене.
+    """
+
+    def __init__(self, parent: QWidget | None, drives: Sequence[str],
+                 current: Sequence[str]) -> None:
+        super().__init__(parent)
+        from PySide6.QtWidgets import QCheckBox, QGridLayout
+        self.setModal(True)
+        self.setWindowTitle(ctx().tr("tweaks.hidepart_title"))
+        layout = QVBoxLayout(self)
+        note = QLabel(ctx().tr("tweaks.hidepart_note"), self)
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        grid = QGridLayout()
+        self._boxes: List[Tuple[str, object]] = []
+        for i, letter in enumerate(drives):
+            box = QCheckBox(f"{letter}:", self)
+            box.setChecked(letter in current)
+            grid.addWidget(box, i // 4, i % 4)
+            self._boxes.append((letter, box))
+        layout.addLayout(grid)
+        if not drives:
+            layout.addWidget(QLabel(ctx().tr("tweaks.hidepart_empty"), self))
+        buttons = QHBoxLayout()
+        ok = QPushButton(ctx().tr("tweaks.hidepart_apply"), self)
+        ok.clicked.connect(self.accept)
+        cancel = QPushButton(ctx().tr("confirm.cancel"), self)
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(ok)
+        buttons.addWidget(cancel)
+        layout.addLayout(buttons)
+
+    def letters(self) -> List[str]:
+        return [letter for letter, box in self._boxes if box.isChecked()]
+
+    @staticmethod
+    def ask(parent: QWidget | None, drives: Sequence[str],
+            current: Sequence[str]) -> Optional[List[str]]:
+        dialog = HideDrivesDialog(parent, drives, current)
+        try:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                return dialog.letters()
+            return None
+        finally:
+            dialog.deleteLater()
