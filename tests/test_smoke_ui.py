@@ -486,8 +486,19 @@ class TestSceneStack:
 
 
 class TestSidebar:
-    def test_collapsed_state_shows_icons_only(self, win: t.Any) -> None:
+    def test_collapsed_state_shows_icons_only(self, win: t.Any, monkeypatch: t.Any) -> None:
         sidebar = win._sidebar
+        # Под offscreen-плагином виртуальный курсор стоит в (0,0), то есть ровно
+        # на сайдбаре. window.show() в фикстуре и последующая смена геометрии от
+        # collapse() оба доставляют сайдбару enterEvent, а тот по замыслу зовёт
+        # expand() (ui/sidebar.py). В итоге меню разворачивается обратно прямо
+        # во время QTest.qWait, и проверка свёрнутого состояния падает.
+        # Глушим именно expand(), а не enterEvent: shiboken кэширует
+        # переопределения виртуальных методов в момент создания C++-объекта,
+        # поэтому подмена enterEvent на классе до уже живого экземпляра не доходит.
+        # expand() - обычный метод Python, enterEvent зовёт его через self, и
+        # такая подмена перехватывается честно. На продукт не влияет.
+        monkeypatch.setattr(Sidebar, "expand", lambda self: None)
         sidebar.collapse()
         QTest.qWait(Sidebar.ANIMATION_MS + 120)
         assert not sidebar.is_expanded()
