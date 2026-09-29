@@ -407,7 +407,7 @@ def _self_test() -> int:
         from ui.character import available_moods, available_talk_frames, demo_moods
         from ui.context import init_context
         from ui.dialog import ConfirmDialog
-        from ui.main import MainWindow
+        from ui.main import PAGES, MainWindow
         from ui.theme import pixel_font_available
 
         app = QApplication([])
@@ -463,11 +463,14 @@ def _self_test() -> int:
             code = 1
         window.set_busy(False)
 
-        if page_count != 5:
-            lines.append(f"ОШИБКА: ожидалось 5 страниц, получилось {page_count}")
+        # Число разделов берём из PAGES, а не из константы: иначе проверка
+        # молча протухает каждый раз, когда добавляется новая вкладка.
+        expected = len(PAGES)
+        if page_count != expected:
+            lines.append(f"ОШИБКА: ожидалось {expected} страниц, получилось {page_count}")
             code = 1
-        if nav_count != 5:
-            lines.append(f"ОШИБКА: ожидалось 5 пунктов меню, получилось {nav_count}")
+        if nav_count != expected:
+            lines.append(f"ОШИБКА: ожидалось {expected} пунктов меню, получилось {nav_count}")
             code = 1
         if advisor == "tabs.advisor":
             lines.append("ОШИБКА: строки локализации не загрузились")
