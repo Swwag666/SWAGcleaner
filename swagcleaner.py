@@ -253,7 +253,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _version() -> str:
-    return "0.2.0"
+    return "1.0.0"
 
 
 def _cli_scan(installed_provider):
