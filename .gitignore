@@ -16,3 +16,7 @@ nest/
 probe-*/
 py-probe-*/
 root700again/
+# верификационная сборка без UAC, делает start-build.bat --verify
+build_verify/
+dist_verify/
+SWAGcleaner-verify.spec
