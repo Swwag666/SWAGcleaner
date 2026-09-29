@@ -79,10 +79,74 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     # Лишние тяжёлые модули в сборке не нужны.
-    excludes=["tkinter", "unittest", "pydoc_data", "sqlite3"],
+    excludes=[
+        "tkinter", "unittest", "pydoc_data", "sqlite3",
+        # Тестовый стек приезжает транзитом: numpy.testing тянет pytest, а тот
+        # за собой pygments. В рантайме приложения им делать нечего, но без
+        # явного исключения они ложатся в PYZ сотнями модулей.
+        "pytest", "_pytest", "py", "pygments",
+        # Приложение целиком живёт на QtCore/QtGui/QtWidgets — ни одного
+        # обращения к QML, Quick, PDF, OpenGL, мультимедиа, 3D, графикам,
+        # геолокации и Bluetooth в исходниках нет.
+        "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtQuickWidgets",
+        "PySide6.QtQuickControls2", "PySide6.QtPdf", "PySide6.QtPdfWidgets",
+        "PySide6.QtOpenGL", "PySide6.QtOpenGLWidgets", "PySide6.QtOpenGLWindow",
+        "PySide6.QtMultimedia", "PySide6.QtMultimediaWidgets",
+        "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
+        "PySide6.QtWebEngineQuick", "PySide6.QtWebChannel",
+        "PySide6.QtWebSockets", "PySide6.QtHttpServer", "PySide6.QtCharts",
+        "PySide6.QtDataVisualization", "PySide6.QtGraphs",
+        "PySide6.QtGraphsWidgets", "PySide6.Qt3DCore", "PySide6.Qt3DRender",
+        "PySide6.Qt3DInput", "PySide6.Qt3DLogic", "PySide6.Qt3DAnimation",
+        "PySide6.Qt3DExtras", "PySide6.QtPositioning", "PySide6.QtLocation",
+        "PySide6.QtSensors", "PySide6.QtSerialPort", "PySide6.QtSerialBus",
+        "PySide6.QtBluetooth", "PySide6.QtNfc", "PySide6.QtRemoteObjects",
+        "PySide6.QtScxml", "PySide6.QtStateMachine", "PySide6.QtTextToSpeech",
+        "PySide6.QtSpatialAudio", "PySide6.QtTest", "PySide6.QtUiTools",
+        "PySide6.QtVirtualKeyboard",
+    ],
     noarchive=False,
     optimize=0,
 )
+
+# Хук PySide6 тащит DLL за плагинами, которые сами по себе весят копейки, но
+# подтягивают тяжёлые библиотеки. Вырезаем эти листья вместе с их грузом:
+#   qtvirtualkeyboardplugin -> Qt6VirtualKeyboard -> Qt6Quick + Qt6Qml (+Models,
+#       Meta, WorkerScript)                          ~13 МБ
+#   imageformats\qpdf       -> Qt6Pdf                ~4,5 МБ
+#   opengl32sw.dll — программный бэкенд OpenGL, Widgets-приложение рисует
+#       через raster и он ему не нужен               ~19,7 МБ
+#   qdirect2d.dll — запасная платформенная библиотека рядом с qwindows.dll
+#   _avif — AVIF-кодек Pillow; в приложении только PNG/JPEG
+# qoffscreen.dll и qminimal.dll НЕ трогаем: на offscreen работает --self-test.
+_DROP_SUBSTR = (
+    "opengl32sw.dll",
+    "qdirect2d.dll",
+    "qtvirtualkeyboardplugin.dll",
+    "qt6virtualkeyboard.dll",
+    "qt6quick.dll",
+    "qt6qml.dll",
+    "qt6qmlmodels.dll",
+    "qt6qmlmeta.dll",
+    "qt6qmlworkerscript.dll",
+    "qt6qmlintegration.dll",
+    "imageformats\\qpdf.dll",
+    "qt6pdf.dll",
+    "_avif.",
+)
+
+
+def _keep(entry) -> bool:
+    dest = str(entry[0]).lower().replace("/", "\\")
+    return not any(needle in dest for needle in _DROP_SUBSTR)
+
+
+_dropped = [str(b[0]) for b in a.binaries if not _keep(b)]
+a.binaries = [b for b in a.binaries if _keep(b)]
+if _dropped:
+    print(f"[spec] вырезано тяжёлых бинарников: {len(_dropped)}")
+    for _name in _dropped:
+        print(f"[spec]   - {_name}")
 
 pyz = PYZ(a.pure)
 
