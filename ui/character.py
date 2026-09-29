@@ -19,14 +19,21 @@ import math
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from PySide6.QtCore import QElapsedTimer, QObject, QRect, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QPainter, QPixmap
+from PySide6.QtCore import QElapsedTimer, QObject, QPoint, QRect, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPainter, QPixmap, QPolygon
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from ui.context import ctx
 
 # Картинки персонажа лежат рядом с проектом: assets/character.
+# В «числовой» теме свой протагонист: assets/character/num.
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets" / "character"
+
+
+def _dir_for_theme(theme: Optional[str] = None) -> Path:
+    """Каталог артов под тему: числовая -> num, иначе базовая Клинни."""
+    theme = theme if theme is not None else ctx().theme()
+    return ASSETS_DIR / "num" if theme == "num" else ASSETS_DIR
 
 # Настроения персонажа. Порядок важен: по нему листается демо-режим.
 MOODS: Tuple[str, ...] = ("idle", "scan", "think", "calm", "panic")
@@ -52,52 +59,59 @@ TALK_SUFFIXES: Tuple[str, ...] = ("closed", "half", "open")
 TALK_FPS = 9.0
 
 
-def pose_path(mood: str) -> Optional[Path]:
+def pose_path(mood: str, theme: Optional[str] = None) -> Optional[Path]:
     """Файл картинки для настроения (с откатом) или None, если ничего нет."""
+    directory = _dir_for_theme(theme)
     for name in MOOD_FILES.get(mood, ()):
-        path = ASSETS_DIR / name
+        path = directory / name
         if path.is_file():
             return path
     return None
 
 
-def talk_frame_paths(mood: str) -> List[Path]:
+def talk_frame_paths(mood: str, theme: Optional[str] = None) -> List[Path]:
     """Кадры речи для настроения: сначала свои у позы, потом общие.
 
     Своих кадров нужно хотя бы два: один кадр — это не анимация, а статика.
     """
-    pose = pose_path(mood)
+    directory = _dir_for_theme(theme)
+    pose = pose_path(mood, theme)
     if pose is not None:
-        own = [ASSETS_DIR / f"{pose.stem}-talk-{suffix}.png" for suffix in TALK_SUFFIXES]
+        own = [directory / f"{pose.stem}-talk-{suffix}.png" for suffix in TALK_SUFFIXES]
         own = [path for path in own if path.is_file()]
         if len(own) >= 2:
             return own
-    generic = [ASSETS_DIR / f"talk-{suffix}.png" for suffix in TALK_SUFFIXES]
+    generic = [directory / f"talk-{suffix}.png" for suffix in TALK_SUFFIXES]
     return [path for path in generic if path.is_file()]
 
 
-def demo_moods() -> List[str]:
+def demo_moods(theme: Optional[str] = None) -> List[str]:
     """Настроения со своей картинкой (не откат на чужую).
 
     Нужно для демонстрации поз по F2: показывать по кругу одно и то же
     изображение трижды подряд смысла нет. Как только появится отдельный арт
     (idle.png, think.png), он попадёт в список сам — код менять не придётся.
     """
-    return [mood for mood in MOODS if (ASSETS_DIR / f"{mood}.png").is_file()]
+    directory = _dir_for_theme(theme)
+    return [mood for mood in MOODS if (directory / f"{mood}.png").is_file()]
 
 
-def available_moods() -> Dict[str, Optional[Path]]:
+def available_moods(theme: Optional[str] = None) -> Dict[str, Optional[Path]]:
     """Какие настроения реально есть в сборке — для самопроверки и тестов."""
-    return {mood: pose_path(mood) for mood in MOODS}
+    return {mood: pose_path(mood, theme) for mood in MOODS}
 
 
-def available_talk_frames() -> Dict[str, int]:
+def available_talk_frames(theme: Optional[str] = None) -> Dict[str, int]:
     """Сколько кадров речи нашлось для каждого настроения."""
-    return {mood: len(talk_frame_paths(mood)) for mood in MOODS}
+    return {mood: len(talk_frame_paths(mood, theme)) for mood in MOODS}
 
 
 class Mascot(QWidget):
     """Спрайт персонажа: рисует позу и чуть-чуть двигается, чтобы не быть фото."""
+
+    # Настроение сменилось: окно слушает, чтобы обновить оверлей Клинни
+    # на экране, когда в свёрнутом режиме ей тесно в колонке.
+    moodChanged = Signal(str)
 
     TICK_MS = 70
     # Выезд снизу при смене вкладки: медленный подъём в стиле ВН. Тикает своим
@@ -120,6 +134,7 @@ class Mascot(QWidget):
         self._enter_timer.timeout.connect(self._enter_tick)
         self._cache: Dict[str, Optional[QPixmap]] = {}
         self._talk_frames: Optional[List[QPixmap]] = None
+        self._scaled_cache: Dict[Tuple[int, int, int], QPixmap] = {}
         # Минимальная ширина нулевая: колонку персонажа сворачивает окно,
         # когда помощницу скрывают.
         self.setMinimumSize(QSize(0, 160))
@@ -143,6 +158,7 @@ class Mascot(QWidget):
         # Кадры речи у каждой позы свои, поэтому кэш сбрасываем.
         self._talk_frames = None
         self.update()
+        self.moodChanged.emit(normalised)
 
     def is_speaking(self) -> bool:
         return self._speaking
@@ -164,6 +180,7 @@ class Mascot(QWidget):
         """Забыть загруженные картинки (после замены файлов на диске)."""
         self._cache.clear()
         self._talk_frames = None
+        self._scaled_cache.clear()
 
     def _load_talk_frames(self) -> None:
         if self._talk_frames is not None:
@@ -184,6 +201,26 @@ class Mascot(QWidget):
                 pixmap = candidate if not candidate.isNull() else None
             self._cache[self._mood] = pixmap
         return self._cache[self._mood]
+
+    def _scaled_pixmap(self, pixmap: QPixmap, width: int, height: int) -> QPixmap:
+        """Ужатая копия позы под текущий размер окна (кешируется).
+
+        Детальный арт (тысяча пикселей) сужается до нескольких сотен: честнее
+        один раз ужать сглаживанием, чем каждый кадр тянуть билинейно.
+        """
+        key = (pixmap.cacheKey(), width, height)
+        cached = self._scaled_cache.get(key)
+        if cached is not None:
+            return cached
+        if len(self._scaled_cache) > 32:
+            self._scaled_cache.clear()
+        scaled = pixmap.scaled(
+            width, height,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._scaled_cache[key] = scaled
+        return scaled
 
     # ---------- анимация ----------
 
@@ -278,15 +315,55 @@ class Mascot(QWidget):
             painter.end()
             return
 
+        # Пол под ногами: мягкая тень, чтобы персонаж не парил над панелью.
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 64))
+        shadow_w = max(40, int(self.width() * 0.46))
+        shadow_h = max(6, int(shadow_w * 0.14))
+        painter.drawEllipse(QRect(
+            (self.width() - shadow_w) // 2,
+            self.height() - shadow_h - 2,
+            shadow_w,
+            shadow_h,
+        ))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
         offset_x, offset_y, zoom = self._motion()
-        scale = min(self.width() / pixmap.width(), self.height() / pixmap.height()) * zoom
-        width = max(1, int(pixmap.width() * scale))
-        height = max(1, int(pixmap.height() * scale))
+        base = min(self.width() / pixmap.width(), self.height() / pixmap.height())
+        base_w = max(1, int(pixmap.width() * base))
+        base_h = max(1, int(pixmap.height() * base))
+        pixmap = self._scaled_pixmap(pixmap, base_w, base_h)
+        width = max(1, int(pixmap.width() * zoom))
+        height = max(1, int(pixmap.height() * zoom))
         x = int((self.width() - width) / 2 + offset_x)
         # Ноги стоят на нижней границе: персонаж «стоит» на панели реплики.
         y = int(self.height() - height + offset_y)
         painter.drawPixmap(QRect(x, y, width, height), pixmap)
+        if self._mood == "panic" and ctx().motion() == "playful":
+            self._draw_glitch(painter, x, y, width, height)
         painter.end()
+
+    def _draw_glitch(self, painter: QPainter, x: int, y: int,
+                     width: int, height: int) -> None:
+        """CRT-сбой поверх спрайта: рваные полосы при панике.
+
+        Только в режиме «игриво»: в «сдержанно» персонаж просто дрожит.
+        """
+        from ui.theme import palette
+
+        accent = QColor(palette(ctx().theme(), ctx().accent()).get(
+            "accent", "#4d8dff"))
+        accent.setAlpha(80)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(accent)
+        band = max(2, height // 90)
+        for i in range(3):
+            pos = (int(self._phase * 53) + i * (height // 3)) % max(1, height - band)
+            painter.drawRect(x, y + pos, width, band)
+        tear = max(2, height // 60)
+        at = (int(self._phase * 31) + height // 2) % max(1, height - tear)
+        painter.drawRect(x + int(math.sin(self._phase * 7) * 6), y + at,
+                         max(0, width - 8), tear)
 
     # ---------- жизненный цикл ----------
 
@@ -304,6 +381,9 @@ class SpeechBox(QFrame):
 
     advanced = Signal()
     typingChanged = Signal(bool)
+    # Новая реплика началась: окно слушает это, чтобы в свёрнутом режиме
+    # продублировать текст оверлеем поверх экрана.
+    said = Signal(str)
 
     TYPE_MS = 24
     BLINK_MS = 480
@@ -369,6 +449,8 @@ class SpeechBox(QFrame):
         self._shown = 0
         self._blink_timer.stop()
         self._caret.setVisible(False)
+        if self._full:
+            self.said.emit(self._full)
         self._text.setText("")
         if not self._full:
             self._set_typing(False)
@@ -428,6 +510,28 @@ class SpeechBox(QFrame):
     def mousePressEvent(self, event) -> None:  # noqa: ANN001
         self.advance()
         super().mousePressEvent(event)
+
+    def paintEvent(self, event) -> None:  # noqa: ANN001
+        """Хвостик реплики: маленький акцентный язычок на верхней кромке.
+
+        Он стоит справа — туда, где над панелью живёт персонаж, и связывает
+        её реплику с самой Клинни, а не с пустой полосой внизу окна.
+        """
+        super().paintEvent(event)
+        from ui import theme as _theme
+
+        accent = QColor(_theme.palette(ctx().theme(), ctx().accent()).get("accent", "#4d8dff"))
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(accent)
+        x = self.width() - 24
+        painter.drawPolygon(QPolygon([
+            QPoint(x - 7, 7),
+            QPoint(x + 7, 7),
+            QPoint(x, 0),
+        ]))
+        painter.end()
 
     def retranslate(self) -> None:
         """Перевести подписи панели (имя персонажа, подсказка)."""

@@ -24,7 +24,8 @@
     "cleaner": "Cleaner",
     "dedup": "Photo Duplicates",
     "tweaks": "Tweaks",
-    "settings": "Settings"
+    "settings": "Settings",
+    "storage": "Storage"
   },
   "advisor": {
     "title": "System Advisor",
@@ -51,8 +52,20 @@
     "reason_placeholder": "Explanation will appear here",
     "ai_note": "The model adds:"
   },
+  "hero": {
+    "title": "How your machine is doing",
+    "last_scan": "Last scan",
+    "junk": "Junk found",
+    "freed": "Freed in total",
+    "score": "Cleanliness",
+    "never": "never scanned",
+    "tile_cleaner": "Clean up",
+    "tile_tweaks": "Tweaks and configs",
+    "tile_settings": "Settings"
+  },
   "cleaner": {
     "title": "Cleaner",
+    "preview_title": "Last scan: usual junk spots",
     "scan_button": "Find temp files",
     "scan_hint": "Looks for temp files, caches, and junk",
     "choose_hint": "After the scan, tick the categories — only the selected ones get deleted.",
@@ -94,6 +107,12 @@
   },
   "tweaks": {
     "title": "Tweaks",
+    "search_placeholder": "Search tweaks by name...",
+    "filter_risk_all": "Risk: any",
+    "search_empty": "Nothing matched the filter",
+    "acc_tools": "Apps, dependencies, activation, timer",
+    "configs_empty": "No configs yet - save your first one",
+    "configs_meta": "{tweaks} tweaks / {apps} apps / {redists} redists",
     "subtitle": "Startup items and services — we read, we show, we change only with your word",
     "startup_section": "Startup",
     "services_section": "Services",
@@ -232,7 +251,9 @@
     "hint": "Scan again — let's see what grew back."
   },
   "sidebar": {
-    "caption": "SECTIONS"
+    "caption": "SECTIONS",
+    "admin": "ADMIN",
+    "user": "USER"
   },
   "confirm": {
     "title": "Here is exactly what will be done",
@@ -264,6 +285,7 @@
       "dedup": "Photo duplicates mean the same picture in three copies. I'll find them and keep one.",
       "tweaks": "Startup and services — easy there: I don't switch anything off without your word.",
       "settings": "Theme, language, font — here we can take a breath. Phew.",
+      "storage": "Here's a map of where the space went. Now you can see what to tidy first.",
       "scan": "Going down the list: programs, services, startup items…",
       "clean": "Found some mess. Have a look at the list — I touch nothing without you.",
       "calm": "Phew. Almost clean in here — but no slacking, there is still work to do.",
@@ -272,11 +294,24 @@
     }
   },
   "settings": {
+    "acc_appearance": "Appearance and sounds",
+    "acc_ai": "AI assistant",
     "title": "Settings",
     "language_label": "Interface language",
     "theme_label": "Theme",
+    "theme_system": "Follow system",
     "theme_dark": "Dark",
     "theme_light": "Light",
+    "theme_mono": "Monochrome",
+    "theme_num": "Numeric",
+    "accent_label": "Accent",
+    "accent_blue": "Blue",
+    "accent_violet": "Violet",
+    "accent_emerald": "Emerald",
+    "motion_label": "Motion",
+    "motion_playful": "Playful",
+    "motion_restrained": "Restrained",
+    "motion_note": "Playful - particles, glitch and a lively mascot. Restrained - only smooth transitions.",
     "font_label": "Interface font",
     "font_pixel": "Pixel",
     "font_default": "Default",
@@ -311,6 +346,14 @@
     "ai_models_count": "Models in catalog: {count}.",
     "ai_saved": "AI settings saved.",
     "ai_save_fail": "AI settings did not save: no write access to the profile folder."
+  },
+  "storage": {
+    "title": "Where the space went",
+    "subtitle": "What junk looks like and how much it weighs",
+    "description": "Junk broken down by category - from your last scan.",
+    "card_title": "Junk by category",
+    "hint": "Run a scan in Advisor or Cleaner and the map appears here.",
+    "empty": "Nothing to show yet: run a scan to see where the space went."
   },
   "status": {
     "ready": "Ready",

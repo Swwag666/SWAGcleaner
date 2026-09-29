@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -32,8 +32,25 @@ from PySide6.QtWidgets import (
 
 from ui.context import ctx
 from ui.session import human_size
-from ui.theme import body, button, card, divider, heading, hint, section, spacer, subheading
-from ui.widgets import StatsRow
+from ui.theme import (
+    Accordion,
+    ConfigCard,
+    HeroCard,
+    ShimmerProgress,
+    body,
+    button,
+    card,
+    chip,
+    divider,
+    fix_wrap_labels,
+    heading,
+    hint,
+    risk_badge,
+    section,
+    spacer,
+    subheading,
+)
+from ui.widgets import StatsRow, StorageBar, StorageRow, TreemapWidget
 
 
 class EmptyTab(QWidget):
@@ -51,7 +68,22 @@ class EmptyTab(QWidget):
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(28, 24, 28, 22)
         self._layout.setSpacing(6)
+        # Пересчёт минимумов скролл-хостов дорогой (сотни виджетов), а
+        # resizeEvent при перетаскивании рамки сыплет каждые 16мс:
+        # дебаунс таймером вместо singleShot на каждый чих.
+        self._layout_sync = QTimer(self)
+        self._layout_sync.setSingleShot(True)
+        self._layout_sync.setInterval(120)
+        self._layout_sync.timeout.connect(self.sync_layout)
         self._build()
+
+    def schedule_layout_sync(self) -> None:
+        """Отложить пересчёт раскладки: серия ресайзов платит один раз."""
+        if not self._layout_sync.isActive():
+            self._layout_sync.start()
+
+    def sync_layout(self) -> None:
+        """Пересчитать минимумы скролл-хостов (переопределяют подклассы)."""
 
     # ---------- сборка ----------
 
@@ -100,7 +132,7 @@ class EmptyTab(QWidget):
             self._layout.addWidget(self._stats)
             self._layout.addWidget(spacer(6))
 
-        self._progress = QProgressBar(self)
+        self._progress = ShimmerProgress(self)
         self._progress.setTextVisible(True)
         self._progress.setFixedHeight(18)
         self._progress.setVisible(False)
@@ -185,19 +217,62 @@ class EmptyTab(QWidget):
 
 
 class AdvisorTab(EmptyTab):
-    """Советник: скан → план → подтверждение пользователя."""
+    """Советник: скан → план → подтверждение пользователя.
+
+    Сверху живёт hero-карточка: состояние машины (когда сканировали,
+    сколько мусора, сколько освобождено за всё время) и плитки быстрых
+    действий - главный экран должен отвечать на вопрос «что у меня»
+    до всяких кнопок.
+    """
 
     scanRequested = Signal()
     applyRequested = Signal()
+    navigateRequested = Signal(int)    # индекс страницы для плиток hero
+
+    _HERO_TILES = (("hero.tile_cleaner", 1), ("hero.tile_tweaks", 3),
+                   ("hero.tile_settings", 4))
 
     def __init__(self, parent: QWidget | None = None) -> None:
         self._status_label: Optional[QLabel] = None
         self._plan_area: Optional[QLabel] = None
+        self._hero: Optional[HeroCard] = None
+        self._hero_tiles: List[Tuple[object, str]] = []
+        self._scroll: Optional[QScrollArea] = None
         super().__init__(parent)
 
+    def _result_expands(self) -> bool:
+        return True
+
     def _add_result_area(self) -> None:
+        # Hero + план живут в скролле: на пиксельном шрифте и низком окне
+        # контент выше вьюпорта, и без скролла layout наезжал сам на себя.
+        self._scroll = QScrollArea(self)
+        self._scroll.setObjectName("categoryScroll")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        # Hero целиком плюс верх плана: меньше - карточка режется по живому.
+        self._scroll.setMinimumHeight(240)
+        host = QWidget(self._scroll)
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        host_layout.setSpacing(8)
+
+        self._hero = HeroCard(host)
+        self._hero.set_title(ctx().tr("hero.title"))
+        self._hero.set_captions(ctx().tr("hero.last_scan"),
+                                ctx().tr("hero.junk"),
+                                ctx().tr("hero.freed"),
+                                ctx().tr("hero.score"))
+        self._hero.set_stats("-", "-", "-", "-")
+        for key, page_index in self._HERO_TILES:
+            tile = self._hero.add_tile(ctx().tr(key))
+            tile.clicked.connect(
+                lambda _checked=False, idx=page_index:
+                self.navigateRequested.emit(idx))
+            self._hero_tiles.append((tile, key))
+        host_layout.addWidget(self._hero)
+
         frame, layout = self._make_card()
-        self._result_frame = frame
         self._add_section_label("advisor.plan_title", layout)
         self._status_label = body(self._status_text(), self)
         self._status_label.setProperty("role", "secondary")
@@ -205,7 +280,43 @@ class AdvisorTab(EmptyTab):
         self._plan_area.setProperty("role", "secondary")
         layout.addWidget(self._status_label)
         layout.addWidget(self._plan_area)
-        self._layout.addWidget(frame)
+        host_layout.addWidget(frame)
+        host_layout.addStretch(1)
+        self._scroll.setWidget(host)
+        self._result_frame = self._scroll
+        self._layout.addWidget(self._scroll, 1)
+
+    def _add_stats(self) -> None:
+        # Ряд показателей живёт внутри скролла следом за героєм: снаружи
+        # при низком окне layout прижимал его к скроллу сверху и плитки
+        # наезжали на карточку плана.
+        super()._add_stats()
+        if self._scroll is None or self._stats is None:
+            return
+        host = self._scroll.widget()
+        if host is None or host.layout() is None:
+            return
+        self._stats.setParent(host)
+        host.layout().insertWidget(1, self._stats)
+
+    def hero(self) -> Optional[HeroCard]:
+        return self._hero
+
+    def set_hero_stats(self, last: str, junk: str, freed: str,
+                       score: str = "0") -> None:
+        if self._hero is not None:
+            self._hero.set_stats(last, junk, freed, score)
+
+    def retranslate(self) -> None:
+        super().retranslate()
+        if self._hero is not None:
+            self._hero.set_title(ctx().tr("hero.title"))
+            self._hero.set_captions(ctx().tr("hero.last_scan"),
+                                    ctx().tr("hero.junk"),
+                                    ctx().tr("hero.freed"),
+                                    ctx().tr("hero.score"))
+        for tile, key in self._hero_tiles:
+            tile.setText(ctx().tr(key))
 
     def _add_buttons(self) -> None:
         scan = self._add_button("advisor.scan_button", primary=True)
@@ -213,7 +324,33 @@ class AdvisorTab(EmptyTab):
         apply_button = self._add_button("advisor.apply_button", primary=True)
         apply_button.clicked.connect(self.applyRequested.emit)
         self._add_row(scan, apply_button)
-        self._layout.addStretch(1)
+        # Растяжку не добавляем: свободное место забирает скролл с героєм
+        # и планом, иначе кнопки висят в середине пустой страницы.
+
+    def scroll_to_top(self) -> None:
+        """Вернуть скролл к герою: после скана цифры важнее хвоста списка."""
+        if self._scroll is not None:
+            self._scroll.verticalScrollBar().setValue(0)
+
+    def _sync_host_min(self) -> None:
+        if self._scroll is None:
+            return
+        host = self._scroll.widget()
+        if host is None or host.layout() is None:
+            return
+        fix_wrap_labels(host)
+        host.setMinimumHeight(host.layout().minimumSize().height())
+
+    def sync_layout(self) -> None:
+        self._sync_host_min()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.schedule_layout_sync()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self.schedule_layout_sync()
 
     def _status_text(self) -> str:
         return ctx().tr("advisor.scan_empty")
@@ -275,26 +412,32 @@ class CategoryCard(QFrame):
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(4)
 
+        # Полоса риска по левому краю рисует сама карточка — свойство risk
+        # подхватывает QSS (border-left по цвету on/warn/danger).
+        risk = self._risk if self._risk in ("low", "medium", "high") else "low"
+        self.setProperty("risk", risk)
+
         top = QHBoxLayout()
         top.setSpacing(10)
         self._check = QCheckBox(self)
         self._check.setChecked(True)
         self._check.toggled.connect(self._on_check)
         top.addWidget(self._check, 1)
+        # Название и объём — на одной строке: при беглом скролле читается пара
+        # «что это / сколько весит», а бейджи уходят в нижнюю строку.
+        self._files_label = QLabel(self)
+        self._files_label.setProperty("role", "secondary")
+        top.addWidget(self._files_label, 0, Qt.AlignmentFlag.AlignRight)
         layout.addLayout(top)
 
         bottom = QHBoxLayout()
-        bottom.setSpacing(12)
-        self._files_label = QLabel(self)
-        self._files_label.setProperty("role", "secondary")
-        bottom.addWidget(self._files_label)
+        bottom.setSpacing(8)
         self._lane_label = QLabel(self)
         self._lane_label.setObjectName("laneBadge")
         self._lane_label.setProperty("lane", self._lane)
         bottom.addWidget(self._lane_label)
         self._risk_label = QLabel(self)
         self._risk_label.setObjectName("riskBadge")
-        risk = self._risk if self._risk in ("low", "medium", "high") else "low"
         self._risk_label.setProperty("risk", risk)
         bottom.addWidget(self._risk_label)
         self._note_label = QLabel(self)
@@ -414,6 +557,7 @@ class JournalPanel(QFrame):
             item = self._rows_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.hide()
                 widget.deleteLater()
 
     def _add_row(self, text: str, role: str = "secondary") -> None:
@@ -498,6 +642,9 @@ class CleanerTab(EmptyTab):
         self._select_all_button: Optional[QPushButton] = None
         self._select_none_button: Optional[QPushButton] = None
         self._journal: Optional[JournalPanel] = None
+        self._preview_row: Optional[QHBoxLayout] = None
+        self._preview_title: Optional[QLabel] = None
+        self._last_summary: Dict[str, Tuple[str, int]] = {}
         super().__init__(parent)
 
     def _result_expands(self) -> bool:
@@ -507,9 +654,33 @@ class CleanerTab(EmptyTab):
         frame, layout = self._make_card()
         self._result_frame = frame
         self._add_section_label("cleaner.candidates_title", layout)
+
+        # Всё ниже заголовка живёт в одном скролле: на низком окне
+        # карточка раньше сжималась и строки наезжали друг на друга.
+        self._scroll = QScrollArea(self)
+        self._scroll.setObjectName("categoryScroll")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setMinimumHeight(120)
+        host = QWidget(self._scroll)
+        self._cards_layout = QVBoxLayout(host)
+        self._cards_layout.setContentsMargins(0, 0, 0, 0)
+        self._cards_layout.setSpacing(8)
+
         self._status_label = body(self._status_text(), self)
         self._status_label.setProperty("role", "secondary")
-        layout.addWidget(self._status_label)
+        self._cards_layout.addWidget(self._status_label)
+
+        # Превью прошлого скана чипами: пока карточек нет, видно, где
+        # обычно лежит мусор и сколько его было в байтах.
+        self._preview_title = hint(ctx().tr("cleaner.preview_title"), self)
+        self._cards_layout.addWidget(self._preview_title)
+        self._preview_row = QHBoxLayout()
+        self._preview_row.setSpacing(8)
+        self._preview_row.addStretch(1)
+        self._cards_layout.addLayout(self._preview_row)
 
         # Строка выбора: сводка слева, «выбрать всё / снять всё» справа.
         select_row = QHBoxLayout()
@@ -522,33 +693,36 @@ class CleanerTab(EmptyTab):
         self._select_none_button.clicked.connect(lambda: self.set_all_selected(False))
         select_row.addWidget(self._select_all_button)
         select_row.addWidget(self._select_none_button)
-        layout.addLayout(select_row)
-
-        self._scroll = QScrollArea(self)
-        self._scroll.setObjectName("categoryScroll")
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        # Минимум пара карточек на виду даже на низком окне (1024×768).
-        self._scroll.setMinimumHeight(150)
-        cards_host = QWidget(self._scroll)
-        self._cards_layout = QVBoxLayout(cards_host)
-        self._cards_layout.setContentsMargins(0, 0, 0, 0)
-        self._cards_layout.setSpacing(8)
-        self._cards_layout.addStretch(1)
-        self._scroll.setWidget(cards_host)
-        layout.addWidget(self._scroll, 1)
+        self._cards_layout.addLayout(select_row)
 
         self._empty_label = body(self._candidates_text(), self)
         self._empty_label.setProperty("role", "secondary")
-        layout.addWidget(self._empty_label)
+        self._cards_layout.addWidget(self._empty_label)
 
-        # Журнал после удаления живёт в той же карточке: отчёт заменяет
+        # Журнал после удаления живёт в том же скролле: отчёт заменяет
         # карточки категорий до следующего скана.
         self._journal = JournalPanel(self)
-        layout.addWidget(self._journal, 1)
+        self._cards_layout.addWidget(self._journal, 1)
+
+        self._cards_layout.addStretch(1)
+        self._scroll.setWidget(host)
+        layout.addWidget(self._scroll, 1)
 
         self._layout.addWidget(frame)
         self._refresh_selection_view()
+        self.schedule_layout_sync()
+
+    def _add_stats(self) -> None:
+        # Ряд показателей уезжает в скролл вместе с остальным контентом:
+        # на низком окне каждые 80px высоты идут карточкам кандидатов,
+        # а не стоят снаружи мертвым грузом.
+        super()._add_stats()
+        if self._scroll is None or self._stats is None:
+            return
+        host = self._scroll.widget()
+        if host is not None and host.layout() is not None:
+            self._stats.setParent(host)
+            host.layout().insertWidget(0, self._stats)
 
     def _add_buttons(self) -> None:
         scan = self._add_button("cleaner.scan_button", primary=True)
@@ -574,12 +748,33 @@ class CleanerTab(EmptyTab):
             self._cards_layout.insertWidget(self._cards_layout.count() - 1,
                                             card_widget)
             self._cards.append(card_widget)
+        for card_widget in self._cards:
+            card_widget.setVisible(True)
         # Новый скан сменяет журнал прошлого удаления.
         if self._journal is not None:
             self._journal.setVisible(False)
-        for widget in (self._select_all_button, self._select_none_button):
+        self._refresh_selection_view()
+
+    def set_last_summary(self, cats: Dict[str, Tuple[str, int]]) -> None:
+        """Превью прошлого скана: id категории -> (заголовок, байты)."""
+        self._last_summary = dict(cats)
+        self._rebuild_preview()
+
+    def _rebuild_preview(self) -> None:
+        if self._preview_row is None:
+            return
+        while self._preview_row.count():
+            item = self._preview_row.takeAt(0)
+            widget = item.widget()
             if widget is not None:
-                widget.setVisible(True)
+                widget.deleteLater()
+        for cat_id, (title, size) in sorted(
+                self._last_summary.items(), key=lambda kv: -kv[1][1]):
+            if size <= 0:
+                continue
+            self._preview_row.addWidget(
+                chip(f"{title} · {human_size(size)}", self))
+        self._preview_row.addStretch(1)
         self._refresh_selection_view()
 
     def show_journal(self, report, summary: str) -> None:
@@ -587,10 +782,14 @@ class CleanerTab(EmptyTab):
         if self._journal is None:
             return
         self._journal.show_report(report, summary)
-        for widget in (self._scroll, self._empty_label, self._selection_label,
-                       self._select_all_button, self._select_none_button):
+        for widget in (self._empty_label, self._selection_label,
+                       self._preview_title, self._select_all_button,
+                       self._select_none_button):
             if widget is not None:
                 widget.setVisible(False)
+        for card_widget in self._cards:
+            card_widget.setVisible(False)
+        self._sync_host_min()
 
     def journal_panel(self) -> Optional[JournalPanel]:
         return self._journal
@@ -608,19 +807,34 @@ class CleanerTab(EmptyTab):
 
     def _on_card_toggled(self, _category_id: str, _on: bool) -> None:
         self._refresh_selection_view()
+        if not _on:
+            return
+        card = next((c for c in self._cards if c.category_id() == _category_id), None)
+        if card is not None and (card._risk == "high" or card._lane == "direct"):
+            # Выбрана опасная/необратимая категория: Клинни спохватывается.
+            ctx().setAssistantMood("panic")
+            QTimer.singleShot(1400, lambda: ctx().setAssistantMood("idle"))
 
     def _refresh_selection_view(self) -> None:
         # Пока виден журнал удаления, карточная вёрстка не трогается.
         if self._journal is not None and self._journal.isVisible():
             return
         has_cards = bool(self._cards)
-        if self._scroll is not None:
-            self._scroll.setVisible(has_cards)
         if self._empty_label is not None:
             self._empty_label.setVisible(not has_cards)
+        show_preview = not has_cards and bool(self._last_summary)
+        if self._preview_title is not None:
+            self._preview_title.setVisible(show_preview)
+        if self._preview_row is not None:
+            for i in range(self._preview_row.count()):
+                item = self._preview_row.itemAt(i)
+                if item is not None and item.widget() is not None:
+                    item.widget().setVisible(show_preview)
+        # Кнопки массового выбора существуют только когда есть что
+        # выбирать: до скана их вовсе нет на экране.
         for widget in (self._select_all_button, self._select_none_button):
             if widget is not None:
-                widget.setEnabled(has_cards)
+                widget.setVisible(has_cards)
         if self._selection_label is not None:
             selected = [c for c in self._cards if c.is_checked()]
             files = sum(c.files() for c in selected)
@@ -630,6 +844,28 @@ class CleanerTab(EmptyTab):
                     cats=len(selected), total=len(self._cards),
                     files=files, size=human_size(size)))
             self._selection_label.setVisible(has_cards)
+        self._sync_host_min()
+
+    def _sync_host_min(self) -> None:
+        """Хост скролла не ниже контента: иначе строки наезжают друг на друга."""
+        if self._scroll is None:
+            return
+        host = self._scroll.widget()
+        if host is None or host.layout() is None:
+            return
+        fix_wrap_labels(host)
+        host.setMinimumHeight(host.layout().minimumSize().height())
+
+    def sync_layout(self) -> None:
+        self._sync_host_min()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.schedule_layout_sync()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self.schedule_layout_sync()
 
     # ---------- тексты ----------
 
@@ -680,21 +916,65 @@ class DedupTab(EmptyTab):
         self._status_label: Optional[QLabel] = None
         self._groups_area: Optional[QLabel] = None
         self._journal: Optional[JournalPanel] = None
+        self._scroll: Optional[QScrollArea] = None
         super().__init__(parent)
+
+    def _result_expands(self) -> bool:
+        return True
 
     def _add_result_area(self) -> None:
         frame, layout = self._make_card()
         self._result_frame = frame
         self._add_section_label("dedup.groups_title", layout)
+
+        # Список групп может быть длинным: на низком окне карточка
+        # сжималась и текст наезжал сам на себя - уводим в скролл.
+        self._scroll = QScrollArea(self)
+        self._scroll.setObjectName("categoryScroll")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setMinimumHeight(120)
+        host = QWidget(self._scroll)
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        host_layout.setSpacing(8)
+
         self._status_label = body(self._status_text(), self)
         self._status_label.setProperty("role", "secondary")
+        host_layout.addWidget(self._status_label)
         self._groups_area = body(self._groups_text(), self)
         self._groups_area.setProperty("role", "secondary")
-        layout.addWidget(self._status_label)
-        layout.addWidget(self._groups_area)
+        host_layout.addWidget(self._groups_area)
         self._journal = JournalPanel(self)
-        layout.addWidget(self._journal, 1)
+        host_layout.addWidget(self._journal, 1)
+        host_layout.addStretch(1)
+
+        self._scroll.setWidget(host)
+        layout.addWidget(self._scroll, 1)
         self._layout.addWidget(frame)
+        self.schedule_layout_sync()
+
+    def _sync_host_min(self) -> None:
+        if self._scroll is None:
+            return
+        host = self._scroll.widget()
+        if host is None or host.layout() is None:
+            return
+        fix_wrap_labels(host)
+        host.setMinimumHeight(host.layout().minimumSize().height())
+
+    def sync_layout(self) -> None:
+        self._sync_host_min()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.schedule_layout_sync()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self.schedule_layout_sync()
 
     def _add_buttons(self) -> None:
         folder = self._add_button("dedup.folder_button")
@@ -730,6 +1010,7 @@ class DedupTab(EmptyTab):
             self._journal.setVisible(False)
         if self._groups_area is not None:
             self._groups_area.setVisible(True)
+        self._sync_host_min()
 
     def show_journal(self, report, summary: str) -> None:
         """После удаления дублей: журнал вместо списка групп до нового скана."""
@@ -738,6 +1019,7 @@ class DedupTab(EmptyTab):
         self._journal.show_report(report, summary)
         if self._groups_area is not None:
             self._groups_area.setVisible(False)
+        self._sync_host_min()
 
     def retranslate(self) -> None:
         super().retranslate()
@@ -799,12 +1081,17 @@ class TweaksTab(EmptyTab):
         self._backups: List[Dict[str, object]] = []
         self._uwp: List[object] = []
         self._redist_boxes: Dict[str, QCheckBox] = {}
-        self._config_combo: Optional[QComboBox] = None
         self._config_apply_btn: Optional[QPushButton] = None
         self._config_delete_btn: Optional[QPushButton] = None
         self._config_export_btn: Optional[QPushButton] = None
         self._configs_meta: Dict[str, Dict[str, object]] = {}
         self._sys_tweaks: List[Dict[str, object]] = []
+        self._search: Optional[QLineEdit] = None
+        self._risk_filter: Optional[QComboBox] = None
+        self._accordions: List[Accordion] = []
+        self._config_cards: List[ConfigCard] = []
+        self._config_cards_host: Optional[QVBoxLayout] = None
+        self._selected_config: str = ""
         super().__init__(parent)
 
     def _result_expands(self) -> bool:
@@ -818,10 +1105,35 @@ class TweaksTab(EmptyTab):
         self._status_label.setProperty("role", "secondary")
         layout.addWidget(self._status_label)
 
+        # Поиск по имени твика и фильтр по риску: 73 тумблера простынёй
+        # не читаются, а так нужное находится за два символа.
+        search_row = QHBoxLayout()
+        search_row.setSpacing(10)
+        self._search = QLineEdit(self)
+        self._search.setPlaceholderText(ctx().tr("tweaks.search_placeholder"))
+        self._search.setClearButtonEnabled(True)
+        # Перерисовка строк дорогая (десятки виджетов на символ): пока
+        # человек печатает запрос, держим паузу и рисуем один раз.
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(180)
+        self._search_timer.timeout.connect(self._render_rows)
+        self._search.textChanged.connect(lambda _t: self._search_timer.start())
+        search_row.addWidget(self._search, 1)
+        self._risk_filter = QComboBox(self)
+        self._risk_filter.setMinimumWidth(150)
+        self._fill_risk_filter()
+        self._risk_filter.currentIndexChanged.connect(
+            lambda _i: self._render_rows())
+        search_row.addWidget(self._risk_filter)
+        layout.addLayout(search_row)
+
         self._scroll = QScrollArea(self)
         self._scroll.setObjectName("categoryScroll")
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setMinimumHeight(150)
         host = QWidget(self._scroll)
         self._rows_layout = QVBoxLayout(host)
@@ -831,6 +1143,16 @@ class TweaksTab(EmptyTab):
         self._scroll.setWidget(host)
         layout.addWidget(self._scroll, 1)
         self._layout.addWidget(frame)
+
+    def _fill_risk_filter(self) -> None:
+        if self._risk_filter is None:
+            return
+        self._risk_filter.blockSignals(True)
+        self._risk_filter.clear()
+        self._risk_filter.addItem(ctx().tr("tweaks.filter_risk_all"), "all")
+        for level in ("low", "medium", "high"):
+            self._risk_filter.addItem(ctx().tr(f"tweaks.risk_{level}"), level)
+        self._risk_filter.blockSignals(False)
 
     def _add_buttons(self) -> None:
         refresh = self._add_button("tweaks.refresh_button", primary=True)
@@ -858,65 +1180,169 @@ class TweaksTab(EmptyTab):
             startup=len(self._startup), services=len(self._services),
             backups=len(self._backups)))
 
+    def _filter_ok(self, tw: Dict[str, object]) -> bool:
+        """Проходит ли твик текущий поиск и фильтр риска."""
+        needle = (self._search.text().strip().lower()
+                  if self._search is not None else "")
+        level = "all"
+        if self._risk_filter is not None:
+            level = str(self._risk_filter.currentData() or "all")
+        if level != "all" and str(tw.get("risk", "low")) != level:
+            return False
+        if not needle:
+            return True
+        hay = " ".join(str(tw.get(key, ""))
+                       for key in ("id", "name_ru", "name_en")).lower()
+        return needle in hay
+
+    def _accordion(self, title: str, count: int,
+                   open: bool = False) -> Accordion:  # noqa: A002
+        acc = Accordion(title, self, open=open)
+        acc.set_count(count)
+        acc.toggled.connect(lambda _open=False: self._sync_rows_host_min())
+        self._accordions.append(acc)
+        return acc
+
+    def _sync_rows_host_min(self) -> None:
+        """Хост скролла не ниже минимума контента: иначе сжатие в кашу."""
+        if self._scroll is None:
+            return
+        host = self._scroll.widget()
+        if host is None or host.layout() is None:
+            return
+        host.setMinimumHeight(host.layout().minimumSize().height())
+
+    def _add_stats(self) -> None:
+        super()._add_stats()
+        # Ряд показателей живёт внутри скролла первым виджетом: снаружи
+        # он съедал высоту вьюпорта, и аккордеоны оставались с полоску.
+        if self._stats is not None and self._scroll is not None:
+            host = self._scroll.widget()
+            if host is not None:
+                self._stats.setParent(host)
+                host.layout().insertWidget(0, self._stats)
+
     def _render_rows(self) -> None:
         assert self._rows_layout is not None
-        while self._rows_layout.count() > 1:
-            item = self._rows_layout.takeAt(0)
+        # Индекс 0 - постоянный ряд показателей: чистим всё после него,
+        # растяжка остаётся последней.
+        while self._rows_layout.count() > 2:
+            item = self._rows_layout.takeAt(1)
             widget = item.widget()
             if widget is not None:
+                # hide сразу: deleteLater дожжётся DeferredDelete позже,
+                # а снятый с раскладки виджет успевает мигнуть сиротой.
+                widget.hide()
                 widget.deleteLater()
+        self._accordions = []
+        self._config_cards = []
+        self._redist_boxes = {}
 
         def put(widget: QWidget) -> None:
             # Строчки идут до растяжки: стрейч всегда последний.
             self._rows_layout.insertWidget(self._rows_layout.count() - 1, widget)
 
         if self._sys_tweaks:
-            put(section(ctx().tr("tweaks.sys_section"), self))
             put(hint(ctx().tr("tweaks.sys_hint"), self))
             put(self._presets_row())
+            visible = [tw for tw in self._sys_tweaks if self._filter_ok(tw)]
             for cat in self._TWEAK_CATEGORIES:
-                group = [tw for tw in self._sys_tweaks
-                         if tw.get("category") == cat]
+                group = [tw for tw in visible if tw.get("category") == cat]
                 if not group:
                     continue
-                put(hint(ctx().tr(f"tweaks.cat_{cat}"), self))
+                acc = self._accordion(ctx().tr(f"tweaks.cat_{cat}"),
+                                      len(group), open=cat == "explorer")
                 for tw in group:
-                    put(self._tweak_row(tw))
-            put(self._apps_section())
-            put(self._redists_section())
-            put(self._configs_section())
-            put(self._activation_section())
-            put(self._timer_section())
+                    acc.body_layout().addWidget(self._tweak_row(tw))
+                put(acc)
+            if visible and not any(
+                    tw.get("category") in self._TWEAK_CATEGORIES
+                    for tw in visible):
+                put(hint(ctx().tr("tweaks.search_empty"), self))
 
-        put(section(ctx().tr("tweaks.startup_section"), self))
+            tools = self._accordion(ctx().tr("tweaks.acc_tools"), 4)
+            tools.body_layout().addWidget(self._apps_section())
+            tools.body_layout().addWidget(self._redists_section())
+            tools.body_layout().addWidget(self._activation_section())
+            tools.body_layout().addWidget(self._timer_section())
+            put(tools)
+
+            configs = self._accordion(ctx().tr("tweaks.configs_section"),
+                                      len(self._configs_meta), open=True)
+            configs.body_layout().addWidget(self._configs_section())
+            put(configs)
+
+        startup = self._accordion(ctx().tr("tweaks.startup_section"),
+                                  len(self._startup))
         if not self._startup:
-            put(hint(ctx().tr("tweaks.empty_startup"), self))
+            startup.body_layout().addWidget(
+                hint(ctx().tr("tweaks.empty_startup"), self))
         for entry in self._startup:
-            put(self._startup_row(entry))
+            startup.body_layout().addWidget(self._startup_row(entry))
+        put(startup)
 
-        put(section(ctx().tr("tweaks.backups_section"), self))
+        backups = self._accordion(ctx().tr("tweaks.backups_section"),
+                                  len(self._backups))
         if not self._backups:
-            put(hint(ctx().tr("tweaks.empty_backups"), self))
+            backups.body_layout().addWidget(
+                hint(ctx().tr("tweaks.empty_backups"), self))
         for info in self._backups:
-            put(self._backup_row(info))
+            backups.body_layout().addWidget(self._backup_row(info))
+        put(backups)
 
-        put(section(ctx().tr("tweaks.services_section"), self))
-        put(hint(ctx().tr("tweaks.services_hint"), self))
+        services = self._accordion(ctx().tr("tweaks.services_section"),
+                                   len(self._services))
+        services.body_layout().addWidget(
+            hint(ctx().tr("tweaks.services_hint"), self))
         for service in self._services[:self._MAX_SERVICES]:
-            put(self._service_row(service))
+            services.body_layout().addWidget(self._service_row(service))
         if len(self._services) > self._MAX_SERVICES:
-            put(hint(ctx().tr("journal.more").format(
-                count=len(self._services) - self._MAX_SERVICES), self))
+            services.body_layout().addWidget(hint(
+                ctx().tr("journal.more").format(
+                    count=len(self._services) - self._MAX_SERVICES), self))
+        put(services)
 
-        put(section(ctx().tr("tweaks.uwp_section"), self))
-        put(hint(ctx().tr("tweaks.uwp_hint"), self))
+        uwp = self._accordion(ctx().tr("tweaks.uwp_section"), len(self._uwp))
+        uwp.body_layout().addWidget(hint(ctx().tr("tweaks.uwp_hint"), self))
         if not self._uwp:
-            put(hint(ctx().tr("tweaks.empty_uwp"), self))
+            uwp.body_layout().addWidget(
+                hint(ctx().tr("tweaks.empty_uwp"), self))
         for pkg in self._uwp[:self._MAX_UWP]:
-            put(self._uwp_row(pkg))
+            uwp.body_layout().addWidget(self._uwp_row(pkg))
         if len(self._uwp) > self._MAX_UWP:
-            put(hint(ctx().tr("journal.more").format(
+            uwp.body_layout().addWidget(hint(ctx().tr("journal.more").format(
                 count=len(self._uwp) - self._MAX_UWP), self))
+        put(uwp)
+        self._sync_config_buttons()
+        self.schedule_layout_sync()
+
+    def _fix_wrap_heights(self) -> None:
+        """Переносимые подписи внутри скролла: высота после известной ширины.
+
+        QLabel с wordWrap отдаёт высоту через heightForWidth, а layout
+        внутри скролла спрашивает её до раскладки по ширине - подпись
+        выползает на соседний виджет. Пересчитываем после раскладки.
+        """
+        if self._scroll is None:
+            return
+        host = self._scroll.widget()
+        if host is None:
+            return
+        fix_wrap_labels(host)
+        self._sync_rows_host_min()
+
+    def sync_layout(self) -> None:
+        self._fix_wrap_heights()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.schedule_layout_sync()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        # На скрытой странице подписи меряются по узкой ширине: после
+        # показа пересчитываем высоты по настоящей.
+        super().showEvent(event)
+        self.schedule_layout_sync()
 
     def _startup_row(self, entry) -> QFrame:
         row = QFrame(self)
@@ -1012,9 +1438,11 @@ class TweaksTab(EmptyTab):
                            QSizePolicy.Policy.Preferred)
         name.setWordWrap(True)
         layout.addWidget(name, 3)
+        risk = str(tw.get("risk", "low"))
+        badge = risk_badge(risk, row)
+        badge.setText(ctx().tr(f"tweaks.risk_{risk}"))
+        layout.addWidget(badge)
         flags: List[str] = []
-        if str(tw.get("risk", "low")) != "low":
-            flags.append(ctx().tr(f"tweaks.risk_{tw['risk']}"))
         if tw.get("reboot"):
             flags.append(ctx().tr("tweaks.flag_reboot"))
         elif tw.get("explorer_restart"):
@@ -1198,18 +1626,22 @@ class TweaksTab(EmptyTab):
                 box.setText(base)
 
     def _configs_section(self) -> QFrame:
-        """Этап 7: конфиги системы - снимок, файл, применение с защитой."""
+        """Этап 7: конфиги системы - снимок, файл, применение с защитой.
+
+        Список живёт карточками: имя, состав и дата на виду, выбор -
+        кликом по карточке, применение - только явной кнопкой.
+        """
+        import time as _time
         frame = QFrame(self)
         frame.setObjectName("categoryCard")
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(6)
-        layout.addWidget(section(ctx().tr("tweaks.configs_section"), frame))
         layout.addWidget(hint(ctx().tr("tweaks.configs_hint"), frame))
 
-        self._config_combo = QComboBox(frame)
-        self._config_combo.currentIndexChanged.connect(self._sync_config_buttons)
-        layout.addWidget(self._config_combo)
+        self._config_cards_host = QVBoxLayout()
+        self._config_cards_host.setSpacing(8)
+        layout.addLayout(self._config_cards_host)
 
         row1 = QHBoxLayout()
         save = QPushButton(ctx().tr("tweaks.configs_save"), frame)
@@ -1245,39 +1677,67 @@ class TweaksTab(EmptyTab):
         row2.addWidget(self._config_delete_btn)
         row2.addStretch(1)
         layout.addLayout(row2)
+        self._rebuild_config_cards()
         self._sync_config_buttons()
         return frame
 
+    def _rebuild_config_cards(self) -> None:
+        import time as _time
+        if self._config_cards_host is None:
+            return
+        while self._config_cards_host.count():
+            item = self._config_cards_host.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._config_cards = []
+        if not self._configs_meta:
+            self._config_cards_host.addWidget(
+                hint(ctx().tr("tweaks.configs_empty"), self))
+            return
+        names = sorted(self._configs_meta)
+        if self._selected_config not in names:
+            self._selected_config = names[0] if names else ""
+        for name in names:
+            entry = self._configs_meta[name]
+            created = float(entry.get("created", 0.0) or 0.0)
+            when = _time.strftime("%d.%m.%Y", _time.localtime(created)) \
+                if created else ""
+            meta = ctx().tr("tweaks.configs_meta").format(
+                tweaks=entry.get("tweaks", 0), apps=entry.get("apps", 0),
+                redists=entry.get("redists", 0))
+            if when:
+                meta = f"{meta} · {when}"
+            card_widget = ConfigCard(name, meta, self)
+            card_widget.set_selected(name == self._selected_config)
+            card_widget.clicked.connect(self._select_config)
+            self._config_cards_host.addWidget(card_widget)
+            self._config_cards.append(card_widget)
+
+    def _select_config(self, name: str) -> None:
+        self._selected_config = name
+        for card_widget in self._config_cards:
+            card_widget.set_selected(card_widget.name() == name)
+        self._sync_config_buttons()
+
     def _sync_config_buttons(self, *_args) -> None:
-        has = self._config_combo is not None and self._config_combo.count() > 0
+        has = bool(self._selected_config) and \
+            self._selected_config in self._configs_meta
         for btn in (self._config_apply_btn, self._config_export_btn,
                     self._config_delete_btn):
             if btn is not None:
                 btn.setEnabled(bool(has))
 
     def current_config_name(self) -> str:
-        if self._config_combo is None:
-            return ""
-        return str(self._config_combo.currentData() or "")
+        return self._selected_config
 
     def setConfigs(self, entries: List[Dict[str, object]]) -> None:
-        """Список конфигов профиля в комбобокс; мета - для подтверждения."""
+        """Список конфигов профиля карточками; мета - для подтверждения."""
         self._configs_meta = {str(e["name"]): e for e in entries}
-        current = self.current_config_name()
-        if self._config_combo is None:
-            return
-        self._config_combo.blockSignals(True)
-        self._config_combo.clear()
-        for entry in entries:
-            # Имя живёт в itemData: на экране счётчики, наружу - чистое имя.
-            self._config_combo.addItem(
-                f"{entry['name']}  ({entry['tweaks']} тв / "
-                f"{entry['apps']} пр / {entry['redists']} зав)",
-                str(entry["name"]))
         names = [str(e["name"]) for e in entries]
-        if current in names:
-            self._config_combo.setCurrentIndex(names.index(current))
-        self._config_combo.blockSignals(False)
+        if self._selected_config not in names:
+            self._selected_config = names[0] if names else ""
+        self._rebuild_config_cards()
         self._sync_config_buttons()
 
     def _ask_config_save(self) -> None:
@@ -1405,6 +1865,10 @@ class TweaksTab(EmptyTab):
         super().retranslate()
         if self._status_label is not None:
             self._status_label.setText(self._status_text())
+        if self._search is not None:
+            self._search.setPlaceholderText(
+                ctx().tr("tweaks.search_placeholder"))
+        self._fill_risk_filter()
         if self._rows_layout is not None:
             self._render_rows()
 
@@ -1424,6 +1888,8 @@ class SettingsTab(EmptyTab):
     languageChanged = Signal(str)
     themeChanged = Signal(str)
     fontChanged = Signal(str)
+    accentChanged = Signal(str)
+    motionChanged = Signal(str)
     soundsChanged = Signal(bool)
     aiSaveRequested = Signal(object)     # AiSettings из виджетов
     aiTestRequested = Signal(object)     # проверить связь
@@ -1432,8 +1898,11 @@ class SettingsTab(EmptyTab):
     def __init__(self, parent: QWidget | None = None) -> None:
         self._lang_combo: Optional[QComboBox] = None
         self._theme_combo: Optional[QComboBox] = None
+        self._accent_combo: Optional[QComboBox] = None
+        self._motion_combo: Optional[QComboBox] = None
         self._font_combo: Optional[QComboBox] = None
         self._sounds_check: Optional[QCheckBox] = None
+        self._accordions: List[Accordion] = []
         self._ai_enabled: Optional[QCheckBox] = None
         self._ai_provider: Optional[QComboBox] = None
         self._ai_url: Optional[QLineEdit] = None
@@ -1443,39 +1912,109 @@ class SettingsTab(EmptyTab):
         self._ai_status: Optional[QLabel] = None
         self._ai_remote_warn: Optional[QLabel] = None
         self._ai_key_label: Optional[QLabel] = None
+        self._settings_scroll: Optional[QScrollArea] = None
         super().__init__(parent)
+
+    def _result_expands(self) -> bool:
+        return True
 
     def _add_result_area(self) -> None:
         frame, layout = self._make_card()
         self._result_frame = frame
 
-        self._add_section_label("settings.language_label", layout)
+        # Аккордеоны в скролле: раскрытые секции выше вьюпорта на низких
+        # окнах, без скролла layout наезжал секциями друг на друга.
+        scroll = QScrollArea(frame)
+        scroll.setObjectName("categoryScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        host = QWidget(scroll)
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        host_layout.setSpacing(8)
+        self._settings_scroll = scroll
+
+        appearance = Accordion(ctx().tr("settings.acc_appearance"), self,
+                               open=True)
+        app_layout = appearance.body_layout()
+        self._accordions = [appearance]
+
+        self._add_section_label("settings.language_label", app_layout)
         self._lang_combo = QComboBox(self)
         self._lang_combo.currentIndexChanged.connect(self._on_language_selected)
-        layout.addWidget(self._lang_combo)
+        app_layout.addWidget(self._lang_combo)
 
-        self._add_section_label("settings.theme_label", layout)
+        self._add_section_label("settings.theme_label", app_layout)
         self._theme_combo = QComboBox(self)
         self._theme_combo.currentIndexChanged.connect(self._on_theme_selected)
-        layout.addWidget(self._theme_combo)
+        app_layout.addWidget(self._theme_combo)
 
-        self._add_section_label("settings.font_label", layout)
+        self._add_section_label("settings.accent_label", app_layout)
+        self._accent_combo = QComboBox(self)
+        self._accent_combo.currentIndexChanged.connect(self._on_accent_selected)
+        app_layout.addWidget(self._accent_combo)
+
+        self._add_section_label("settings.motion_label", app_layout)
+        self._motion_combo = QComboBox(self)
+        self._motion_combo.currentIndexChanged.connect(self._on_motion_selected)
+        app_layout.addWidget(self._motion_combo)
+        app_layout.addWidget(hint(ctx().tr("settings.motion_note"), self))
+
+        self._add_section_label("settings.font_label", app_layout)
         self._font_combo = QComboBox(self)
         self._font_combo.currentIndexChanged.connect(self._on_font_selected)
-        layout.addWidget(self._font_combo)
-        layout.addWidget(hint(ctx().tr("settings.font_note"), self))
+        app_layout.addWidget(self._font_combo)
+        app_layout.addWidget(hint(ctx().tr("settings.font_note"), self))
 
-        self._add_section_label("settings.sounds_label", layout)
+        self._add_section_label("settings.sounds_label", app_layout)
         self._sounds_check = QCheckBox(ctx().tr("settings.sounds_label"), self)
         self._sounds_check.setChecked(ctx().soundsEnabled())
         self._sounds_check.toggled.connect(self._on_sounds_toggled)
-        layout.addWidget(self._sounds_check)
-        layout.addWidget(hint(ctx().tr("settings.sounds_note"), self))
+        app_layout.addWidget(self._sounds_check)
+        app_layout.addWidget(hint(ctx().tr("settings.sounds_note"), self))
+        host_layout.addWidget(appearance)
+        appearance.toggled.connect(lambda _open=False: self._sync_host_min())
 
-        self._add_ai_section(layout)
+        ai_acc = Accordion(ctx().tr("settings.acc_ai"), self, open=True)
+        self._accordions.append(ai_acc)
+        self._add_ai_section(ai_acc.body_layout())
+        host_layout.addWidget(ai_acc)
+        ai_acc.toggled.connect(lambda _open=False: self._sync_host_min())
+        host_layout.addStretch(1)
 
+        scroll.setWidget(host)
+        layout.addWidget(scroll, 1)
         self._layout.addWidget(frame)
         self._fill_combos()
+        self.schedule_layout_sync()
+
+    def _sync_host_min(self) -> None:
+        """Хост скролла держит высоту контента: иначе виджет сжимается.
+
+        QScrollArea с widgetResizable тянет виджет к размеру вьюпорта и
+        смотрит только на minimumSize - выставляем его от минимума
+        внутреннего layout, тогда вместо сжатия появляется полоса прокрутки.
+        """
+        if self._settings_scroll is None:
+            return
+        host = self._settings_scroll.widget()
+        if host is None or host.layout() is None:
+            return
+        fix_wrap_labels(host)
+        host.setMinimumHeight(host.layout().minimumSize().height())
+
+    def sync_layout(self) -> None:
+        self._sync_host_min()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self.schedule_layout_sync()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.schedule_layout_sync()
 
     def _add_ai_section(self, layout: QVBoxLayout) -> None:
         """AI: провайдер, адрес, модель (каталог с сервера), ключ, таймаут."""
@@ -1643,7 +2182,6 @@ class SettingsTab(EmptyTab):
         about = self._add_button("menu.about")
         about.clicked.connect(self._show_about)
         self._add_row(backup, about)
-        self._layout.addStretch(1)
 
     def _show_about(self) -> None:
         """Показать окно «О программе»."""
@@ -1678,10 +2216,26 @@ class SettingsTab(EmptyTab):
         if self._theme_combo is not None:
             self._theme_combo.blockSignals(True)
             self._theme_combo.clear()
-            self._theme_combo.addItem(ctx().tr("settings.theme_dark"), "dark")
-            self._theme_combo.addItem(ctx().tr("settings.theme_light"), "light")
+            for mode in ctx().themeModes():
+                self._theme_combo.addItem(ctx().tr(f"settings.theme_{mode}"), mode)
             self._theme_combo.blockSignals(False)
-            self._select_data(self._theme_combo, ctx().theme())
+            self._select_data(self._theme_combo, ctx().themeMode())
+
+        if self._accent_combo is not None:
+            self._accent_combo.blockSignals(True)
+            self._accent_combo.clear()
+            for name in ctx().accentIds():
+                self._accent_combo.addItem(ctx().tr(f"settings.accent_{name}"), name)
+            self._accent_combo.blockSignals(False)
+            self._select_data(self._accent_combo, ctx().accent())
+
+        if self._motion_combo is not None:
+            self._motion_combo.blockSignals(True)
+            self._motion_combo.clear()
+            for level in ctx().motionLevels():
+                self._motion_combo.addItem(ctx().tr(f"settings.motion_{level}"), level)
+            self._motion_combo.blockSignals(False)
+            self._select_data(self._motion_combo, ctx().motion())
 
         if self._font_combo is not None:
             self._font_combo.blockSignals(True)
@@ -1701,13 +2255,29 @@ class SettingsTab(EmptyTab):
             ctx().setLocale(str(code))
             self.languageChanged.emit(str(code))
 
+    def _on_accent_selected(self, index: int) -> None:
+        if self._accent_combo is None:
+            return
+        name = self._accent_combo.itemData(index)
+        if name:
+            ctx().setAccent(str(name))
+            self.accentChanged.emit(str(name))
+
     def _on_theme_selected(self, index: int) -> None:
         if self._theme_combo is None:
             return
-        name = self._theme_combo.itemData(index)
-        if name:
-            ctx().setTheme(str(name))
-            self.themeChanged.emit(str(name))
+        mode = self._theme_combo.itemData(index)
+        if mode:
+            ctx().setThemeMode(str(mode))
+            self.themeChanged.emit(ctx().theme())
+
+    def _on_motion_selected(self, index: int) -> None:
+        if self._motion_combo is None:
+            return
+        level = self._motion_combo.itemData(index)
+        if level:
+            ctx().setMotion(str(level))
+            self.motionChanged.emit(str(level))
 
     def _on_font_selected(self, index: int) -> None:
         if self._font_combo is None:
@@ -1723,6 +2293,9 @@ class SettingsTab(EmptyTab):
     def retranslate(self) -> None:
         super().retranslate()
         self._fill_combos()
+        if len(self._accordions) >= 2:
+            self._accordions[0].set_title(ctx().tr("settings.acc_appearance"))
+            self._accordions[1].set_title(ctx().tr("settings.acc_ai"))
         if self._sounds_check is not None:
             self._sounds_check.blockSignals(True)
             self._sounds_check.setText(ctx().tr("settings.sounds_label"))
@@ -1737,3 +2310,114 @@ class SettingsTab(EmptyTab):
 
     def _description(self) -> str:
         return ctx().tr("settings.ollama_note")
+
+
+class PlaceTab(EmptyTab):
+    """«Место» — куда ушёл мусор: стековая полоса и пропорциональные бары.
+
+    Отвечает на главный вопрос забитого диска: какая категория самая жирная.
+    Данные приходят из сводки прошлого скана (то же, что к hero-карточке) —
+    без отдельного прохода по диску.
+    """
+
+    _CAT_COLORS = (
+        "#5b86c9", "#4a9e8c", "#b08a52", "#b06a6a",
+        "#8a7fb8", "#5b9aa8", "#a87f5e", "#7a9e6b",
+    )
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        self._scroll: Optional[QScrollArea] = None
+        self._bar: Optional[StorageBar] = None
+        self._treemap: Optional[TreemapWidget] = None
+        self._rows_layout: Optional[QVBoxLayout] = None
+        self._empty_label: Optional[QLabel] = None
+        self._status_label: Optional[QLabel] = None
+        super().__init__(parent)
+
+    def _result_expands(self) -> bool:
+        return True
+
+    def _add_result_area(self) -> None:
+        frame, layout = self._make_card()
+        self._result_frame = frame
+        self._add_section_label("storage.card_title", layout)
+
+        self._scroll = QScrollArea(self)
+        self._scroll.setObjectName("categoryScroll")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setMinimumHeight(120)
+        host = QWidget(self._scroll)
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        host_layout.setSpacing(8)
+
+        self._status_label = hint(ctx().tr("storage.hint"), self)
+        host_layout.addWidget(self._status_label)
+
+        self._treemap = TreemapWidget(self)
+        host_layout.addWidget(self._treemap)
+
+        self._bar = StorageBar(self)
+        host_layout.addWidget(self._bar)
+
+        self._empty_label = body(ctx().tr("storage.empty"), self)
+        self._empty_label.setProperty("role", "secondary")
+        host_layout.addWidget(self._empty_label)
+
+        self._rows_layout = QVBoxLayout()
+        self._rows_layout.setSpacing(0)
+        host_layout.addLayout(self._rows_layout)
+        host_layout.addStretch(1)
+
+        self._scroll.setWidget(host)
+        layout.addWidget(self._scroll, 1)
+        self._layout.addWidget(frame)
+
+    def set_storage(self, cats: Dict[str, Tuple[str, int]]) -> None:
+        """Показать распределение мусора: id -> (название, байты)."""
+        items = [(cid, title, int(size))
+                 for cid, (title, size) in cats.items() if int(size) > 0]
+        items.sort(key=lambda item: -item[2])
+        if self._rows_layout is not None:
+            while self._rows_layout.count():
+                entry = self._rows_layout.takeAt(0)
+                widget = entry.widget()
+                if widget is not None:
+                    widget.deleteLater()
+        has_data = bool(items)
+        biggest = items[0][2] if items else 0
+        segments = []
+        treemap_items = []
+        for index, (_cid, title, size) in enumerate(items):
+            color = self._CAT_COLORS[index % len(self._CAT_COLORS)]
+            segments.append((color, size))
+            treemap_items.append((color, title, size, human_size(size)))
+            if self._rows_layout is not None:
+                fraction = (size / biggest) if biggest else 0.0
+                self._rows_layout.addWidget(
+                    StorageRow(title, human_size(size), fraction, color, self))
+        if self._bar is not None:
+            self._bar.set_segments(segments)
+            self._bar.setVisible(has_data)
+        if self._treemap is not None:
+            self._treemap.set_items(treemap_items)
+            self._treemap.setVisible(has_data)
+        if self._empty_label is not None:
+            self._empty_label.setVisible(not has_data)
+
+    def retranslate(self) -> None:
+        super().retranslate()
+        if self._status_label is not None:
+            self._status_label.setText(ctx().tr("storage.hint"))
+        if self._empty_label is not None:
+            self._empty_label.setText(ctx().tr("storage.empty"))
+
+    def _title(self) -> str:
+        return ctx().tr("storage.title")
+
+    def _subheading(self) -> str:
+        return ctx().tr("storage.subtitle")
+
+    def _description(self) -> str:
+        return ctx().tr("storage.description")

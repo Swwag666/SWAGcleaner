@@ -85,17 +85,28 @@ def _fix_console_encoding() -> None:
             pass
 
 
-def _setup_logging(level: int = logging.INFO) -> None:
-    """Настроить логирование и перехват необработанных ошибок."""
+def _setup_logging(level: int = logging.WARNING) -> None:
+    """Настроить логирование и перехват необработанных ошибок.
+
+    По умолчанию пишем только предупреждения и выше: информационный
+    шум на каждый чих раньше забивал и консоль, и файл лога.
+    """
     if sys.stderr is not None:
         logging.basicConfig(level=level, format=LOG_FORMAT)
     else:
         # Оконная сборка запускается без консоли — пишем в файл,
-        # иначе ошибки старта пропадут молча.
+        # иначе ошибки старта пропадут молча. Файл не растёт бесконечно:
+        # перевалил мегабайт — уезжает в .old одним куском.
+        path = _log_path()
+        try:
+            if path.exists() and path.stat().st_size > 1024 * 1024:
+                path.replace(path.with_name(path.stem + ".old.log"))
+        except OSError:
+            pass
         logging.basicConfig(
             level=level,
             format=LOG_FORMAT,
-            filename=_log_path(),
+            filename=path,
             encoding="utf-8",
         )
     sys.excepthook = _log_unhandled
@@ -128,9 +139,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--log-level",
-        default="INFO",
+        default="WARNING",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="уровень логирования",
+        help="уровень логирования (по умолчанию WARNING: без инфо-шума)",
     )
     parser.add_argument(
         "--scan",
@@ -507,7 +518,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"SWAGcleaner {_version()}")
         return 0
 
-    _setup_logging(getattr(logging, args.log_level.upper(), logging.INFO))
+    _setup_logging(getattr(logging, args.log_level.upper(), logging.WARNING))
 
     root = args.root or _resolve_project_root()
     os.chdir(root)

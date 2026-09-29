@@ -11,10 +11,10 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from PySide6.QtCore import QObject, QSettings, QTranslator, Signal
+from PySide6.QtCore import QObject, QSettings, QTranslator, Qt, Signal
 from PySide6.QtWidgets import QApplication
 
-from ui.theme import FONT_KINDS, THEMES, register_bundled_fonts
+from ui.theme import ACCENT_IDS, FONT_KINDS, THEMES, register_bundled_fonts
 
 _LOGGER = logging.getLogger("swag.ui.context")
 
@@ -23,6 +23,13 @@ LOCALES: Dict[str, str] = {
     "ru": "Russian",
     "en": "English",
 }
+
+# Уровни анимации: «playful» — частицы/глитч/параллакс, «restrained» —
+# только плавные фейды и базовые hover.
+MOTION_LEVELS: tuple = ("playful", "restrained")
+
+# Режимы темы: system — за ОСью, остальные — явный выбор.
+THEME_MODES: tuple = ("system", "dark", "light", "mono", "num")
 
 
 class Context(QObject):
@@ -39,6 +46,11 @@ class Context(QObject):
     assistantMoodRequested = Signal(str)
     # Пиксельные звуки интерфейса: включаются и выключаются в настройках.
     soundsChanged = Signal(bool)
+    # Акцентная схема (синий/фиолет/изумруд) и интенсивность анимаций.
+    accentChanged = Signal(str)
+    motionChanged = Signal(str)
+    # Счёт чистоты: растёт после каждой успешной очистки, шкала 0-100.
+    cleanlinessChanged = Signal(int)
 
     def __new__(cls) -> "Context":
         if cls._instance is None:
@@ -49,8 +61,12 @@ class Context(QObject):
         super().__init__()
         self._locale: str = "ru"
         self._theme: str = "dark"
+        self._theme_mode: str = "system"
         self._font_kind: str = "pixel"
         self._sounds: bool = True
+        self._accent: str = "blue"
+        self._motion: str = "playful"
+        self._cleanliness: int = 0
         self._translator: Optional[QTranslator] = None
         self._strings_ru: Dict[str, Any] = {}
         self._strings_en: Dict[str, Any] = {}
@@ -67,7 +83,10 @@ class Context(QObject):
         self._load_strings()
         self._load_saved_choice()
         self._apply_locale(app, self._locale)
+        # Тема от системы: тёмная/светлая решается ОСью, а не руками.
+        self._resolve_theme()
         self._apply_theme()
+        app.styleHints().colorSchemeChanged.connect(self._on_system_theme_changed)
 
     # ---------- сохранённые настройки ----------
 
@@ -83,14 +102,24 @@ class Context(QObject):
         store.sync()
 
     def _load_saved_choice(self) -> None:
-        """Прочитать язык, тему и шрифт, выбранные в прошлый раз."""
+        """Прочитать язык, режим темы, шрифт, акцент и уровень анимаций."""
         store = self._store()
         locale = str(store.value("interface/locale", self._locale))
-        theme = str(store.value("interface/theme", self._theme))
+        theme_mode = str(store.value("interface/theme_mode", self._theme_mode))
         font_kind = str(store.value("interface/font", self._font_kind))
+        accent = str(store.value("interface/accent", self._accent))
+        motion = str(store.value("interface/motion", self._motion))
         self._locale = locale if locale in LOCALES else "ru"
-        self._theme = theme if theme in THEMES else "dark"
+        self._theme_mode = theme_mode if theme_mode in THEME_MODES else "system"
         self._font_kind = font_kind if font_kind in FONT_KINDS else "pixel"
+        self._accent = accent if accent in ACCENT_IDS else "blue"
+        self._motion = motion if motion in MOTION_LEVELS else "playful"
+        # Счёт чистоты копится между запусками.
+        try:
+            self._cleanliness = max(0, min(100, int(
+                store.value("interface/cleanliness", 0))))
+        except (TypeError, ValueError):
+            self._cleanliness = 0
         # Флаг читаем строками и булевым: QSettings в ini-файле возвращает
         # строку, в реестре Windows — настоящее значение.
         sounds = store.value("interface/sounds", "true")
@@ -192,17 +221,62 @@ class Context(QObject):
     # ---------- тема ----------
 
     def setTheme(self, theme: str) -> None:
-        """Установить тему (dark / light) и запомнить выбор."""
+        """Форсировать тему (dark / light / mono) - для тестов и отладки."""
         if theme not in THEMES:
             theme = "dark"
         if theme != self._theme:
             self._theme = theme
             self._apply_theme()
-            self._remember("theme", theme)
             self.themeChanged.emit(theme)
 
     def theme(self) -> str:
         return self._theme
+
+    def themeMode(self) -> str:
+        """Режим темы: system (авто ОС) или явный dark/light/mono."""
+        return self._theme_mode
+
+    def themeModes(self) -> tuple:
+        return tuple(THEME_MODES)
+
+    def setThemeMode(self, mode: str) -> None:  # noqa: N802
+        """Выбрать режим темы и пересчитать текущую тему."""
+        mode = str(mode)
+        if mode not in THEME_MODES:
+            mode = "system"
+        if mode == self._theme_mode:
+            return
+        self._theme_mode = mode
+        self._remember("theme_mode", mode)
+        self._resolve_theme()
+
+    def _system_theme(self) -> str:
+        """Тёмная у пользователя ОСили светлая (по Qt colorScheme)."""
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                scheme = app.styleHints().colorScheme()
+                if scheme == Qt.ColorScheme.Light:
+                    return "light"
+                if scheme == Qt.ColorScheme.Dark:
+                    return "dark"
+            except Exception:
+                pass
+        return "dark"
+
+    def _resolve_theme(self) -> None:
+        """Рассчитать тему по режиму и оповестить UI об изменении."""
+        if self._theme_mode == "system":
+            resolved = self._system_theme()
+        else:
+            resolved = self._theme_mode
+        if resolved != self._theme:
+            self._theme = resolved
+            self._apply_theme()
+            self.themeChanged.emit(resolved)
+
+    def _on_system_theme_changed(self, _scheme) -> None:  # noqa: ANN001
+        self._resolve_theme()
 
     # ---------- шрифт ----------
 
@@ -231,6 +305,59 @@ class Context(QObject):
         self._sounds = enabled
         self._remember("sounds", "true" if enabled else "false")
         self.soundsChanged.emit(enabled)
+
+    # ---------- акцент и анимации ----------
+
+    def accent(self) -> str:
+        return self._accent
+
+    def setAccent(self, accent: str) -> None:  # noqa: N802
+        """Выбрать акцентную схему (blue / violet / emerald)."""
+        if accent not in ACCENT_IDS:
+            accent = "blue"
+        if accent == self._accent:
+            return
+        self._accent = accent
+        self._remember("accent", accent)
+        self.accentChanged.emit(accent)
+
+    def motion(self) -> str:
+        return self._motion
+
+    def accentIds(self) -> tuple:
+        """Доступные акцентные схемы (для комбо в настройках)."""
+        return tuple(ACCENT_IDS)
+
+    def motionLevels(self) -> tuple:
+        """Доступные уровни анимации (для комбо в настройках)."""
+        return tuple(MOTION_LEVELS)
+
+    # ---------- счёт чистоты ----------
+
+    def cleanliness(self) -> int:
+        return self._cleanliness
+
+    def addCleanliness(self, delta: int) -> None:  # noqa: N802
+        """Начислить очки за очистку (шкала 0-100, кап - сто)."""
+        delta = int(delta)
+        if delta == 0:
+            return
+        new = max(0, min(100, self._cleanliness + delta))
+        if new == self._cleanliness:
+            return
+        self._cleanliness = new
+        self._remember("cleanliness", str(new))
+        self.cleanlinessChanged.emit(new)
+
+    def setMotion(self, motion: str) -> None:  # noqa: N802
+        """Выбрать интенсивность анимаций (playful / restrained)."""
+        if motion not in MOTION_LEVELS:
+            motion = "playful"
+        if motion == self._motion:
+            return
+        self._motion = motion
+        self._remember("motion", motion)
+        self.motionChanged.emit(motion)
 
     # ---------- персонаж ----------
 

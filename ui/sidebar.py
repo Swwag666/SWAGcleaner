@@ -24,6 +24,7 @@ from PySide6.QtGui import QEnterEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QSizePolicy,
@@ -62,6 +63,22 @@ class Sidebar(QFrame):
         root.setContentsMargins(0, 16, 0, 16)
         root.setSpacing(4)
 
+        # Бренд-блок: иконка всегда видна, название — только в развёрнутом
+        # меню. Сворачивание прячет только текст, не сам блок.
+        self._brand = QFrame(self)
+        self._brand.setObjectName("sidebarBrand")
+        brand_row = QHBoxLayout(self._brand)
+        brand_row.setContentsMargins(12, 2, 12, 6)
+        brand_row.setSpacing(8)
+        self._brand_icon = QLabel(self._brand)
+        self._brand_icon.setFixedSize(26, 26)
+        brand_row.addWidget(self._brand_icon)
+        self._brand_title = QLabel("SWAGcleaner", self._brand)
+        self._brand_title.setProperty("role", "title")
+        brand_row.addWidget(self._brand_title)
+        brand_row.addStretch(1)
+        root.addWidget(self._brand)
+
         self._caption = QLabel(self)
         self._caption.setObjectName("sidebarCaption")
         self._caption.setContentsMargins(16, 0, 10, 10)
@@ -77,6 +94,20 @@ class Sidebar(QFrame):
         self._nav_layout.setSpacing(2)
         root.addLayout(self._nav_layout)
         root.addStretch(1)
+
+        # Статус привилегий внизу меню: цветная точка и подпись.
+        self._admin_row = QHBoxLayout()
+        self._admin_row.setContentsMargins(16, 6, 10, 0)
+        self._admin_row.setSpacing(6)
+        self._admin_dot = QLabel(self)
+        self._admin_dot.setObjectName("statusDot")
+        self._admin_dot.setFixedSize(8, 8)
+        self._admin_row.addWidget(self._admin_dot)
+        self._admin_label = QLabel("", self)
+        self._admin_label.setObjectName("sidebarStatus")
+        self._admin_row.addWidget(self._admin_label)
+        self._admin_row.addStretch(1)
+        root.addLayout(self._admin_row)
 
         # Плавный выезд: одновременно тянем минимальную и максимальную ширину,
         # чтобы разметка не сплющивала содержимое во время анимации.
@@ -100,6 +131,23 @@ class Sidebar(QFrame):
         """Подпись сверху меню (например, версия или название)."""
         self._caption_text = text
         self._caption.setText(text if self._expanded else "")
+
+    def set_admin_level(self, is_admin: bool) -> None:
+        """Показать, с какими правами работает приложение.
+
+        is_admin=None можно не передавать: точка рисуется серым до тех
+        пор, пока уровень не определён.
+        """
+        if is_admin is None:
+            self._admin_dot.setProperty("kind", "unknown")
+            self._admin_label.setText("")
+        else:
+            key = "sidebar.admin" if is_admin else "sidebar.user"
+            self._admin_dot.setProperty("kind", "admin" if is_admin else "user")
+            self._admin_label.setText(ctx().tr(key) if self._expanded else "")
+        style = self._admin_dot.style()
+        style.unpolish(self._admin_dot)
+        style.polish(self._admin_dot)
 
     def add_item(self, icon_name: str, text_key: str) -> QPushButton:
         """Добавить пункт меню. text_key — ключ строки локализации."""
@@ -146,6 +194,9 @@ class Sidebar(QFrame):
         """Перекрасить иконки под текущую тему."""
         self._colors = dict(colors)
         self.refresh_icons()
+        self._brand_icon.setPixmap(
+            icons.pixmap("cleaner", self._colors.get("accent", "#4d8dff"), 22)
+        )
 
     def refresh_icons(self) -> None:
         """Перерисовать иконки: активная — акцентом, остальные — вторичным цветом."""
@@ -175,6 +226,11 @@ class Sidebar(QFrame):
         for button, key in zip(self._items, self._text_keys):
             button.setText(ctx().tr(key) if visible else "")
         self._caption.setText(self._caption_text if visible else "")
+        self._brand_title.setText("SWAGcleaner" if visible else "")
+        if self._admin_label is not None and self._admin_label.text():
+            key = "sidebar.admin" if self._admin_dot.property("kind") == "admin" \
+                else "sidebar.user"
+            self._admin_label.setText(ctx().tr(key) if visible else "")
 
     def expand(self) -> None:
         """Развернуть меню."""

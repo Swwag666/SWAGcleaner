@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import List
 
@@ -25,6 +26,8 @@ from PySide6.QtCore import (
     QPropertyAnimation,
     QSize,
     Qt,
+    QTimeLine,
+    QTimer,
     Signal,
 )
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -42,15 +45,62 @@ from PySide6.QtWidgets import (
 
 from ui import icons, sounds, theme
 from ui.character import MOODS, Assistant, Mascot, SpeechBox, demo_moods
-from ui.context import Context
+from ui.context import Context, ctx
 from ui.dialog import ConfirmDialog
 from ui.scene import SceneStack
 from ui.session import Session, get_session, human_size
 from ui.sidebar import Sidebar
-from ui.tabs import AdvisorTab, CleanerTab, DedupTab, SettingsTab, TweaksTab
-from ui.widgets import AccentBar
+from ui.tabs import AdvisorTab, CleanerTab, DedupTab, PlaceTab, SettingsTab, TweaksTab
+from ui.widgets import AccentBar, ParticleBurst
 
 _LOGGER = logging.getLogger("swag.ui.main")
+
+
+class MascotOverlay(QWidget):
+    """Клинни поверх экрана: в свёрнутом окне персонажу тесно в колонке,
+    и она выходит к пользователю плавающей фигурой у правого нижнего
+    угла экрана. Текст реплик при этом остаётся в программе.
+
+    Клик по фигуре прячет её до следующей смены настроения.
+    """
+
+    SIZE = 300
+
+    def __init__(self) -> None:
+        super().__init__(
+            None,
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowStaysOnTopHint,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        # Живой спрайт, а не открытка: покачивается своим таймером,
+        # шевелит ртом синхронно с печатью реплики и выезжает снизу
+        # при появлении - ровно как колонка в окне.
+        self._mascot = Mascot(self)
+        layout.addWidget(self._mascot)
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mascot(self) -> Mascot:
+        """Внутренний спрайт: окно синхронизирует ему позу и речь."""
+        return self._mascot
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        self._mascot.enter_from_below()
+        super().showEvent(event)
+
+    def place(self, anchor: QWidget) -> None:
+        """Встать у правого нижнего угла экрана, на котором окно."""
+        screen = anchor.screen()
+        area = screen.availableGeometry() if screen is not None else self.geometry()
+        self.move(area.right() - self.width() - 12,
+                  area.bottom() - self.height() - 12)
+
+    def mousePressEvent(self, event) -> None:  # noqa: ANN001
+        self.hide()
 
 # Разделы приложения: имя (оно же ключ реплики персонажа), ключ названия,
 # класс страницы и настроение помощницы на этом разделе.
@@ -61,6 +111,7 @@ PAGES = (
     ("cleaner", "tabs.cleaner", CleanerTab, "idle"),
     ("dedup", "tabs.dedup", DedupTab, "idle"),
     ("tweaks", "tabs.tweaks", TweaksTab, "idle"),
+    ("storage", "tabs.storage", PlaceTab, "idle"),
     ("settings", "tabs.settings", SettingsTab, "idle"),
 )
 
@@ -72,9 +123,15 @@ class MainWindow(QMainWindow):
 
     # Колонка персонажа: ширина в долях от окна с разумными границами,
     # плюс длительность разворота при показе и скрытии.
-    ASSISTANT_MIN_WIDTH = 150
-    ASSISTANT_MAX_WIDTH = 320
+    ASSISTANT_MIN_WIDTH = 200
+    ASSISTANT_MAX_WIDTH = 440
     ASSISTANT_ANIMATION_MS = 220
+    # Ниже этой ширины окна колонка персонажа съедает слишком много сцены:
+    # списки и карточки начинают резаться по ширине - прячем колонку.
+    ASSISTANT_COLLAPSE_WIDTH = 940
+    # Ниже этой высоты окна панель реплики не читается: реплики уходят
+    # оверлеем на экран, а панель в программе прячется.
+    COMPACT_WINDOW_HEIGHT = 800
 
     # Действия страниц, которые требуют подтверждения пользователя ДО работы.
     # Чистка и удаление — всегда с диалогом; сканы и чтение — без него.
@@ -107,8 +164,51 @@ class MainWindow(QMainWindow):
             ]
         )
         self._bind_shortcuts()
+        advisor = self._pages[0]
+        navigate = getattr(advisor, "navigateRequested", None)
+        if navigate is not None:
+            navigate.connect(self.go_to_page)
+        self._refresh_hero()
 
     # ---------- сборка окна ----------
+
+    def show_toast(self, text: str, kind: str = "info") -> None:
+        """Плашка внизу справа: некритичные итоги без модального окна."""
+        self._toasts.show_message(text, kind)
+
+    def _refresh_hero(self) -> None:
+        """Hero-карточка и превью категорий из сводки прошлого скана."""
+        import time as _time
+        advisor = self._pages[0]
+        summary = self._session.last_scan_summary()
+        if summary:
+            last = _time.strftime(
+                "%d.%m %H:%M", _time.localtime(float(summary.get("ts", 0))))
+            junk = human_size(int(summary.get("bytes", 0) or 0))
+        else:
+            last = self._context.tr("hero.never")
+            junk = "-"
+        freed = human_size(self._session.total_freed())
+        score = str(self._context.cleanliness())
+        if hasattr(advisor, "set_hero_stats"):
+            advisor.set_hero_stats(last, junk, freed, score)
+        cleaner = self._pages[1]
+        if summary is not None and hasattr(cleaner, "set_last_summary"):
+            meta = self._session.cat_meta()
+            cats = {}
+            for cat, size in (summary.get("cats") or {}).items():
+                # Имя категории берём из локализации (cats.*), а не от ядра:
+                # ядро отдаёт английский title, и на экране «Место» и превью
+                # Чистки он светился бы нерусским в русской локали.
+                title_key = f"cats.{cat.replace('.', '_')}"
+                title = self._context.tr(title_key)
+                if title == title_key:
+                    title = str(meta.get(cat, {}).get("title", cat))
+                cats[cat] = (title, int(size))
+            cleaner.set_last_summary(cats)
+            place = self._pages[4] if len(self._pages) > 4 else None
+            if place is not None and hasattr(place, "set_storage"):
+                place.set_storage(cats)
 
     def _build_ui(self) -> None:
         self.setMinimumSize(QSize(940, 620))
@@ -137,6 +237,7 @@ class MainWindow(QMainWindow):
         # Сцена: страница раздела и колонка с помощницей справа.
         stage = QWidget(self._content)
         stage.setObjectName("stage")
+        self._stage = stage
         stage_layout = QHBoxLayout(stage)
         stage_layout.setContentsMargins(0, 0, 0, 0)
         stage_layout.setSpacing(0)
@@ -153,11 +254,29 @@ class MainWindow(QMainWindow):
         content_layout.addLayout(speech_row)
 
         self._assistant = Assistant(self._mascot, self._speech, self)
+        # В свёрнутом окне персонажу тесно: Клинни выходит к пользователю
+        # плавающей фигурой поверх экрана, текст реплик остаётся в окне.
+        self._mascot_overlay = MascotOverlay()
+        self._mascot.moodChanged.connect(self._on_mascot_mood)
+        # Оверлейная Клинни живёт той же жизнью, что оконная: поза по
+        # настроению, рот по печати реплики.
+        self._mascot.moodChanged.connect(self._mascot_overlay.mascot().set_mood)
+        self._speech.typingChanged.connect(
+            self._mascot_overlay.mascot().set_speaking)
         root.addWidget(self._content, 1)
 
         self.setCentralWidget(central)
+        # Тосты живут оверлеем поверх central: информашки без модалок.
+        self._toasts = theme.ToastHost(central)
+        central.installEventFilter(self._toasts)
+        self._toasts.setGeometry(0, 0, central.width(), central.height())
+        self._toasts.raise_()
+        # Частицы после очистки - ещё один прозрачный оверлей поверх всего.
+        self._particles = ParticleBurst(central)
+        self._particles.setGeometry(0, 0, central.width(), central.height())
         self._build_status_bar()
         self._apply_assistant_width()
+        self._refresh_admin_level()
 
     def _bind_shortcuts(self) -> None:
         """Горячие клавиши окна.
@@ -190,11 +309,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._header_sub)
         layout.addStretch(1)
 
-        self._theme_button = self._make_header_button("theme_dark")
-        self._theme_button.clicked.connect(self.toggle_theme)
-        self._theme_button.setIconSize(QSize(20, 20))
-        layout.addWidget(self._theme_button)
-
         self._assistant_button = self._make_header_button("assistant")
         self._assistant_button.clicked.connect(self.toggle_assistant)
         self._assistant_button.setIconSize(QSize(20, 20))
@@ -221,7 +335,7 @@ class MainWindow(QMainWindow):
         widget.setObjectName("headerButton")
         widget.setCursor(Qt.CursorShape.PointingHandCursor)
         widget.setMinimumHeight(36)
-        widget.setIcon(icons.icon(icon_name, theme.palette(self._context.theme())["text_secondary"], 20))
+        widget.setIcon(icons.icon(icon_name, theme.palette(self._context.theme(), self._context.accent())["text_secondary"], 20))
         return widget
 
     def _build_stack(self) -> SceneStack:
@@ -235,10 +349,36 @@ class MainWindow(QMainWindow):
 
     def _build_status_bar(self) -> None:
         self._status_bar = QStatusBar(self)
+        # Штамп времени исходника: видно с первого взгляда, свежий ли
+        # процесс крутится (особенно когда рядом лежит собранный exe).
+        self._build_label = QLabel(self._build_stamp(), self._status_bar)
+        self._build_label.setProperty("role", "secondary")
+        self._status_bar.addWidget(self._build_label)
         self._status_label = QLabel(self._context.tr("status.ready"), self._status_bar)
         self._status_label.setProperty("role", "secondary")
         self._status_bar.addPermanentWidget(self._status_label)
         self.setStatusBar(self._status_bar)
+
+    @staticmethod
+    def _build_stamp() -> str:
+        """Метка свежести процесса: время исходника или время сборки exe.
+
+        В onefile-сборке PyInstaller модули живут внутри архива, и
+        __file__ указывает в распакованную папку _MEI..., где файла на
+        диске нет: там метку берём с самого exe - он и есть сборка.
+        """
+        import datetime
+        import sys
+        from pathlib import Path
+        try:
+            if getattr(sys, "frozen", False):
+                source = Path(sys.executable)
+            else:
+                source = Path(__file__).resolve()
+            stamp = datetime.datetime.fromtimestamp(source.stat().st_mtime)
+        except OSError:
+            return "сборка: dev"
+        return stamp.strftime("сборка %d.%m %H:%M")
 
     # ---------- связи с контекстом ----------
 
@@ -246,6 +386,7 @@ class MainWindow(QMainWindow):
         self._context.languageChanged.connect(self.retranslate)
         self._context.themeChanged.connect(self._on_theme_changed)
         self._context.fontChanged.connect(self._on_font_changed)
+        self._context.accentChanged.connect(self._on_accent_changed)
         # Реплику и настроение помощницы можно заказать через контекст —
         # страницам и ядру не нужно знать ни про один виджет.
         self._context.speechRequested.connect(self._on_speech_requested)
@@ -261,17 +402,12 @@ class MainWindow(QMainWindow):
         sounds.attach(self._app)
 
     def _apply_visuals(self) -> None:
-        theme.apply_theme(self._app, self._context.theme(), self._context.fontKind())
-        colors = theme.palette(self._context.theme())
+        accent = self._context.accent()
+        current_theme = self._context.theme()
+        theme.apply_theme(self._app, current_theme, self._context.fontKind(), accent)
+        colors = theme.palette(current_theme, accent)
         self._sidebar.apply_colors(colors)
         self._accent_bar.apply_colors(colors)
-        self._theme_button.setIcon(
-            icons.icon(
-                "theme_light" if self._context.theme() == "dark" else "theme_dark",
-                colors["text_secondary"],
-                20,
-            )
-        )
         self._language_button.setIcon(icons.icon("language", colors["text_secondary"], 20))
         self._assistant_button.setIcon(icons.icon("assistant", colors["text_secondary"], 20))
         self._refresh_sidebar_caption()
@@ -280,13 +416,23 @@ class MainWindow(QMainWindow):
         self._sidebar.set_caption(self._context.tr("sidebar.caption"))
 
     def _on_theme_changed(self, _theme: str) -> None:
+        # Текст от темы не меняется: retranslate тут только перестраивал
+        # страницы заново и давал секундную фризу на ровном месте.
         self._apply_visuals()
-        self.retranslate()
+        # Сменилась тема — сменился и протагонист: в «числовой» рисуется
+        # новый герой, в остальных — Клинни. Сбрасываем кеш поз и рта.
+        self._mascot.clear_cache()
+        self._mascot_overlay.mascot().clear_cache()
+        self._mascot.update()
+        self._mascot_overlay.update()
         sounds.play("page")
 
     def _on_font_changed(self, _font_kind: str) -> None:
         self._apply_visuals()
-        self.retranslate()
+        sounds.play("page")
+
+    def _on_accent_changed(self, _accent: str) -> None:
+        self._apply_visuals()
         sounds.play("page")
 
     def _on_speech_requested(self, text: str) -> None:
@@ -313,28 +459,116 @@ class MainWindow(QMainWindow):
         """
         return max(
             self.ASSISTANT_MIN_WIDTH,
-            min(self.ASSISTANT_MAX_WIDTH, int(max(self.width(), 1) * 0.28)),
+            min(self.ASSISTANT_MAX_WIDTH, int(max(self.width(), 1) * 0.33)),
         )
+
+    def _effective_character_width(self) -> int:
+        """Ширина колонки с учётом авто-коллапса на узких окнах."""
+        if not self._assistant_visible:
+            return 0
+        if self.width() < self.ASSISTANT_COLLAPSE_WIDTH:
+            return 0
+        return self._character_width()
+
+    def _compact_window(self) -> bool:
+        """Окно ниже порога: панель реплики в программе не читается."""
+        return self.height() < self.COMPACT_WINDOW_HEIGHT
+
+    def _on_mascot_mood(self, mood: str) -> None:
+        """Настроение сменилось: оверлей в свёрнутом окне + скриншейк в панике."""
+        if mood == "panic":
+            self._shake_stage()
+        if not self._compact_window():
+            return
+        self._show_mascot_overlay()
+
+    def _shake_stage(self) -> None:
+        """Лёгкий затухающий сдвиг сцены - скриншейк при панике.
+
+        Работает только в «игриво»: в «сдержанно» персонаж дрожит сам,
+        а сцена остаётся неподвижной.
+        """
+        if self._context.motion() != "playful" or getattr(self, "_stage", None) is None:
+            return
+        stage = self._stage
+        base = stage.pos()
+        timeline = QTimeLine(280, self)
+        timeline.setUpdateInterval(16)
+        timeline.setCurveShape(QTimeLine.CurveShape.Linear)
+
+        def on_frame(t: float) -> None:
+            k = (1.0 - t) * 6.0
+            dx = math.sin(t * 42.0) * k
+            dy = math.cos(t * 57.0) * k * 0.55
+            stage.move(base.x() + int(round(dx)), base.y() + int(round(dy)))
+
+        def on_finished() -> None:
+            stage.move(base)
+            timeline.deleteLater()
+
+        timeline.frameChanged.connect(on_frame)
+        timeline.finished.connect(on_finished)
+        timeline.start()
+
+    def _burst_particles(self) -> None:
+        """Пиксельный разлет после крупной очистки (только в «игриво»)."""
+        if self._context.motion() != "playful":
+            return
+        particles = getattr(self, "_particles", None)
+        if particles is not None:
+            particles.burst()
+
+    def _show_mascot_overlay(self) -> None:
+        """Поставить плавающую Клинни у правого нижнего угла экрана."""
+        # Настроение могло смениться ещё до появления оверлея: синхроним.
+        self._mascot_overlay.mascot().set_mood(self._mascot.mood())
+        self._mascot_overlay.place(self)
+        self._mascot_overlay.show()
+        self._mascot_overlay.raise_()
 
     def _apply_assistant_width(self) -> None:
         """Подогнать колонку под текущий размер окна."""
+        compact = self._compact_window()
+        if compact:
+            if self._assistant_visible:
+                self._show_mascot_overlay()
+        else:
+            self._mascot_overlay.hide()
         if not self._assistant_visible:
             return
         animation = self._assistant_animation
         if animation is not None and animation.state() != QAbstractAnimation.State.Stopped:
             return
-        width = self._character_width()
+        width = self._effective_character_width()
         self._mascot.setMinimumWidth(width)
         self._mascot.setMaximumWidth(width)
+        # В свёрнутом окне колонку персонажа прячем: Клинни в этот момент
+        # стоит фигурой на экране. Панель реплики живёт всегда: текст
+        # пользователь читает в программе, даже когда окно узкое и низкое.
+        self._mascot.setVisible(width > 0 and not compact)
+        self._speech.setVisible(True)
 
     def assistant_visible(self) -> bool:
         return self._assistant_visible
+
+    def _refresh_admin_level(self) -> None:
+        """Показать в боковом меню, с какими правами запущено приложение."""
+        try:
+            from core.elevate import is_admin
+
+            self._sidebar.set_admin_level(is_admin())
+        except Exception:
+            self._sidebar.set_admin_level(None)
 
     def toggle_assistant(self) -> None:
         """Показать или скрыть помощницу вместе с панелью реплики."""
         self._assistant_visible = not self._assistant_visible
         self._refresh_assistant_button()
         sounds.play("click")
+        if not self._assistant_visible:
+            self._mascot_overlay.hide()
+        elif self._compact_window():
+            self._show_mascot_overlay()
 
         group = QParallelAnimationGroup(self)
         current_width = self._mascot.width()
@@ -342,7 +576,7 @@ class MainWindow(QMainWindow):
             self._mascot.show()
             self._speech.show()
             self._speech.setMaximumHeight(0)
-            target_width = self._character_width()
+            target_width = self._effective_character_width()
             target_height = self._speech.sizeHint().height()
         else:
             target_width = 0
@@ -550,6 +784,8 @@ class MainWindow(QMainWindow):
         _finish_* ловится здесь, окно возвращается в свободное состояние.
         """
         page = self._work_page or self._current_page()
+        if name in ("cleaner_scan", "purge", "purge_dupes"):
+            self._refresh_hero()
         try:
             if name == "advisor":
                 self._finish_advisor(result, page)
@@ -866,7 +1102,25 @@ class MainWindow(QMainWindow):
         if hasattr(page, "show_journal"):
             page.show_journal(report, text)
         sounds.play("done" if not report.failures else "error")
-        self._assistant.say(text, "calm" if not report.failures else "panic")
+        # После успешной чистки она довольна, после отказов - в шоке.
+        mood = "calm" if not report.failures else "panic"
+        self._mascot.set_mood(mood)
+        self._assistant.say(text, mood)
+        # Успешная очистка копит счёт чистоты; hero подтягивает его сам.
+        if not report.failures:
+            freed = int(getattr(report, "freed_bytes", 0) or 0)
+            self._bump_cleanliness(freed)
+            self._refresh_hero()
+            # Заметная победа - разлет частиц, чтобы результат чувствовался.
+            if freed >= 500 * 1024 * 1024:
+                self._burst_particles()
+
+    def _bump_cleanliness(self, freed_bytes: int) -> None:
+        """Очки за очистку: 512 МБ = 1 балл, максимум +20 за раз."""
+        if freed_bytes <= 0:
+            return
+        delta = max(1, min(20, int(freed_bytes // (512 * 1024 * 1024))))
+        self._context.addCleanliness(delta)
 
     # ---------- твики: автозагрузка и бэкапы (M4/M5) ----------
 
@@ -1181,6 +1435,8 @@ class MainWindow(QMainWindow):
             ok=result.get("ok", 0), total=result.get("total", 0))
         if page is not None and hasattr(page, "setStatus"):
             page.setStatus(text)
+        self.show_toast(text, "ok" if result.get("ok", 0)
+                        == result.get("total", 0) else "warn")
         self._assistant.say(text, "idle")
         sounds.play("done" if result.get("ok", 0) == result.get("total", 0)
                     else "error")
@@ -1218,6 +1474,7 @@ class MainWindow(QMainWindow):
             apps=result.get("apps", 0), redists=result.get("redists", 0))
         if page is not None and hasattr(page, "setStatus"):
             page.setStatus(text)
+        self.show_toast(text, "ok")
         self._assistant.say(text, "idle")
         sounds.play("done")
 
@@ -1277,6 +1534,7 @@ class MainWindow(QMainWindow):
                 f"- {r.get('id')}: {r.get('error', '?')}" for r in fails[:10])
         if page is not None and hasattr(page, "setStatus"):
             page.setStatus(text)
+        self.show_toast(text, "ok" if not fails else "warn")
         self._assistant.say(text, "idle")
         sounds.play("done" if not fails else "error")
 
@@ -1301,6 +1559,8 @@ class MainWindow(QMainWindow):
         if page is not None and hasattr(page, "setStatus"):
             page.setStatus(self._context.tr("tweaks.configs_exported").format(
                 path=done))
+        self.show_toast(self._context.tr("tweaks.configs_exported").format(
+            path=done), "ok")
         sounds.play("done")
 
     def _on_config_import(self, path: str) -> None:
@@ -1319,6 +1579,8 @@ class MainWindow(QMainWindow):
         if page is not None and hasattr(page, "setStatus"):
             page.setStatus(self._context.tr("tweaks.configs_imported").format(
                 name=cfg["name"]))
+        self.show_toast(self._context.tr("tweaks.configs_imported").format(
+            name=cfg["name"]), "ok")
         sounds.play("done")
 
     def _ask_config_delete(self, name: str) -> None:
@@ -1331,11 +1593,12 @@ class MainWindow(QMainWindow):
         done = self._session.config_delete(name)
         self._refresh_configs()
         page = self._current_page()
+        text = self._context.tr("tweaks.configs_deleted" if done
+                                else "tweaks.configs_delete_fail").format(
+            name=name)
         if page is not None and hasattr(page, "setStatus"):
-            page.setStatus(
-                self._context.tr("tweaks.configs_deleted" if done
-                                 else "tweaks.configs_delete_fail").format(
-                    name=name))
+            page.setStatus(text)
+        self.show_toast(text, "ok" if done else "error")
 
     def _finish_tweaks(self, result: dict, page: QWidget) -> None:
         self._work_page = None
@@ -1416,12 +1679,18 @@ class MainWindow(QMainWindow):
                 plan = (self._context.tr("advisor.ai_note") + "\n"
                         + ai_text + "\n\n" + plan)
             page.setPlan(plan)
+        if hasattr(page, "scroll_to_top"):
+            # После скана смотрим на шапку с цифрами, а не на хвост списка.
+            page.scroll_to_top()
         sounds.play("done")
+        # Нашли мусор и рекомендации - помощница в шоке; чистая машина - довольна.
+        mood = "panic" if (result["apps"] or result["recs"]) else "calm"
+        self._mascot.set_mood(mood)
         self._assistant.say(
             self._context.tr("session.advisor_apps").format(count=result["apps"])
             + " " + self._context.tr("session.advisor_recs").format(
                 count=len(result["recs"])),
-            "idle",
+            mood,
         )
 
     def _finish_cleaner(self, scan, page: QWidget) -> None:
@@ -1455,8 +1724,12 @@ class MainWindow(QMainWindow):
                 for summary in scan.summaries
             ])
         sounds.play("done")
+        # Сколько мусора - столько и эмоций: гора находок пугает, ноль - радует.
+        mood = "panic" if scan.bytes > 0 else "calm"
+        # Поза переключается сразу, не дожидаясь очереди реплик.
+        self._mascot.set_mood(mood)
         self._assistant.say(
-            self._context.tr("character.lines.clean"), "idle")
+            self._context.tr("character.lines.clean"), mood)
 
     def _finish_dedup(self, result: dict, page: QWidget) -> None:
         self._work_page = None
@@ -1481,10 +1754,12 @@ class MainWindow(QMainWindow):
             else:
                 page.setGroups(self._context.tr("session.dup_none"))
         sounds.play("done")
+        mood = "panic" if groups else "calm"
+        self._mascot.set_mood(mood)
         self._assistant.say(
             self._context.tr("session.dup_groups").format(
                 count=len(groups), size=human_size(wasted)),
-            "idle",
+            mood,
         )
 
     def _sweep_accent(self) -> None:
@@ -1510,9 +1785,6 @@ class MainWindow(QMainWindow):
         # персонажа тянется вместе с окном.
         self._apply_assistant_width()
 
-    def toggle_theme(self) -> None:
-        self._context.setTheme("light" if self._context.theme() == "dark" else "dark")
-
     def toggle_language(self) -> None:
         self._context.setLocale("en" if self._context.locale() == "ru" else "ru")
 
@@ -1526,19 +1798,17 @@ class MainWindow(QMainWindow):
         self._header_title.setText(self._context.tr("app.title"))
         self._header_sub.setText(self._context.tr("app.subtitle"))
         self._language_button.setText(self._context.locale().upper())
-        self._theme_button.setToolTip(
-            self._context.tr("settings.theme_light")
-            if self._context.theme() == "dark"
-            else self._context.tr("settings.theme_dark")
-        )
         self._language_button.setToolTip(self._context.tr("header.language"))
         self._refresh_assistant_button()
         self._sidebar.retranslate()
         self._refresh_sidebar_caption()
         self._speech.retranslate()
-        for page in self._pages:
+        # Страницы переводим лесенкой: единовременный retranslate всех
+        # пяти вкладок (твики перестраивают сотни строк) давал фризу в
+        # пару секунд, а так интерфейс дышит между кусками.
+        for index, page in enumerate(self._pages):
             if hasattr(page, "retranslate"):
-                page.retranslate()
+                QTimer.singleShot(index * 70, page.retranslate)
         # Открытый модальный диалог подтверждения тоже переодевается.
         for dlg in self.findChildren(ConfirmDialog):
             dlg.retranslate()

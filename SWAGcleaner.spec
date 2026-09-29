@@ -47,6 +47,8 @@ datas = [
     # Картинки помощницы: каждая поза — отдельный файл. Исходники в
     # assets/character/raw в сборку не идут: они в разы тяжелее.
     ("assets/character/*.png", "assets/character"),
+    # Протагонист «числовой» темы — отдельный набор поз в подпапке num.
+    ("assets/character/num/*.png", "assets/character/num"),
 ]
 
 # Пакет ui — обычный, но PyInstaller о нём знает только через эти импорты.

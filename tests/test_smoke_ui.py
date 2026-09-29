@@ -278,7 +278,10 @@ class TestPages:
         ctx().setLocale("ru")
         page = AdvisorTab()
         assert page._title() == ctx().tr("advisor.title")
-        assert len(_buttons(page)) == 2
+        # Плитки hero - тоже кнопки, но не действия страницы: исключаем.
+        actions = [b for b in _buttons(page)
+                   if b.objectName() != "quickTile"]
+        assert len(actions) == 2
         page.setStatus("идёт скан")
         page.setPlan("план готов")
         assert page._status_label.text() == "идёт скан"
@@ -337,10 +340,10 @@ class TestPages:
         assert ("d", entry) in fired
         assert ("r", "startup-HKCU-Discord") in fired
 
-    def test_settings_page_has_three_controls(self, qapp: t.Any) -> None:
+    def test_settings_page_has_controls(self, qapp: t.Any) -> None:
         combos = SettingsTab().findChildren(QComboBox)
-        # язык, тема, шрифт + провайдер AI и редактируемый список моделей
-        assert len(combos) == 5
+        # язык, тема, акцент, анимации, шрифт + провайдер AI и список моделей
+        assert len(combos) == 7
 
     def test_settings_switches_language(self, qapp: t.Any) -> None:
         ctx().setLocale("ru")
@@ -349,11 +352,18 @@ class TestPages:
         assert ctx().locale() == "en"
         page.deleteLater()
 
-    def test_settings_switches_theme(self, qapp: t.Any) -> None:
-        ctx().setTheme("dark")
+    def test_settings_switches_accent(self, qapp: t.Any) -> None:
+        ctx().setAccent("blue")
         page = SettingsTab()
-        page._theme_combo.setCurrentIndex(page._theme_combo.findData("light"))
-        assert ctx().theme() == "light"
+        page._accent_combo.setCurrentIndex(page._accent_combo.findData("violet"))
+        assert ctx().accent() == "violet"
+        page.deleteLater()
+
+    def test_settings_switches_motion(self, qapp: t.Any) -> None:
+        ctx().setMotion("playful")
+        page = SettingsTab()
+        page._motion_combo.setCurrentIndex(page._motion_combo.findData("restrained"))
+        assert ctx().motion() == "restrained"
         page.deleteLater()
 
     def test_settings_switches_font(self, qapp: t.Any) -> None:
@@ -421,7 +431,7 @@ class TestPaletteContrast:
 
 class TestSceneStack:
     def test_starts_on_first_page(self, win: t.Any) -> None:
-        assert win._stack.count() == 5
+        assert win._stack.count() == 6
         assert win._stack.currentIndex() == 0
         assert win._stack.currentWidget() is win._stack.widget(0)
 
@@ -481,7 +491,7 @@ class TestSidebar:
         sidebar.collapse()
         QTest.qWait(Sidebar.ANIMATION_MS + 120)
         assert not sidebar.is_expanded()
-        assert sidebar.count() == 5
+        assert sidebar.count() == 6
         assert sidebar.minimumWidth() == Sidebar.COLLAPSED_WIDTH
         assert all(button.text() == "" for button in sidebar._items)
 
@@ -537,33 +547,30 @@ class TestSidebar:
 
 
 class TestMainWindow:
-    def test_window_has_five_pages_and_nav_items(self, win: t.Any) -> None:
-        assert win._stack.count() == 5
-        assert win._sidebar.count() == 5
+    def test_window_has_six_pages_and_nav_items(self, win: t.Any) -> None:
+        assert win._stack.count() == 6
+        assert win._sidebar.count() == 6
 
     def test_go_to_page_switches_stack(self, win: t.Any) -> None:
         win.go_to_page(3)
         assert win._stack.currentIndex() == 3
         assert win._sidebar.current_index() == 3
 
-    def test_header_buttons_toggle_theme_and_language(self, win: t.Any) -> None:
-        ctx().setTheme("dark")
+    def test_header_language_button_toggles(self, win: t.Any) -> None:
         ctx().setLocale("ru")
-        win.toggle_theme()
-        assert ctx().theme() == "light"
         win.toggle_language()
         assert ctx().locale() == "en"
         assert win._language_button.text() == "EN"
 
     def test_theme_change_repaints_interface(self, win: t.Any) -> None:
         ctx().setTheme("dark")
-        assert win._app.styleSheet() == theme.qss("dark", ctx().fontKind())
+        assert win._app.styleSheet() == theme.qss("dark", ctx().fontKind(), ctx().accent())
         ctx().setTheme("light")
-        assert win._app.styleSheet() == theme.qss("light", ctx().fontKind())
+        assert win._app.styleSheet() == theme.qss("light", ctx().fontKind(), ctx().accent())
 
     def test_font_change_repaints_interface(self, win: t.Any) -> None:
         ctx().setFontKind("default")
-        assert win._app.styleSheet() == theme.qss(ctx().theme(), "default")
+        assert win._app.styleSheet() == theme.qss(ctx().theme(), "default", ctx().accent())
         assert win._app.font().family().lower() != "handjet"
         ctx().setFontKind("pixel")
         assert win._app.font().family().lower() == "handjet"
@@ -596,6 +603,17 @@ class TestCharacterAssets:
         moods = available_moods()
         assert moods["scan"] is not None
         assert moods["panic"] is not None
+
+    def test_numeric_theme_uses_its_own_protagonist(self, qapp: t.Any) -> None:
+        # В «числовой» теме другой герой (assets/character/num), а Клинни
+        # остаётся на месте во всех остальных темах.
+        num_idle = pose_path("idle", "num")
+        dark_idle = pose_path("idle", "dark")
+        assert num_idle is not None
+        assert num_idle.parts[-2] == "num"
+        assert dark_idle is not None
+        assert dark_idle.parts[-2] == "character"
+        assert num_idle != dark_idle
 
     def test_calm_pose_is_its_own_picture(self, qapp: t.Any) -> None:
         # Спокойная поза — отдельный арт, а не та же фотка с лупой.
@@ -957,6 +975,10 @@ class TestWindowAssistant:
         return widget.geometry().translated(widget.mapTo(win, QPoint(0, 0)))
 
     def test_character_stands_beside_the_page_not_on_it(self, win: t.Any) -> None:
+        # Колонка персонажа существует только в полноэкранном (не компактном)
+        # окне: на низком окне персонаж уходит в плавающий оверлей.
+        win.resize(1100, 860)
+        QTest.qWait(80)
         mascot = self._in_window(win, win._mascot)
         speech = self._in_window(win, win._speech)
         stack = self._in_window(win, win._stack)
@@ -966,6 +988,8 @@ class TestWindowAssistant:
         assert mascot.left() >= stack.right() - 1
 
     def test_hide_and_show_assistant(self, win: t.Any) -> None:
+        win.resize(1100, 860)
+        QTest.qWait(80)
         page_width = win._stack.width()
         win.toggle_assistant()
         QTest.qWait(MainWindow.ASSISTANT_ANIMATION_MS + 140)
@@ -1261,7 +1285,7 @@ class TestSounds:
         assert recorder.events == ["click"]
 
     def test_settings_checkbox_turns_sounds_off_and_on(self, win: t.Any) -> None:
-        page = win._pages[4]
+        page = win._pages[5]
         ctx().setSounds(True)
         page.retranslate()
         assert page._sounds_check.isChecked()
@@ -1369,7 +1393,8 @@ class TestWorkFlow:
         assert page.stats().value("candidates") == 1284
         assert page.stats().value("size") == 2412.0
         assert page._status_label.text() == ctx().tr("cleaner.scan_done")
-        assert win._mascot.mood() == "idle"
+        # Гора находок пугает: после скана с мусором персонаж в панике.
+        assert win._mascot.mood() == "panic"
 
     def test_second_action_waits_while_busy(self, win_fake: t.Any) -> None:
         win, session = win_fake
@@ -1444,7 +1469,7 @@ class TestCategoryScreen:
         win, session = win_fake
         win.go_to_page(1)
         page = win._pages[1]
-        assert not page._scroll.isVisible()
+        assert page.cards() == []
         page.scanRequested.emit()
         session.finish_candidates(make_scan())
         assert page._scroll.isVisible()
@@ -1646,9 +1671,11 @@ class TestJournalScreen:
         texts = [w.text() for w in journal.findChildren(QLabel)]
         assert any("C:\\win\\sys.dat" in t for t in texts)
         assert any("C:\\tmp\\lock.tmp" in t for t in texts)
-        # Карточки и выбор скрыты журналом.
-        assert not page._scroll.isVisible()
+        # Карточки и кнопки выбора скрыты журналом; сам контейнер остаётся
+        # видимым, потому что журнал рендерится внутри него.
+        assert page._scroll.isVisible()
         assert not page._select_all_button.isVisible()
+        assert all(not card.isVisible() for card in page.cards())
 
     def test_new_scan_hides_journal(self, win_fake: t.Any) -> None:
         _win, page, _report = self._purge_with_report(win_fake)
@@ -1975,8 +2002,12 @@ class TestStage45TweaksUi:
                      name_ru="Диагностика приложений", status="on",
                      risk="medium"),
         ])
+        # Заголовки групп живут в шапках аккордеонов (кнопки), строки -
+        # в лейблах внутри тел: собираем тексты и оттуда, и оттуда.
         texts = [w.text() for w in page.findChildren(QLabel)]
-        assert any(ctx().tr("tweaks.sys_section") in x for x in texts)
+        texts += [getattr(b, "fullText", b.text)()
+                  for b in page.findChildren(QPushButton)]
+        assert any(ctx().tr("tweaks.sys_hint") in x for x in texts)
         assert any(ctx().tr("tweaks.cat_explorer") in x for x in texts)
         assert any(ctx().tr("tweaks.cat_telemetry") in x for x in texts)
         assert any("расширения" in x for x in texts)

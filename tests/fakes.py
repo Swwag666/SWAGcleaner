@@ -66,6 +66,12 @@ class FakeCoreSession(QObject):
     def last_scan(self) -> ScanResult:
         return self._scan
 
+    def last_scan_summary(self) -> t.Optional[t.Dict[str, t.Any]]:
+        return None
+
+    def total_freed(self) -> int:
+        return 0
+
     def last_groups(self) -> list:
         return list(self._groups)
 

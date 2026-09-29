@@ -115,6 +115,17 @@ GRIDS: Dict[str, tuple[str, ...]] = {
         ".X....X.",
         "..XXXX..",
     ),
+    # Место — диск с бликом и дорожкой.
+    "storage": (
+        "XXXXXXXX",
+        "X......X",
+        "X......X",
+        "X.XXX..X",
+        "X.XXX..X",
+        "X......X",
+        "X......X",
+        "XXXXXXXX",
+    ),
 }
 
 CELLS = 8

@@ -64,7 +64,7 @@
 | Мост | NDJSON-протокол поверх stdin/stdout, один долгоживущий процесс |
 | AI (опция) | stdlib `urllib` → Ollama / OpenAI-совместимый API |
 | Сборка | PyInstaller (spec подкладывает `swagscan.exe`) |
-| Тесты | pytest (355) + `cargo test` (54) |
+| Тесты | pytest (398) + `cargo test` (54) |
 | Полигон | VirtualBox + Windows 11 24H2 (тесты удаления не на живом железе) |
 
 ## Как работает чистка (политика удаления)
@@ -113,9 +113,11 @@
 
 ## Статус на 17.09.2026 (честно)
 
-Интерфейс — настоящий: боковое меню, пять страниц, две темы, ru/en, пиксельный шрифт Handjet,
-звуки, помощница в стиле визуальной новеллы, диалог подтверждения, живые счётчики, фоновые
-задачи, 328 + 54 теста.
+Интерфейс — настоящий: боковое меню, пять страниц, четыре темы (тёмная/светлая/монохром/
+числовая) и три акцента, ru/en, пиксельный шрифт Handjet, звуки, помощница в стиле визуальной
+новеллы (Клинни + отдельный герой в числовой теме), диалог подтверждения, живые счётчики,
+фоновые задачи, частицы, тряска экрана, 398 + 54 теста. Детальный список правок релиза —
+[`RELEASE.md`](RELEASE.md).
 
 Ядро сканирования — настоящее и проверенное: Rust-обход, категории, дубликаты BLAKE3, удаление
 в две дорожки, dry-run, отмена; мост и протокол покрыты интеграционными тестами; на живой машине
@@ -178,7 +180,7 @@ cargo +stable-x86_64-pc-windows-gnu test               # 52 теста
 ## Тесты
 
 ```bash
-# весь набор Python (328 тестов: модели, ядро, UI, AI, мост до Rust)
+# весь набор Python (398 тестов: модели, ядро, UI, AI, мост до Rust)
 ./venv/Scripts/python.exe -m pytest -o addopts="" -q -p no:cacheprovider
 # Rust-ядро (52 теста)
 cd rust/swagscan && cargo +stable-x86_64-pc-windows-gnu test
@@ -235,7 +237,9 @@ disable with a disk snapshot, restore; UWP and service disabling are planned).
 - Every deletion and every disable requires confirmation; the dialog shows items, size, risk and
   the total. Failures never abort the whole run — they are collected into the report.
 
-Status (17 Sep 2026): the interface is real (two themes, ru/en, mascot, confirm dialog, workers)
+Status (17 Sep 2026): the interface is real (four themes + three accents, ru/en, mascot,
+confirm dialog, workers, particles, screen shake — release notes in
+[`RELEASE.md`](RELEASE.md))
 and is wired to the core through a session layer: scan and purge run against the real engine,
 tiles show real numbers, progress comes from core events (including live purge progress). After
 a scan the **category screen** opens: cards with checkboxes, sizes, lanes and risk — only the
@@ -245,7 +249,7 @@ action is logged. The **tweaks page** is real: startup items are read from the r
 Startup folders, disabling saves an on-disk snapshot (survives restarts) and a "Restore" button
 brings the entry back; services are listed read-only. The scan core itself
 is real too — Rust scanner with categories, BLAKE3 duplicates, two-lane deletion, dry-run and
-cancellation, covered by 328 pytest + 54 cargo tests, byte-exact against the Python reference.
+cancellation, covered by 398 pytest + 54 cargo tests, byte-exact against the Python reference.
 The VirtualBox polygon (Win11 24H2) runs the core end to end from host shared folders; the built
 `.exe` was verified inside the VM (`--self-test`, `--disk --candidates`, GUI screenshots in
 `shots/polygon-2026-09-16/`). Of the old Python `core/` modules, processes and the Python

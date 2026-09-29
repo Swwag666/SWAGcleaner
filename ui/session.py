@@ -639,9 +639,50 @@ class Session(QObject):
                 truncated=len(collected) >= MAX_SHOWN_CANDIDATES,
             )
             self._last_scan = result
+            self._persist_last_scan(result)
             return result
 
         self._run("cleaner_scan", work)
+
+    def _persist_last_scan(self, result: "ScanResult") -> None:
+        """Сводка скана на диск: hero-карточка и превью переживают рестарт."""
+        import json as _json
+        import time as _time
+        payload = {
+            "ts": _time.time(),
+            "bytes": result.bytes,
+            "files": result.files,
+            "cats": {s.id: s.bytes for s in result.summaries},
+        }
+        path = self.journal().path().parent / "last_scan.json"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(_json.dumps(payload, ensure_ascii=False),
+                           encoding="utf-8")
+            import os as _os
+            _os.replace(tmp, path)
+        except OSError:
+            pass
+
+    def last_scan_summary(self) -> t.Optional[t.Dict[str, t.Any]]:
+        """Сводка прошлого скана с диска или None, если сканов не было."""
+        import json as _json
+        path = self.journal().path().parent / "last_scan.json"
+        try:
+            data = _json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def total_freed(self) -> int:
+        """Сколько байт освобождено за всё время по журналу purge-записей."""
+        total = 0
+        for entry in self.journal().tail(2000):
+            if entry.get("kind") in ("purge", "purge_dupes") \
+                    and entry.get("outcome") == "ok":
+                total += int(entry.get("freed_bytes", 0) or 0)
+        return total
 
     def purge_items(self, items: t.Sequence[t.Mapping[str, str]],
                     dry_run: bool) -> None:
