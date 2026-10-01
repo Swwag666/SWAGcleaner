@@ -51,23 +51,40 @@ class AppWorker(QRunnable):
         self._signals = WorkerSignals()
 
     def run(self) -> None:
+        settled = False
         try:
             self._signals.started.emit()
             if self._task.on_start is not None:
                 self._task.on_start()
             result = self._task.func(*self._task.args, **self._task.kwargs)
             self._signals.finished.emit(result)
+            settled = True
             # Колбэки UI вызываются из рабочего потока — Qt должен перекинуть их
             # в главный поток через queued connections, поэтому в slot-коде
             # программист должен быть готов к тому, что on_done срабатывает асинхронно.
             if self._task.on_done is not None:
                 self._task.on_done(result)
         except Exception as e:
-            msg = str(e)
+            msg = str(e) or repr(e)
             _LOGGER.exception("Worker error: %s", msg)
             self._signals.error.emit(msg)
+            settled = True
             if self._task.on_error is not None:
-                self._task.on_error(msg)
+                try:
+                    self._task.on_error(msg)
+                except Exception:  # noqa: BLE001 - падение обработчика не должно терять ошибку
+                    _LOGGER.exception("on_error сам упал: %s", msg)
+        finally:
+            if not settled:
+                # Ни итог, ни ошибка не эмитились (упал сам emit выше по
+                # стеку): сообщаем провал принудительно. Молчаливая смерть
+                # задачи оставляла окно «вечно занятым» на 0%.
+                msg = "задача оборвалась без итога"
+                _LOGGER.error(msg)
+                try:
+                    self._signals.error.emit(msg)
+                except Exception:  # noqa: BLE001 - последняя страховка
+                    pass
 
 
 def run_async(

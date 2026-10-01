@@ -224,6 +224,67 @@ class TestSettingsTabAi:
         assert page._ai_models_btn.isEnabled()
         assert page._ai_test_btn.isEnabled()
 
+    def test_model_label_says_model_id(self, qapp: t.Any) -> None:
+        page = self._page()
+        label = next(lb for lb, key in page._section_labels
+                     if key == "settings.ai_model_label")
+        assert label.text() == ctx().tr("settings.ai_model_label")
+        assert "ID" in label.text()
+
+    def test_model_field_placeholder(self, qapp: t.Any) -> None:
+        page = self._page()
+        placeholder = page._ai_model.lineEdit().placeholderText()
+        assert placeholder == ctx().tr("settings.ai_model_placeholder")
+        assert placeholder
+
+    def test_models_fill_opens_popup_when_visible(
+            self, qapp: t.Any, monkeypatch: t.Any) -> None:
+        page = self._page()
+        shown: t.List[int] = []
+        monkeypatch.setattr(page._ai_model, "showPopup",
+                            lambda: shown.append(1))
+        page.setAiModels(["qwen2.5:3b", "llama3.1"])
+        assert shown == []  # страница скрыта: список сами не раскрываем
+        page.show()
+        qapp.processEvents()
+        page.setAiModels(["qwen2.5:3b", "llama3.1"])
+        assert shown == [1]
+        page.setAiModels([])
+        assert shown == [1]  # пустой каталог не раскрываем
+        page.hide()
+
+    def test_click_in_model_field_opens_popup(
+            self, qapp: t.Any, monkeypatch: t.Any) -> None:
+        from PySide6.QtCore import QEvent, QPoint, Qt
+        from PySide6.QtGui import QMouseEvent
+
+        page = self._page()
+        shown: t.List[int] = []
+        monkeypatch.setattr(page._ai_model, "showPopup",
+                            lambda: shown.append(1))
+        line = page._ai_model.lineEdit()
+        page.show()
+        qapp.processEvents()
+
+        def click() -> None:
+            press = QMouseEvent(QEvent.Type.MouseButtonPress, QPoint(4, 4),
+                                line.mapToGlobal(QPoint(4, 4)),
+                                Qt.MouseButton.LeftButton,
+                                Qt.MouseButton.LeftButton,
+                                Qt.KeyboardModifier.NoModifier)
+            qapp.sendEvent(line, press)
+
+        click()
+        qapp.processEvents()  # singleShot(0) из фильтра срабатывает здесь
+        assert shown == [1]
+        # клик при открытом списке фильтр не дублирует
+        monkeypatch.setattr(page._ai_model.view(), "isVisible",
+                            lambda: True)
+        click()
+        qapp.processEvents()
+        assert shown == [1]
+        page.hide()
+
 
 class TestAiLightTasks:
     """Лёгкие AI-задачи идут мимо гейта занятости тяжёлых."""
@@ -257,10 +318,14 @@ class TestAiLightTasks:
 
         monkeypatch.setattr(session, "_run", fake_run)
         from ui.session import LIGHT_TASKS
-        assert LIGHT_TASKS == frozenset({"ai_test", "ai_models"})
+        # Лёгкие задачи идут мимо гейта занятости: AI-запросы и опись
+        # карантина (чтение манифестов - сотни записей, не скан диска).
+        assert LIGHT_TASKS == frozenset(
+            {"ai_test", "ai_models", "ai_ask", "quarantine_list"})
         session.list_ai_models_task(AiSettings())
         session.test_ai_task(AiSettings())
-        assert launched == ["ai_models", "ai_test"]
+        session.ask_ai_task("что за файлы?")
+        assert launched == ["ai_models", "ai_test", "ai_ask"]
         # Гейт занятости лёгкими задачами не трогается.
         assert session.is_busy()
 
@@ -272,6 +337,134 @@ class TestAiLightTasks:
         assert session.is_busy()
         session._settle_failed("ai_test", "oops")
         assert session.is_busy()
+        session._settle("ai_ask", {"text": ""})
+        assert session.is_busy()
         # Тяжёлая завершилась - окно свободно.
         session._settle("cleaner_scan", {})
         assert not session.is_busy()
+
+
+class TestSessionAsk:
+    """Вопрос Клинне: контекст данных, лёгкая задача, честный пустой ответ."""
+
+    def _session(self) -> t.Any:
+        from ui.session import Session
+        from core.swagscan import SwagscanClient
+
+        class _FakeClient(SwagscanClient):
+            def __init__(self) -> None:
+                pass
+
+            def available(self) -> bool:
+                return False
+
+        return Session(client=_FakeClient())
+
+    def _fake_assistant(self, monkeypatch: t.Any, session: t.Any,
+                        enabled: bool = True,
+                        answer: str = "это кеш, вернётся сам") -> t.Dict[str, t.Any]:
+        seen: t.Dict[str, t.Any] = {}
+
+        class _FakeAssistant:
+            def __init__(self, ok: bool, reply: str) -> None:
+                self._ok = ok
+                self._reply = reply
+
+            def available(self) -> bool:
+                return self._ok
+
+            def answer(self, context, question):
+                seen["context"] = context
+                seen["question"] = question
+                return self._reply
+
+        monkeypatch.setattr(session, "_ai", _FakeAssistant(enabled, answer),
+                            raising=False)
+        return seen
+
+    def test_ask_task_answer_with_context(self, qapp: t.Any,
+                                          monkeypatch: t.Any) -> None:
+        from tests.fakes import make_scan
+        from ui.session import DupGroup
+        from ui.session import PurgeReport
+
+        session = self._session()
+        seen = self._fake_assistant(monkeypatch, session)
+        session._last_scan = make_scan()
+        session._last_groups = [DupGroup(hash="h", size=4 * 1024 * 1024,
+                                         paths=[r"C:\a.png", r"C:\b.png",
+                                                r"C:\c.png"])]
+        session._last_recs = [{"type": "remove", "name": "Bloat",
+                               "reason": "пустая папка"}]
+        session._last_purge = PurgeReport(dry_run=False, removed=5,
+                                          freed_bytes=2048)
+
+        captured: t.Dict[str, t.Any] = {}
+        monkeypatch.setattr(
+            session, "_run",
+            lambda name, func: captured.update(name=name, func=func))
+        session.ask_ai_task("что за файлы в Temp?")
+
+        assert captured["name"] == "ai_ask"
+        result = captured["func"]()
+        assert result["question"] == "что за файлы в Temp?"
+        assert result["text"] == "это кеш, вернётся сам"
+
+        context = seen["context"]
+        assert seen["question"] == "что за файлы в Temp?"
+        cats = context["cleaner"]["categories"]
+        assert {c["id"] for c in cats} == {"temp.app", "installers"}
+        by_id = {c["id"]: c for c in cats}
+        assert by_id["temp.app"]["examples"][0].endswith("a.tmp")
+        assert by_id["temp.app"]["risk"] == "low"
+        assert by_id["installers"]["lane"] == "trash"
+        assert context["dupes"]["groups_total"] == 1
+        assert context["dupes"]["samples"][0]["copies"] == 3
+        assert context["advisor_plan"][0]["name"] == "Bloat"
+        assert context["last_purge"]["removed"] == 5
+
+    def test_ask_context_examples_capped(self, qapp: t.Any) -> None:
+        from ui.session import CandidateItem, CategorySummary, ScanResult
+        from tests.fakes import make_scan
+
+        scan = make_scan()
+        scan.items = [
+            CandidateItem(path=rf"C:\Temp\{i}.tmp", size=1,
+                          categories=["temp.app"])
+            for i in range(10)
+        ]
+        session = self._session()
+        session._last_scan = scan
+        context = session.ask_context()
+        examples = [c for c in context["cleaner"]["categories"]
+                    if c["id"] == "temp.app"][0]["examples"]
+        assert len(examples) == 3
+        assert examples[0] == r"C:\Temp\0.tmp"
+
+    def test_ask_context_empty_without_scans(self, qapp: t.Any) -> None:
+        session = self._session()
+        context = session.ask_context()
+        assert context == {"note": "сканов пока не было: данных о машине нет"}
+
+    def test_ask_task_ai_off_gives_empty_text(self, qapp: t.Any,
+                                              monkeypatch: t.Any) -> None:
+        session = self._session()
+        self._fake_assistant(monkeypatch, session, enabled=False)
+        captured: t.Dict[str, t.Any] = {}
+        monkeypatch.setattr(
+            session, "_run",
+            lambda name, func: captured.update(name=name, func=func))
+        session.ask_ai_task("что тут?")
+        result = captured["func"]()
+        assert result["text"] == ""
+
+    def test_ask_task_purge_dry_run_skipped(self, qapp: t.Any) -> None:
+        from ui.session import PurgeReport
+        from tests.fakes import make_scan
+
+        session = self._session()
+        session._last_scan = make_scan()
+        session._last_purge = PurgeReport(dry_run=True, planned=4)
+        context = session.ask_context()
+        assert "last_purge" not in context
+        assert "cleaner" in context

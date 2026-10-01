@@ -25,6 +25,8 @@ class FakeCoreSession(QObject):
 
     busyChanged = Signal(bool)
     progressTick = Signal(int)
+    dedupPhase = Signal(str, float)
+    scanPhase = Signal(str, float, float)
     taskFinished = Signal(str, object)
     taskFailed = Signal(str, str)
     errorOccurred = Signal(str)
@@ -43,8 +45,9 @@ class FakeCoreSession(QObject):
         self._groups = groups if groups is not None else []
         self._error = error
         self._pending: t.List[str] = []
-        self.purge_calls: t.List[t.Tuple[t.Any, bool]] = []
+        self.purge_calls: t.List[t.Tuple[t.Any, bool, bool]] = []
         self.tweak_calls: t.List[t.Tuple[str, t.Any]] = []
+        self.quarantine_calls: t.List[t.Tuple[str, t.Any]] = []
         self.cancel_requests = 0
 
     # ---------- контракт сессии ----------
@@ -97,6 +100,22 @@ class FakeCoreSession(QObject):
     def list_ai_models_task(self, settings: t.Any) -> None:
         self.taskFinished.emit("ai_models", {"names": ["fake:1b"],
                                              "error": ""})
+
+    def ask_ai_task(self, question: str) -> None:
+        # Паритет с Session.ask_ai_task: лёгкая задача, без гейта занятости.
+        # Фейк не зовёт модель — тест вручную завершает через finish_ai_ask.
+        ask = (question or "").strip()
+        if not ask:
+            return
+        self.ai_questions = list(getattr(self, "ai_questions", [])) + [ask]
+        self._pending.append("ai_ask")
+
+    def finish_ai_ask(self, text: str = "") -> None:
+        # Лёгкая задача завершается мимо гейта занятости: как в Session,
+        # сброс «занято» — только у тяжёлых задач.
+        if "ai_ask" in self._pending:
+            self._pending.remove("ai_ask")
+            self.taskFinished.emit("ai_ask", {"text": text, "question": ""})
 
     # ---------- контракт этапов 6/7 ----------
 
@@ -152,7 +171,21 @@ class FakeCoreSession(QObject):
     def describe_purge(self, report: PurgeReport) -> str:
         # Тот же формат, что у настоящей сессии, — иначе журнал в тестах
         # показывает сырые байты и врёт глазам.
+        from ui.context import ctx
         from ui.session import human_size
+        if report.dry_run:
+            return ctx().tr("session.purge_plan").format(
+                count=report.planned, size=human_size(report.planned_bytes))
+        if getattr(report, "quarantine_dir", ""):
+            parts = [ctx().tr("session.purge_quarantined").format(
+                count=report.quarantined,
+                size=human_size(report.quarantined_bytes))]
+            if report.no_space:
+                parts.append(ctx().tr("session.purge_no_space").format(
+                    count=len(report.no_space)))
+            if report.cancelled:
+                parts.append(ctx().tr("session.purge_cancelled"))
+            return "; ".join(parts)
         return (f"Удалено {report.removed}, освобождено "
                 f"{human_size(report.freed_bytes)}")
 
@@ -180,15 +213,51 @@ class FakeCoreSession(QObject):
     def scan_duplicates(self, roots) -> None:
         self._start("dedup")
 
-    def purge_items(self, items, dry_run) -> None:
-        self.purge_calls.append((list(items), dry_run))
+    def purge_items(self, items, dry_run, quarantine=None) -> None:
+        self.purge_calls.append(
+            (list(items), dry_run, bool(quarantine)))
         self._start("purge")
 
-    def purge_duplicates(self, groups) -> None:
+    def purge_duplicates(self, groups, quarantine=None) -> None:
         # Паритет с Session.purge_duplicates: фейк помечает вызов и идёт
         # в ту же задачу «purge», что и обычное удаление.
-        self.purge_calls.append((list(groups), False))
+        self.purge_calls.append((list(groups), False, bool(quarantine)))
         self._start("purge")
+
+    def clear_quarantine(self) -> None:
+        self._start("quarantine_clear")
+
+    # Карантинное окно: те же задачи, что у настоящей сессии, - список,
+    # восстановление и удаление выбранных записей.
+    quarantine_calls: list
+
+    def quarantine_list(self) -> None:
+        self.quarantine_calls.append(("list", None))
+        self._start("quarantine_list")
+
+    def quarantine_restore(self, selected) -> None:
+        self.quarantine_calls.append(("restore", list(selected)))
+        self._start("quarantine_restore")
+
+    def quarantine_delete(self, selected, batches=()) -> None:
+        self.quarantine_calls.append(("delete", list(selected)))
+        self._start("quarantine_delete")
+
+    def finish_quarantine_list(self, payload: t.Optional[dict] = None) -> None:
+        result = payload if payload is not None else {
+            "entries": [], "bytes": 0}
+        self._finish("quarantine_list", result)
+
+    def finish_quarantine_restore(
+            self, payload: t.Optional[dict] = None) -> None:
+        result = payload if payload is not None else {
+            "restored": [], "failed": []}
+        self._finish("quarantine_restore", result)
+
+    def finish_quarantine_delete(
+            self, payload: t.Optional[dict] = None) -> None:
+        result = payload if payload is not None else {"freed": 0, "failed": []}
+        self._finish("quarantine_delete", result)
 
     def advisor_removals(self) -> t.List[str]:
         return []
@@ -239,6 +308,9 @@ class FakeCoreSession(QObject):
     def finish_tweaks_action(self, payload: t.Optional[dict] = None) -> None:
         self._finish("tweaks_action", payload if payload is not None
                      else {"action": "disable", "target": "X", "snapshot": "s"})
+
+    def finish_quarantine_clear(self, freed: int = 0) -> None:
+        self._finish("quarantine_clear", freed)
 
     def _finish(self, name: str, result: t.Any) -> None:
         if name not in self._pending:

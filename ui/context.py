@@ -51,6 +51,8 @@ class Context(QObject):
     motionChanged = Signal(str)
     # Счёт чистоты: растёт после каждой успешной очистки, шкала 0-100.
     cleanlinessChanged = Signal(int)
+    # Папка карантина сменилась: карантиновые пути перевешиваются на лету.
+    quarantineRootChanged = Signal(str)
 
     def __new__(cls) -> "Context":
         if cls._instance is None:
@@ -64,6 +66,8 @@ class Context(QObject):
         self._theme_mode: str = "system"
         self._font_kind: str = "pixel"
         self._sounds: bool = True
+        self._quarantine: bool = True
+        self._quarantine_dir: str = ""
         self._accent: str = "blue"
         self._motion: str = "playful"
         self._cleanliness: int = 0
@@ -124,6 +128,10 @@ class Context(QObject):
         # строку, в реестре Windows — настоящее значение.
         sounds = store.value("interface/sounds", "true")
         self._sounds = str(sounds).strip().lower() not in ("", "0", "false", "no")
+        quarantine = store.value("interface/quarantine", "true")
+        self._quarantine = str(quarantine).strip().lower() not in ("", "0", "false", "no")
+        quarantine_dir = str(store.value("interface/quarantine_dir", "") or "")
+        self._quarantine_dir = quarantine_dir.strip()
 
     def _load_strings(self) -> None:
         """Загрузить строки из json-файлов локалей."""
@@ -305,6 +313,32 @@ class Context(QObject):
         self._sounds = enabled
         self._remember("sounds", "true" if enabled else "false")
         self.soundsChanged.emit(enabled)
+
+    # ---------- карантин ----------
+
+    def quarantineEnabled(self) -> bool:  # noqa: N802
+        return self._quarantine
+
+    def setQuarantine(self, enabled: bool) -> None:  # noqa: N802
+        """Удалять через карантин (папку просмотра) или сразу."""
+        enabled = bool(enabled)
+        if enabled == self._quarantine:
+            return
+        self._quarantine = enabled
+        self._remember("quarantine", "true" if enabled else "false")
+
+    def quarantineDir(self) -> str:  # noqa: N802
+        """Папка карантина: пустая строка = место по умолчанию."""
+        return self._quarantine_dir
+
+    def setQuarantineDir(self, path: str) -> None:  # noqa: N802
+        """Отдельная папка под карантин (например, на другом диске)."""
+        path = str(path).strip()
+        if path == self._quarantine_dir:
+            return
+        self._quarantine_dir = path
+        self._remember("quarantine_dir", path)
+        self.quarantineRootChanged.emit(path)
 
     # ---------- акцент и анимации ----------
 

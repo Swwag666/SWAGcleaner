@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from PySide6.QtCore import QElapsedTimer, QObject, QPoint, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap, QPolygon
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from ui.context import ctx
 from ui.theme import apply_role_font
@@ -378,13 +378,20 @@ class Mascot(QWidget):
 
 
 class SpeechBox(QFrame):
-    """Панель реплики: имя, текст с печатью по буквам и клик «дальше»."""
+    """Панель реплики: имя, текст с печатью по буквам и клик «дальше».
+
+    Внизу панели — строка вопроса: человек спрашивает про находки, ответ
+    приходит той же репликой. Поле живёт в панели, а не на страницах:
+    вопрос «что это за файлы» возникает на любом экране.
+    """
 
     advanced = Signal()
     typingChanged = Signal(bool)
     # Новая реплика началась: окно слушает это, чтобы в свёрнутом режиме
     # продублировать текст оверлеем поверх экрана.
     said = Signal(str)
+    # Человек задал вопрос: текст уже обрезан и непустой.
+    asked = Signal(str)
 
     TYPE_MS = 24
     BLINK_MS = 480
@@ -425,6 +432,26 @@ class SpeechBox(QFrame):
         text_row.addWidget(self._caret, 0, Qt.AlignmentFlag.AlignBottom)
         root.addLayout(text_row, 1)
 
+        ask_bar = QWidget(self)
+        ask_row = QHBoxLayout(ask_bar)
+        ask_row.setContentsMargins(0, 6, 0, 0)
+        ask_row.setSpacing(8)
+        self._ask_edit = QLineEdit(ask_bar)
+        self._ask_edit.setObjectName("speechAskEdit")
+        # Клик в поле — это фокус ввода, а не «показать следующую реплику»:
+        # иначе курсор в строке и листание очереди конфликтуют.
+        self._ask_edit.setCursor(Qt.CursorShape.IBeamCursor)
+        self._ask_edit.setClearButtonEnabled(True)
+        self._ask_edit.returnPressed.connect(self._emit_asked)
+        ask_row.addWidget(self._ask_edit, 1)
+        self._ask_button = QPushButton(ask_bar)
+        self._ask_button.setObjectName("speechAskButton")
+        self._ask_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._ask_button.clicked.connect(self._emit_asked)
+        ask_row.addWidget(self._ask_button, 0)
+        self._ask_bar = ask_bar
+        root.addWidget(ask_bar)
+
         self._type_timer = QTimer(self)
         self._type_timer.setInterval(self.TYPE_MS)
         self._type_timer.timeout.connect(self._type_tick)
@@ -445,6 +472,20 @@ class SpeechBox(QFrame):
 
     def is_typing(self) -> bool:
         return self._typing
+
+    def ask_widget(self) -> QLineEdit:
+        return self._ask_edit
+
+    def ask_button(self) -> QPushButton:
+        return self._ask_button
+
+    def set_ask_visible(self, visible: bool) -> None:
+        """Показать/спрятать строку вопроса в панели.
+
+        В компактном окне вопрос задаётся Клинне в оверлее - там поле
+        и остаётся, дубль внизу окна не нужен.
+        """
+        self._ask_bar.setVisible(bool(visible))
 
     def say(self, text: str) -> None:
         """Показать реплику заново: текст появляется по буквам."""
@@ -480,6 +521,14 @@ class SpeechBox(QFrame):
             self.advanced.emit()
 
     # ---------- внутреннее ----------
+
+    def _emit_asked(self) -> None:
+        """Кнопка или Enter: отправить вопрос, поле очистить."""
+        ask = self._ask_edit.text().strip()
+        if not ask:
+            return
+        self._ask_edit.clear()
+        self.asked.emit(ask)
 
     def _set_typing(self, typing: bool) -> None:
         if typing == self._typing:
@@ -537,9 +586,12 @@ class SpeechBox(QFrame):
         painter.end()
 
     def retranslate(self) -> None:
-        """Перевести подписи панели (имя персонажа, подсказка)."""
+        """Перевести подписи панели (имя персонажа, подсказка, вопрос)."""
         name = ctx().tr("character.name")
         self._name.setText(name)
+        self._ask_edit.setPlaceholderText(ctx().tr("speech.ask_placeholder"))
+        self._ask_edit.setToolTip(ctx().tr("speech.ask_hint"))
+        self._ask_button.setText(ctx().tr("speech.ask_button"))
         self.setToolTip(f"{name}: {ctx().tr('character.hint')}")
 
 

@@ -161,7 +161,7 @@ class TestActivation:
 
     def test_run_script_ok(self, tmp_path):
         from core.activation import Activator
-        script = tmp_path / "MakuTweakerNew.HWID.cmd"
+        script = tmp_path / "hwid_activation.cmd"
         script.write_text("@echo off")
         seen = {}
 

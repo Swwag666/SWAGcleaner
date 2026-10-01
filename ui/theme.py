@@ -423,6 +423,10 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
         background-color: {c["bg_sidebar"]};
         border-right: 1px solid {c["border_soft"]};
     }}
+    QWidget#sidebarRail {{
+        background-color: {c["bg_sidebar"]};
+        border-right: 1px solid {c["border_soft"]};
+    }}
     QLabel#sidebarCaption {{
         color: {c["text_placeholder"]};
         padding: 0px 4px;
@@ -488,6 +492,22 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
     QPushButton[role="primary"]:pressed {{
         padding-top: 9px;
         padding-bottom: 7px;
+    }}
+    /* Необратимое действие: кнопка краснеет, чтобы путь назад был виден. */
+    QPushButton[role="danger"] {{
+        background-color: {c["danger"]};
+        border-color: {c["danger"]};
+        color: {c["bg_base"]};
+    }}
+    QPushButton[role="danger"]:hover {{
+        border-color: {c["danger"]};
+        color: {c["danger"]};
+        background-color: {c["bg_base"]};
+    }}
+    QPushButton[role="danger"]:disabled {{
+        background-color: {c["bg_input"]};
+        border-color: {c["border"]};
+        color: {c["text_placeholder"]};
     }}
 
     /* ---------- иконочные кнопки в шапке ---------- */
@@ -619,6 +639,14 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
     }}
     QLabel#speechText {{ color: {c["text_primary"]}; }}
     QLabel#speechCaret {{ color: {c["accent"]}; }}
+    /* Панель вопроса в оверлее Клинни: та же акцентная кромка, что у
+       реплики, но компактнее - фигура стоит прямо над ней. */
+    QFrame#overlayAsk {{
+        background-color: {c["bg_panel"]};
+        border: 1px solid {c["border_soft"]};
+        border-left: 3px solid {c["accent"]};
+        border-radius: 10px;
+    }}
 
     /* ---------- ввод ---------- */
     QLineEdit, QComboBox, QTextEdit, QSpinBox {{

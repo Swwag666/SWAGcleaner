@@ -6,6 +6,10 @@
 
 Задержка нужна, чтобы меню не дёргалось, когда курсор случайно выходит
 за край по пути к элементу.
+
+Меню — плавающий слой поверх контента (become_overlay), а не элемент
+лейаута: выезд меняет только собственную геометрию, и центральная
+страница со сотнями строк не перелопачивает разметку на каждом кадре.
 """
 from __future__ import annotations
 
@@ -13,8 +17,10 @@ from typing import Dict, List
 
 from PySide6.QtCore import (
     QEasingCurve,
-    QParallelAnimationGroup,
+    QEvent,
+    QObject,
     QPropertyAnimation,
+    QRect,
     QSize,
     Qt,
     QTimer,
@@ -113,14 +119,11 @@ class Sidebar(QFrame):
         self._admin_row.addStretch(1)
         root.addLayout(self._admin_row)
 
-        # Плавный выезд: одновременно тянем минимальную и максимальную ширину,
-        # чтобы разметка не сплющивала содержимое во время анимации.
-        self._animation = QParallelAnimationGroup(self)
-        for prop in (b"minimumWidth", b"maximumWidth"):
-            anim = QPropertyAnimation(self, prop, self)
-            anim.setDuration(self.ANIMATION_MS)
-            anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-            self._animation.addAnimation(anim)
+        # Плавный выезд: анимируем собственную геометрию (только ширину),
+        # контент под меню не перестраивается вовсе.
+        self._animation = QPropertyAnimation(self, b"geometry", self)
+        self._animation.setDuration(self.ANIMATION_MS)
+        self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
 
         self._collapse_timer = QTimer(self)
         self._collapse_timer.setSingleShot(True)
@@ -213,18 +216,46 @@ class Sidebar(QFrame):
 
     # ---------- анимация и наведение ----------
 
-    def _set_width(self, width: int, animate: bool = True) -> None:
-        if not animate:
-            self._animation.stop()
-            self.setMinimumWidth(width)
-            self.setMaximumWidth(width)
+    def become_overlay(self) -> None:
+        """Работать плавающим слоем поверх контента.
+
+        Меню не в лейауте: своё место (COLLAPSED_WIDTH) под него держит
+        отдельный рельс в лейауте, а само меню живёт абсолютной геометрией
+        поверх страницы. Выезд анимирует только свою ширину — ни один
+        виджет центральной страницы не получает relayout, и на тяжёлых
+        страницах (твики со сотнями строк) выезд не подлагивает.
+        """
+        parent = self.parentWidget()
+        if parent is None:
             return
+        parent.installEventFilter(self)
+        self._apply_geometry()
+        self.raise_()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.Resize:
+            self._apply_geometry()
+        return False
+
+    def _apply_geometry(self) -> None:
+        """Меню всегда прижато к левому краю и во всю высоту родителя."""
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        self.setGeometry(0, 0, self.width(), parent.height())
+
+    def _set_width(self, width: int, animate: bool = True) -> None:
+        parent = self.parentWidget()
+        height = parent.height() if parent is not None else 0
+        if height <= 0:
+            height = self.height()
         current = self.width()
         self._animation.stop()
-        for i in range(self._animation.animationCount()):
-            anim = self._animation.animationAt(i)
-            anim.setStartValue(current)
-            anim.setEndValue(width)
+        if not animate:
+            self.setGeometry(0, 0, width, height)
+            return
+        self._animation.setStartValue(QRect(0, 0, current, height))
+        self._animation.setEndValue(QRect(0, 0, width, height))
         self._animation.start()
 
     def _set_labels_visible(self, visible: bool) -> None:

@@ -47,11 +47,21 @@ from ui.tabs import (
     SettingsTab,
     TweaksTab,
 )
-from ui.workers import AppWorker, WorkerPool, WorkerTask
+from ui.workers import AppWorker, WorkerPool, WorkerTask, run_async
 
 
 def _buttons(widget: t.Any) -> t.List[QPushButton]:
     return widget.findChildren(QPushButton)
+
+
+def _btn_text(button: QPushButton) -> str:
+    """Полный текст кнопки: ElideButton сжимает подпись в «…».
+
+    С применённой темой (pixel-шрифт глобально) узкая кнопка честно
+    эллидируется, и .text() возвращает обрезок — матчить надо полный.
+    """
+    full = getattr(button, "fullText", None)
+    return full() if callable(full) else button.text()
 
 
 def _cat_card(cat_id: str, files: int = 10, size: int = 1024,
@@ -113,21 +123,7 @@ def win(qapp: t.Any) -> t.Any:
     ctx().setFontKind("pixel")
 
 
-@pytest.fixture
-def win_fake(qapp: t.Any) -> t.Tuple[t.Any, t.Any]:
-    """Окно вместе с его фейковой сессией: тест сам завершает задачи."""
-    session = FakeCoreSession()
-    window = MainWindow(qapp, ctx(), session)
-    window.resize(1100, 700)
-    window.show()
-    QTest.qWait(80)
-    yield window, session
-    window.close()
-    window.deleteLater()
-    qapp.processEvents()
-    ctx().setLocale("ru")
-    ctx().setTheme("dark")
-    ctx().setFontKind("pixel")
+# win_fake теперь живёт в conftest.py: он нужен и smoke-тестам, и карантину.
 
 
 # ---------- локализация ----------
@@ -366,8 +362,8 @@ class TestPages:
         page.disableStartupRequested.connect(lambda e: fired.append(("d", e)))
         page.restoreSnapshotRequested.connect(lambda n: fired.append(("r", n)))
         buttons = [b for b in page.findChildren(QPushButton)
-                   if b.text() in (ctx().tr("tweaks.disable_button"),
-                                   ctx().tr("tweaks.restore_button"))]
+                   if _btn_text(b) in (ctx().tr("tweaks.disable_button"),
+                                       ctx().tr("tweaks.restore_button"))]
         for btn in buttons:
             btn.click()
         assert ("d", entry) in fired
@@ -414,7 +410,8 @@ class TestPages:
         page.retranslate()
         assert page._title_label.text() != ru_title
         assert page._title_label.text() == ctx().tr("advisor.title")
-        assert page._buttons[0][0].text() == ctx().tr("advisor.scan_button")
+        assert _btn_text(page._buttons[0][0]) == \
+            ctx().tr("advisor.scan_button")
         page.deleteLater()
 
 
@@ -538,7 +535,8 @@ class TestSidebar:
         QTest.qWait(Sidebar.ANIMATION_MS + 120)
         assert not sidebar.is_expanded()
         assert sidebar.count() == 6
-        assert sidebar.minimumWidth() == Sidebar.COLLAPSED_WIDTH
+        # Меню — плавающий слой: свёрнутая ширина живёт в его геометрии.
+        assert sidebar.width() == Sidebar.COLLAPSED_WIDTH
         assert all(button.text() == "" for button in sidebar._items)
 
     def test_every_item_has_icon_and_tooltip(self, win: t.Any) -> None:
@@ -546,10 +544,32 @@ class TestSidebar:
             assert not button.icon().isNull()
             assert button.toolTip() == ctx().tr(key)
 
+    def test_sidebar_is_overlay_content_never_moves(self, win: t.Any) -> None:
+        """Выезд меню — плавающий слой: контент не получает relayout."""
+        sidebar = win._sidebar
+        before = win._content.geometry()
+        sidebar.expand()
+        QTest.qWait(80)  # середина анимации
+        mid = win._content.geometry()
+        QTest.qWait(Sidebar.ANIMATION_MS + 120)
+        after = win._content.geometry()
+        assert before == mid == after
+        assert sidebar.width() == Sidebar.EXPANDED_WIDTH
+        assert sidebar.x() == 0
+        central = win._sidebar.parentWidget()
+        assert sidebar.height() == central.height()
+        # место свёрнутого меню держит рельс
+        assert win._sidebar_rail.width() == Sidebar.COLLAPSED_WIDTH
+
     def test_expand_animates_to_full_width_and_shows_labels(self, win: t.Any) -> None:
         sidebar = win._sidebar
         sidebar.expand()
-        QTest.qWait(Sidebar.ANIMATION_MS + 80)
+        # Под offscreen enter-событие запускает разворот отложенно, старт
+        # анимации плавает: ждём конечную ширину поллом, ассерт тот же.
+        for _ in range(12):
+            if sidebar.width() == Sidebar.EXPANDED_WIDTH:
+                break
+            QTest.qWait(50)
         assert sidebar.is_expanded()
         assert sidebar.width() == Sidebar.EXPANDED_WIDTH
         assert sidebar._items[0].text() == ctx().tr("tabs.advisor")
@@ -918,7 +938,13 @@ class TestSpeechBox:
         box.say("Привет, мир")
         assert box.is_typing()
         assert box.shown_text() == ""
-        QTest.qWait(80)
+        # Печать идёт своим таймером: под нагрузкой полного прогона
+        # фиксированного qWait мало (таймер мог не тикнуть вовсе) - ждём
+        # именно первый символ, но не всю строку.
+        for _ in range(30):
+            if box.shown_text():
+                break
+            QTest.qWait(10)
         assert 0 < len(box.shown_text()) < len(box.full_text())
         box.finish_typing()
         assert box.shown_text() == box.full_text()
@@ -1152,7 +1178,12 @@ class TestAnimatedNumber:
         number.setValue(1000)
         assert number.value() == 1000
         assert number.is_animating()
-        QTest.qWait(AnimatedNumber.STEP_MS * 3)
+        # Под грузом полного прогона первый тик приходит позже STEP_MS*3:
+        # ждём появления, а не фиксированное время.
+        waited = 0
+        while number.shown_value() <= 0 and waited < 500:
+            QTest.qWait(10)
+            waited += 10
         assert 0 < number.shown_value() < 1000
         number.finish()
         assert number.shown_value() == 1000
@@ -1477,7 +1508,7 @@ class TestWorkFlow:
         page.cleanRequested.emit()
         assert win.is_busy()
         assert session.purge_calls, "подтверждённая чистка обязана дойти до purge"
-        items, dry_run = session.purge_calls[-1]
+        items, dry_run, quarantined = session.purge_calls[-1]
         assert dry_run is False
         assert items and all(i["category"] for i in items)
         session.finish_purge()
@@ -1580,7 +1611,7 @@ class TestCategoryScreen:
         page.cleanRequested.emit()
         assert win.is_busy()
         assert session.purge_calls
-        items, dry_run = session.purge_calls[-1]
+        items, dry_run, quarantined = session.purge_calls[-1]
         assert dry_run is False
         assert items
         assert {i["category"] for i in items} == {"temp.app"}
@@ -1620,6 +1651,273 @@ class TestCategoryScreen:
         assert "installers" in seen[0][0][0]
 
 
+class TestDedupProgress:
+    """Скан дубликатов: прогресс и фазы идут в окно, а не «вечный 0%»."""
+
+    def test_scan_duplicates_reports_progress_and_phases(
+            self, qapp: t.Any) -> None:
+        from ui.session import Session
+
+        seen: t.Dict[str, t.Any] = {}
+
+        class StubClient:
+            def duplicates(self, roots: t.Any, min_size: int = 0,
+                           exts: t.Any = None, limit_groups: int = 0,
+                           on_progress: t.Any = None,
+                           on_groups: t.Any = None) -> dict:
+                seen["roots"] = list(roots)
+                seen["exts"] = list(exts or [])
+                if on_progress is not None:
+                    on_progress({"phase": "walk", "done": 0,
+                                 "total": None, "bytes": 0})
+                    on_progress({"phase": "walk", "done": 1024,
+                                 "total": None, "bytes": 5})
+                    on_progress({"phase": "partial_hash", "done": 5,
+                                 "total": 10, "bytes": 100})
+                    on_progress({"phase": "full_hash", "done": 10,
+                                 "total": 10, "bytes": 200})
+                if on_groups is not None:
+                    on_groups({"groups": [{"hash": "h", "size": 10,
+                                           "paths": ["a", "b"]}]})
+                return {"groups": 1, "wasted_bytes": 10}
+
+        session = Session(client=StubClient())
+        ticks: t.List[int] = []
+        phases: t.List[t.Tuple[str, float]] = []
+        session.progressTick.connect(ticks.append)
+        session.dedupPhase.connect(lambda p, b: phases.append((p, b)))
+        finished: t.List[str] = []
+        session.taskFinished.connect(lambda name, _r: finished.append(name))
+        session.scan_duplicates(["C:/x"])
+        for _ in range(200):
+            qapp.processEvents()
+            if finished:
+                break
+            QTest.qWait(10)
+        assert finished == ["dedup"]
+        # По умолчанию — только изображения: экран называется «Дубликаты фото».
+        assert seen["roots"] == ["C:/x"]
+        assert seen["exts"] == list(Session.PHOTO_EXTS)
+        assert "jpg" in seen["exts"] and "png" in seen["exts"]
+        # walk без total — 0%; считающие фазы — проценты.
+        assert ticks == [0, 0, 50, 100]
+        # walk шлёт каждый тик (байты растут — статус живой),
+        # считающие фазы — только при смене.
+        assert phases == [("walk", 0.0), ("walk", 5.0),
+                          ("partial_hash", 100.0), ("full_hash", 200.0)]
+        groups = session.last_groups()
+        assert len(groups) == 1 and groups[0].paths == ["a", "b"]
+
+    def test_scan_duplicates_survives_gigabyte_bytes(
+            self, qapp: t.Any) -> None:
+        """Домашняя папка больше 2^31 байт: поток не умирает на OverflowError.
+
+        Раньше Signal(str, int) падал с libshiboken Overflow и скан
+        замирал навечно на «0%», а ядро продолжало жечь CPU.
+        """
+        from ui.session import Session
+
+        class GigabyteClient:
+            def duplicates(self, roots: t.Any, min_size: int = 0,
+                           exts: t.Any = None, limit_groups: int = 0,
+                           on_progress: t.Any = None,
+                           on_groups: t.Any = None) -> dict:
+                if on_progress is not None:
+                    on_progress({"phase": "walk", "done": 0,
+                                 "total": None, "bytes": 68328557201})
+                return {"groups": 0, "wasted_bytes": 0}
+
+        session = Session(client=GigabyteClient())
+        phases: t.List[t.Tuple[str, float]] = []
+        session.dedupPhase.connect(lambda p, b: phases.append((p, b)))
+        finished: t.List[str] = []
+        session.taskFinished.connect(lambda name, _r: finished.append(name))
+        session.scan_duplicates(["C:/home"])
+        for _ in range(200):
+            qapp.processEvents()
+            if finished:
+                break
+            QTest.qWait(10)
+        assert finished == ["dedup"]
+        assert phases == [("walk", 68328557201.0)]
+
+    def test_dedup_phase_sets_status_text(self, win_fake: t.Any) -> None:
+        """Фаза из сессии приходит статусом на страницу дубликатов."""
+        win, session = win_fake
+        win.go_to_page(2)  # дубликаты
+        page = win._pages[2]
+        session.dedupPhase.emit("full_hash", 2048)
+        text = page._status_label.text()
+        assert ctx().tr("dedup.phase_full_hash") in text
+        assert "2.0" in text  # human_size(2048)
+
+
+class TestVisibleErrors:
+    """Любая смерть задачи видна: статус, тост, занятость снимается.
+
+    Тихая смерть потока выглядела как «вечный скан на 0%»: окно молчало,
+    полоса стояла, ядро жгло CPU. Теперь каждая ошибка обязана дойти до
+    пользователя, даже если он ушёл со страницы.
+    """
+
+    @staticmethod
+    def _drain(qapp: t.Any, session: t.Any, timeout_ms: int = 4000) -> None:
+        waited = 0
+        while session.is_busy() and waited < timeout_ms:
+            qapp.processEvents()
+            QTest.qWait(10)
+            waited += 10
+        for _ in range(20):
+            qapp.processEvents()
+            QTest.qWait(5)
+
+    def test_task_crash_sets_status_and_frees_busy(
+            self, qapp: t.Any) -> None:
+        from ui.session import Session
+
+        class CrashClient:
+            def cat_meta(self) -> dict:
+                return {}
+
+            def duplicates(self, roots: t.Any, min_size: int = 0,
+                           exts: t.Any = None, limit_groups: int = 0,
+                           on_progress: t.Any = None,
+                           on_groups: t.Any = None) -> dict:
+                raise RuntimeError("бум в ядре")
+
+        session = Session(client=CrashClient())
+        window = MainWindow(qapp, ctx(), session)
+        window.resize(1100, 700)
+        window.show()
+        QTest.qWait(80)
+        try:
+            win_page = window._pages[2]
+            window._stack.setCurrentIndex(2)
+            session.scan_duplicates(["C:/x"])
+            self._drain(qapp, session)
+            assert not session.is_busy()
+            text = win_page._status_label.text()
+            assert "бум в ядре" in text
+            assert ctx().tr("session.core_error").split(":")[0] in text
+            toast_seen = any(
+                "бум в ядре" in lbl.text()
+                for frame in window._toasts.findChildren(QWidget)
+                for lbl in frame.findChildren(QLabel)
+            )
+            assert toast_seen
+        finally:
+            window.close()
+            window.deleteLater()
+            qapp.processEvents()
+            ctx().setLocale("ru")
+            ctx().setTheme("dark")
+            ctx().setFontKind("pixel")
+
+    def test_dedup_survives_garbage_progress_event(
+            self, qapp: t.Any) -> None:
+        """Событие прогресса с мусорным bytes не глотается молча."""
+        from ui.session import Session
+
+        class GarbageClient:
+            def duplicates(self, roots: t.Any, min_size: int = 0,
+                           exts: t.Any = None, limit_groups: int = 0,
+                           on_progress: t.Any = None,
+                           on_groups: t.Any = None) -> dict:
+                if on_progress is not None:
+                    on_progress({"phase": "walk", "done": 0,
+                                 "total": None, "bytes": object()})
+                return {"groups": 0, "wasted_bytes": 0}
+
+        session = Session(client=GarbageClient())
+        errors: t.List[str] = []
+        session.errorOccurred.connect(errors.append)
+        finished: t.List[str] = []
+        session.taskFinished.connect(lambda name, _r: finished.append(name))
+        session.scan_duplicates(["C:/x"])
+        self._drain(qapp, session)
+        assert not session.is_busy()
+        # Скан не умер: итог пришёл, а мусорное событие стало видимой ошибкой.
+        assert finished == ["dedup"]
+        assert errors and "dedup" in errors[0]
+
+    def test_cleaner_scan_survives_garbage_progress_event(
+            self, qapp: t.Any) -> None:
+        """Клинер на кривых событиях не превращается в вечный 0%.
+
+        Мусорные done/total фильтруются, а терабайтные итоги (bytes за
+        пределами int32) парсятся без падения: у клинера нет байтовых
+        сигналов, весь путь — питоновские int.
+        """
+        from ui.session import Session
+
+        class GarbageClient:
+            def cat_meta(self) -> dict:
+                return {}
+
+            def candidates(self, roots: t.Any, cat_roots: bool = False,
+                           on_progress: t.Any = None,
+                           on_file: t.Any = None) -> dict:
+                if on_progress is not None:
+                    on_progress({"phase": "scan", "done": "мусор",
+                                 "total": object()})
+                    on_progress({"phase": "scan", "done": None, "total": 0})
+                return {"scanned": 1, "files": 2,
+                        "bytes": 5_000_000_000_000,
+                        "cancelled": False, "cats": {}}
+
+        session = Session(client=GarbageClient())
+        finished: t.List[str] = []
+        session.taskFinished.connect(lambda name, _r: finished.append(name))
+        session.scan_candidates(["C:/x"], cat_roots=False)
+        self._drain(qapp, session)
+        assert not session.is_busy()
+        assert finished == ["cleaner_scan"]
+        assert session.last_scan().bytes == 5_000_000_000_000
+
+    def test_worker_reports_error_even_if_on_error_crashes(
+            self, qapp: t.Any) -> None:
+        """Падение обработчика ошибки не теряет саму ошибку.
+
+        AppWorker обязан эмитить WorkerSignals.error, даже если on_error
+        (питон-колбэк) упал: иначе окно зависает «вечно занято».
+        """
+        from PySide6.QtCore import QThreadPool
+
+        worker_errors: t.List[str] = []
+        task = WorkerTask(
+            func=lambda: (_ for _ in ()).throw(RuntimeError("бум")),
+            on_error=lambda msg: (_ for _ in ()).throw(ValueError("бух")),
+        )
+        app_worker = run_async(QThreadPool.globalInstance(), task)
+        app_worker._signals.error.connect(worker_errors.append)
+        deadline = 0
+        while not worker_errors and deadline < 4000:
+            qapp.processEvents()
+            QTest.qWait(10)
+            deadline += 10
+        assert worker_errors and "бум" in worker_errors[0]
+
+    def test_worker_emits_error_when_on_done_crashes(
+            self, qapp: t.Any) -> None:
+        """Провал после finished.emit тоже виден как ошибка."""
+        from PySide6.QtCore import QThreadPool
+
+        worker_errors: t.List[str] = []
+        task = WorkerTask(
+            func=lambda: 42,
+            on_done=lambda result: (_ for _ in ()).throw(ValueError("бух")),
+            on_error=lambda msg: worker_errors.append(msg),
+        )
+        app_worker = run_async(QThreadPool.globalInstance(), task)
+        app_worker._signals.error.connect(worker_errors.append)
+        deadline = 0
+        while not worker_errors and deadline < 4000:
+            qapp.processEvents()
+            QTest.qWait(10)
+            deadline += 10
+        assert worker_errors and "бух" in worker_errors[0]
+
+
 class TestPurgeProgress:
     """Прогресс удаления: ядро шлёт события, полоса ползёт."""
 
@@ -1643,7 +1941,9 @@ class TestPurgeProgress:
         session.progressTick.connect(ticks.append)
         finished: t.List[str] = []
         session.taskFinished.connect(lambda name, _result: finished.append(name))
-        session.purge_items([{"path": "x", "category": "temp.app"}], False)
+        # Карантин выключен явно: этот тест про события прогресса ядра.
+        session.purge_items([{"path": "x", "category": "temp.app"}], False,
+                            quarantine=False)
         for _ in range(200):
             qapp.processEvents()
             if finished:
@@ -1671,7 +1971,9 @@ class TestPurgeProgress:
         session._journal = journal
         finished: t.List[str] = []
         session.taskFinished.connect(lambda name, _r: finished.append(name))
-        session.purge_items([{"path": "x", "category": "temp.app"}], False)
+        # Карантин выключен явно: тест про строку журнала пути ядра.
+        session.purge_items([{"path": "x", "category": "temp.app"}], False,
+                            quarantine=False)
         for _ in range(200):
             qapp.processEvents()
             if finished:
@@ -2182,4 +2484,512 @@ class TestStage47TweaksUi:
         boxes[2].setChecked(True)
         assert dlg.letters() == ["E", "F"]
         dlg.deleteLater()
+
+
+class TestSpeechAsk:
+    """Строка вопроса в панели реплики: сигнал, очистка, локаль."""
+
+    def test_button_emits_and_clears_field(self, qapp: t.Any) -> None:
+        box = SpeechBox()
+        fired: t.List[str] = []
+        box.asked.connect(lambda text: fired.append(text))
+        box.ask_widget().setText("  что это за файлы?  ")
+        box.ask_button().click()
+        assert fired == ["что это за файлы?"]
+        assert box.ask_widget().text() == ""
+
+    def test_enter_emits_too(self, qapp: t.Any) -> None:
+        box = SpeechBox()
+        fired: t.List[str] = []
+        box.asked.connect(lambda text: fired.append(text))
+        box.ask_widget().setText("откуда дубликаты?")
+        QTest.keyClick(box.ask_widget(), Qt.Key.Key_Return)
+        assert fired == ["откуда дубликаты?"]
+
+    def test_empty_question_is_not_emitted(self, qapp: t.Any) -> None:
+        box = SpeechBox()
+        fired: t.List[str] = []
+        box.asked.connect(lambda text: fired.append(text))
+        box.ask_widget().setText("   ")
+        box.ask_button().click()
+        QTest.keyClick(box.ask_widget(), Qt.Key.Key_Return)
+        assert fired == []
+
+    def test_placeholder_and_button_follow_locale(self, qapp: t.Any) -> None:
+        box = SpeechBox()
+        assert box.ask_widget().placeholderText() == ctx().tr("speech.ask_placeholder")
+        assert getattr(box.ask_button(), "fullText", box.ask_button().text)() \
+            == ctx().tr("speech.ask_button")
+        ctx().setLocale("en")
+        box.retranslate()
+        assert box.ask_widget().placeholderText() == ctx().tr(
+            "speech.ask_placeholder")
+        assert box.ask_widget().placeholderText() != ctx().tr(
+            "speech.ask_placeholder", "ru")
+        ctx().setLocale("ru")
+        box.retranslate()
+
+    def test_speech_keys_exist_in_both_locales(self, qapp: t.Any) -> None:
+        for locale in ("ru", "en"):
+            for key in ("ask_placeholder", "ask_hint", "ask_button",
+                        "thinking", "ai_offline"):
+                value = ctx().tr(f"speech.{key}", locale)
+                assert value != f"speech.{key}", (locale, key)
+                assert value.strip(), (locale, key)
+
+
+class TestWindowAsk:
+    """Полный флоу вопроса: реплика «думаю», ответ модели, фолбэк.
+
+    Окно фикстуры - 1100x700, то есть компактное (низкое): вопрос
+    задаётся через панель оверлея, поле внизу окна скрыто.
+    """
+
+    def test_compact_question_flows_via_overlay(self, win_fake: t.Any) -> None:
+        _window, session = win_fake
+        QTest.qWait(40)
+        assert _window._compact_window()
+        assert _window._mascot_overlay.isVisible()
+        # Поле панели реплики скрыто: вопрос живёт у фигуры.
+        assert not _window._speech.ask_widget().isVisible()
+        edit = _window._mascot_overlay.ask_widget()
+        assert edit.isVisible()
+        edit.setText("что за temp.app?")
+        _window._mascot_overlay.ask_button().click()
+        assert getattr(session, "ai_questions", []) == ["что за temp.app?"]
+        assert _window._speech.full_text() == ctx().tr("speech.thinking")
+        session.finish_ai_ask("Это временные файлы приложений - стирать можно.")
+        assert _window._speech.full_text() == \
+            "Это временные файлы приложений - стирать можно."
+        # Клиння в оверлее тоже видит ответ: рот шевелится по печати.
+        assert _window._mascot_overlay.mascot().mood() == "idle"
+
+    def test_full_window_question_flows_via_speech_bar(
+            self, win_fake: t.Any) -> None:
+        _window, session = win_fake
+        _window.resize(1100, 880)
+        QTest.qWait(60)
+        assert not _window._compact_window()
+        assert _window._speech.ask_widget().isVisible()
+        edit = _window._speech.ask_widget()
+        edit.setText("откуда дубликаты?")
+        _window._speech.ask_button().click()
+        assert session.ai_questions[-1] == "откуда дубликаты?"
+        assert _window._speech.full_text() == ctx().tr("speech.thinking")
+
+    def test_empty_answer_says_offline_line(self, win_fake: t.Any) -> None:
+        _window, session = win_fake
+        _window._on_ai_question("что тут?")
+        session.finish_ai_ask("")
+        assert _window._speech.full_text() == ctx().tr("speech.ai_offline")
+
+    def test_blank_question_ignored(self, win_fake: t.Any) -> None:
+        _window, session = win_fake
+        _window._on_ai_question("   ")
+        assert getattr(session, "ai_questions", []) == []
+        assert _window._speech.full_text() == ctx().tr("character.lines.hello")
+
+    def test_failed_task_unblocks_field(self, win_fake: t.Any) -> None:
+        _window, session = win_fake
+        _window._on_ai_question("вопрос")
+        assert _window._ai_ask_busy
+        _window._on_task_failed("ai_ask", "connection lost")
+        assert not _window._ai_ask_busy
+        # После сброса поле снова принимает вопрос.
+        _window._on_ai_question("повтор")
+        assert session.ai_questions[-1] == "повтор"
+
+
+class TestMascotOverlayAsk:
+    """Панель вопроса в оверлее: сигнал, клики, локаль."""
+
+    def _overlay(self) -> t.Any:
+        from ui.main import MascotOverlay
+
+        return MascotOverlay()
+
+    def test_button_emits_and_clears_field(self, qapp: t.Any) -> None:
+        overlay = self._overlay()
+        fired: t.List[str] = []
+        overlay.asked.connect(lambda text: fired.append(text))
+        overlay.ask_widget().setText("  что это за файлы?  ")
+        overlay.ask_button().click()
+        assert fired == ["что это за файлы?"]
+        assert overlay.ask_widget().text() == ""
+
+    def test_enter_emits_too(self, qapp: t.Any) -> None:
+        overlay = self._overlay()
+        fired: t.List[str] = []
+        overlay.asked.connect(lambda text: fired.append(text))
+        overlay.ask_widget().setText("мусор или нет?")
+        QTest.keyClick(overlay.ask_widget(), Qt.Key.Key_Return)
+        assert fired == ["мусор или нет?"]
+
+    def test_empty_question_is_not_emitted(self, qapp: t.Any) -> None:
+        overlay = self._overlay()
+        fired: t.List[str] = []
+        overlay.asked.connect(lambda text: fired.append(text))
+        overlay.ask_widget().setText("   ")
+        overlay.ask_button().click()
+        assert fired == []
+
+    def test_click_on_ask_panel_keeps_overlay_visible(self, qapp: t.Any) -> None:
+        from PySide6.QtCore import QEvent, QPoint
+        from PySide6.QtGui import QMouseEvent
+
+        overlay = self._overlay()
+        overlay.show()
+        qapp.processEvents()
+        panel_rect = overlay._ask_panel.geometry()
+        press = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            QPoint(panel_rect.center().x(), panel_rect.center().y()),
+            QPoint(0, 0),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        qapp.sendEvent(overlay, press)
+        qapp.processEvents()
+        assert overlay.isVisible()
+
+    def test_click_on_mascot_hides_overlay(self, qapp: t.Any) -> None:
+        from PySide6.QtCore import QEvent, QPoint
+        from PySide6.QtGui import QMouseEvent
+
+        overlay = self._overlay()
+        overlay.show()
+        qapp.processEvents()
+        press = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            QPoint(150, 60),
+            QPoint(0, 0),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        qapp.sendEvent(overlay, press)
+        qapp.processEvents()
+        assert not overlay.isVisible()
+
+    def test_placeholder_follows_locale(self, qapp: t.Any) -> None:
+        overlay = self._overlay()
+        assert overlay.ask_widget().placeholderText() == ctx().tr(
+            "speech.ask_placeholder")
+        ctx().setLocale("en")
+        overlay.retranslate()
+        assert overlay.ask_widget().placeholderText() == ctx().tr(
+            "speech.ask_placeholder")
+        assert overlay.ask_widget().placeholderText() != ctx().tr(
+            "speech.ask_placeholder", "ru")
+        ctx().setLocale("ru")
+        overlay.retranslate()
+
+    def test_overlay_grew_for_ask_bar(self, qapp: t.Any) -> None:
+        overlay = self._overlay()
+        assert overlay.height() == overlay.SIZE + overlay.ASK_HEIGHT
+        # Оверлей ещё не показан: важна не унаследованная скрытость панели,
+        # а то, что её никто не прятал руками.
+        assert not overlay._ask_panel.isHidden()
+
+
+class TestDedupGroupCards:
+    """Карточки групп дублей: галочка на каждой решает, что удалять."""
+
+    def _page(self) -> t.Any:
+        return DedupTab()
+
+    def _groups(self) -> list:
+        from ui.session import DupGroup
+
+        return [
+            DupGroup(hash="h1", size=1024, paths=["C:/a/x.jpg", "C:/b/x.jpg"]),
+            DupGroup(hash="h2", size=2048, paths=["C:/a/y.jpg", "C:/b/y.jpg",
+                                                  "C:/c/y.jpg"]),
+        ]
+
+    def test_set_groups_renders_cards(self, qapp: t.Any) -> None:
+        page = self._page()
+        page.set_groups(self._groups())
+        cards = page.group_cards()
+        assert len(cards) == 2
+        from PySide6.QtWidgets import QCheckBox
+        boxes = cards[0].findChildren(QCheckBox)
+        assert boxes and boxes[0].isChecked()
+        # Текстовая заглушка скрыта: место заняли карточки.
+        assert page._groups_area.isHidden()
+        assert page._cards_host.isVisibleTo(page._scroll)
+
+    def test_selected_groups_follow_checkboxes(self, qapp: t.Any) -> None:
+        page = self._page()
+        groups = self._groups()
+        page.set_groups(groups)
+        assert page.selected_groups() == groups
+        cards = page.group_cards()
+        cards[0].set_checked(False)
+        assert page.selected_groups() == [groups[1]]
+        cards[1].set_checked(False)
+        assert page.selected_groups() == []
+
+    def test_empty_groups_show_stub(self, qapp: t.Any) -> None:
+        page = self._page()
+        page.set_groups([])
+        assert not page.group_cards()
+        assert not page._groups_area.isHidden()
+        assert page._groups_area.text() == ctx().tr("session.dup_none")
+
+    def test_legacy_set_groups_text_still_works(self, qapp: t.Any) -> None:
+        page = self._page()
+        page.setGroups("текст заглушки")
+        assert page._groups_area.text() == "текст заглушки"
+        assert not page.group_cards()
+
+    def test_purge_uses_checked_groups(
+            self, qapp: t.Any, win_fake: t.Any) -> None:
+        from ui.session import DupGroup
+
+        win, session = win_fake
+        win.go_to_page(2)  # дубликаты
+        page = win._pages[2]
+        first = DupGroup(hash="h1", size=10, paths=["C:/a.jpg", "C:/b.jpg"])
+        second = DupGroup(hash="h2", size=20, paths=["C:/c.jpg", "C:/d.jpg"])
+        page.set_groups([first, second])
+        page.group_cards()[0].set_checked(False)
+        # Прямой вызов стартера: подтверждение в тестах обходим.
+        win._start_purge_dedup(page, quarantine=True)
+        # Уехали только выбранные группы (фейк пишет их в purge_calls).
+        assert session.purge_calls == [([second], False, True)]
+
+    def test_window_finish_dedup_renders_cards(
+            self, qapp: t.Any, win_fake: t.Any) -> None:
+        from ui.session import DupGroup
+
+        win, session = win_fake
+        win.go_to_page(2)
+        page = win._pages[2]
+        # Скан должен быть «запущен»: фейк завершает только начатое.
+        session.scan_duplicates(["C:/x"])
+        group = DupGroup(hash="h", size=10, paths=["C:/a.jpg", "C:/b.jpg"])
+        session.finish_duplicates({
+            "data": {"groups": 1, "wasted_bytes": 10, "cache_hits": 7},
+            "groups": [group], "cache_hits": 7})
+        QTest.qWait(30)
+        qapp.processEvents()
+        cards = page.group_cards()
+        assert len(cards) == 1
+        assert page.selected_groups() == [group]
+
+
+class TestQuarantineSendButton:
+    """Явная кнопка «В карантин» на страницах: короткий диалог, переезд."""
+
+    def test_cleaner_page_has_quarantine_button(self, qapp: t.Any) -> None:
+        page = CleanerTab()
+        assert page._quar_button is not None
+        # Кнопки элидируют подпись до показа: сверяем полный текст.
+        assert page._quar_button.fullText() \
+            == ctx().tr("cleaner.quar_button")
+        assert page.quarantineSendRequested is not None
+
+    def test_dedup_page_has_quarantine_button(self, qapp: t.Any) -> None:
+        page = DedupTab()
+        assert page._quar_button is not None
+        assert page._quar_button.fullText() == ctx().tr("dedup.quar_button")
+        assert page.quarantineSendRequested is not None
+
+    def test_send_asks_with_move_button(
+            self, qapp: t.Any, win_fake: t.Any,
+            monkeypatch: pytest.MonkeyPatch) -> None:
+        """Диалог с «Переместить»: подтверждение гонит purge в карантин."""
+        win, session = win_fake
+        win.go_to_page(1)
+        page = win._pages[1]
+        page.scanRequested.emit()
+        session.finish_candidates(make_scan())
+
+        seen: t.Dict[str, t.Any] = {}
+
+        def fake_ask(parent, items, headline=None, note=None,
+                     entries=None, apply_text=None):
+            seen["headline"] = headline
+            seen["apply_text"] = apply_text
+            seen["note"] = note
+            return True
+
+        monkeypatch.setattr(ConfirmDialog, "ask",
+                            staticmethod(fake_ask))
+        page.quarantineSendRequested.emit()
+        assert win.is_busy()
+        assert seen["headline"] == ctx().tr("quarantine.send_title")
+        assert seen["apply_text"] == ctx().tr("quarantine.move_button")
+        assert ctx().tr("quarantine.send_note") in seen["note"]
+        items, dry_run, quarantined = session.purge_calls[-1]
+        assert dry_run is False and quarantined is True
+        assert items
+        session.finish_purge()
+
+    def test_send_cancel_does_not_purge(
+            self, qapp: t.Any, win_fake: t.Any,
+            monkeypatch: pytest.MonkeyPatch) -> None:
+        win, session = win_fake
+        win.go_to_page(1)
+        page = win._pages[1]
+        page.scanRequested.emit()
+        session.finish_candidates(make_scan())
+        monkeypatch.setattr(
+            ConfirmDialog, "ask", staticmethod(lambda *a, **k: False))
+        page.quarantineSendRequested.emit()
+        assert not win.is_busy()
+        assert session.purge_calls == []
+        assert win._speech.full_text() \
+            == ctx().tr("character.lines.cancelled")
+
+    def test_send_without_scan_is_refused(
+            self, qapp: t.Any, win_fake: t.Any) -> None:
+        win, session = win_fake
+        win.go_to_page(1)
+        page = win._pages[1]
+        page.quarantineSendRequested.emit()
+        assert session.purge_calls == []
+        assert page._status_label.text() \
+            == ctx().tr("session.nothing_to_clean")
+
+    def test_dedup_send_uses_checked_groups(
+            self, qapp: t.Any, win_fake: t.Any,
+            monkeypatch: pytest.MonkeyPatch) -> None:
+        from ui.session import DupGroup
+
+        win, session = win_fake
+        win.go_to_page(2)
+        page = win._pages[2]
+        first = DupGroup(hash="h1", size=10, paths=["C:/a.jpg", "C:/b.jpg"])
+        second = DupGroup(hash="h2", size=20, paths=["C:/c.jpg", "C:/d.jpg"])
+        page.set_groups([first, second])
+        session._groups = [first, second]
+        page.group_cards()[0].set_checked(False)
+        monkeypatch.setattr(
+            ConfirmDialog, "ask", staticmethod(lambda *a, **k: True))
+        page.quarantineSendRequested.emit()
+        items, dry_run, quarantined = session.purge_calls[-1]
+        assert items == [second]
+        assert dry_run is False and quarantined is True
+        session.finish_purge()
+
+
+class TestScanCache:
+    """Кеш скана: повторный скан того же профиля не дёргает ядро."""
+
+    def _client(self) -> t.Any:
+        from core.swagscan import FileEvent
+
+        class CountingClient:
+            def __init__(self) -> None:
+                self.scans = 0
+                self.purges = 0
+
+            def cat_meta(self) -> dict:
+                return {"temp.app": {"title": "Temp", "lane": "direct",
+                                     "risk": "low"}}
+
+            def candidates(self, roots: t.Any, cat_roots: bool = True,
+                           on_progress: t.Any = None,
+                           on_file: t.Any = None) -> dict:
+                self.scans += 1
+                if on_file is not None:
+                    on_file(FileEvent("C:/t/a.tmp", 100, 1700000000,
+                                      ["temp.app"]))
+                return {"scanned": 1, "files": 1, "bytes": 100,
+                        "cancelled": False}
+
+            def purge(self, items: t.Any, dry_run: bool = False,
+                      on_progress: t.Any = None) -> dict:
+                self.purges += 1
+                return {"removed": len(items), "freed_bytes": 0,
+                        "refused": 0, "trashed": 0}
+
+        return CountingClient()
+
+    def _wait(self, qapp: t.Any, session: t.Any,
+              name: str) -> t.Any:
+        result: t.Dict[str, t.Any] = {}
+        session.taskFinished.connect(
+            lambda n, payload: result.update(n=n, payload=payload)
+            if n == name else None)
+        waited = 0
+        while not result and waited < 4000:
+            qapp.processEvents()
+            QTest.qWait(10)
+            waited += 10
+        assert result, f"задача {name} не завершилась"
+        return result["payload"]
+
+    def test_second_scan_same_profile_hits_cache(
+            self, qapp: t.Any) -> None:
+        from ui.session import Session
+
+        client = self._client()
+        session = Session(client=client)
+        try:
+            session.scan_candidates(["C:/t"], True)
+            first = self._wait(qapp, session, "cleaner_scan")
+            assert first.from_cache is False
+            assert client.scans == 1
+
+            session.scan_candidates(["C:/t"], True)
+            second = self._wait(qapp, session, "cleaner_scan")
+            assert second.from_cache is True
+            assert second.files == first.files
+            # Ядро не дёргалось: обход дерева не повторялся.
+            assert client.scans == 1
+        finally:
+            session.shutdown()
+
+    def test_other_profile_misses_cache(self, qapp: t.Any) -> None:
+        from ui.session import Session
+
+        client = self._client()
+        session = Session(client=client)
+        try:
+            session.scan_candidates(["C:/t"], True)
+            self._wait(qapp, session, "cleaner_scan")
+            session.scan_candidates(["C:/other"], True)
+            second = self._wait(qapp, session, "cleaner_scan")
+            assert second.from_cache is False
+            assert client.scans == 2
+        finally:
+            session.shutdown()
+
+    def test_purge_invalidates_cache(self, qapp: t.Any) -> None:
+        from ui.session import Session
+
+        client = self._client()
+        session = Session(client=client)
+        try:
+            session.scan_candidates(["C:/t"], True)
+            self._wait(qapp, session, "cleaner_scan")
+            session.purge_items(
+                [{"path": "C:/t/a.tmp", "category": "temp.app"}],
+                False, quarantine=False)
+            report = self._wait(qapp, session, "purge")
+            assert report.removed == 1
+            session.scan_candidates(["C:/t"], True)
+            second = self._wait(qapp, session, "cleaner_scan")
+            # Файлы ушли: кеш обнулён, скан честно пошёл в ядро.
+            assert second.from_cache is False
+            assert client.scans == 2
+        finally:
+            session.shutdown()
+
+    def test_window_finish_cleaner_shows_cache_status(
+            self, qapp: t.Any, win_fake: t.Any) -> None:
+        win, session = win_fake
+        win.go_to_page(1)
+        page = win._pages[1]
+        page.scanRequested.emit()
+        scan = make_scan()
+        scan.from_cache = True
+        session.finish_candidates(scan)
+        QTest.qWait(30)
+        qapp.processEvents()
+        assert page._status_label.text() == ctx().tr("cleaner.scan_cached")
 
