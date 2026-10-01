@@ -331,6 +331,8 @@
     "ai_provider_label": "Provider",
     "ai_provider_ollama": "Ollama (local)",
     "ai_provider_openai": "OpenAI-compatible API",
+    "ai_provider_anthropic": "Anthropic-compatible API",
+    "ai_busy": "Querying the server...",
     "ai_url_label": "Server address",
     "ai_model_label": "Model",
     "ai_models_refresh": "Pull list",

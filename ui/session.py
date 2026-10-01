@@ -38,6 +38,12 @@ LANE_DIRECT = "direct"
 # полна всегда — она считается из самого стрима, а не из накопленного.
 MAX_SHOWN_CANDIDATES = 50_000
 
+# Лёгкие задачи: короткие сетевые справочники (каталог моделей, проверка
+# связи AI). Они не конфликтуют со сканами и чистками, поэтому идут РЯДОМ
+# с тяжёлой задачей, а не ждут её. Гейт занятости их не касается, и их
+# завершение не сбрасывает флаг занятости чужой задачи.
+LIGHT_TASKS = frozenset({"ai_test", "ai_models"})
+
 
 def human_size(num_bytes: float) -> str:
     """Человеческий размер: 2 441.7 МБ, 1.2 ГБ, 512 КБ.
@@ -458,11 +464,18 @@ class Session(QObject):
         self._busy = busy
         self.busyChanged.emit(busy)
 
-    def _settle(self, _name: str, _result: object) -> None:
-        """Задача завершилась — окно свободно (слот главного потока)."""
+    def _settle(self, name: str, _result: object) -> None:
+        """Задача завершилась — окно свободно (слот главного потока).
+
+        Лёгкие задачи занятость не снимают: она им не принадлежала.
+        """
+        if name in LIGHT_TASKS:
+            return
         self._set_busy(False)
 
-    def _settle_failed(self, _name: str, _message: str) -> None:
+    def _settle_failed(self, name: str, _message: str) -> None:
+        if name in LIGHT_TASKS:
+            return
         self._set_busy(False)
 
     def _run(
@@ -470,15 +483,21 @@ class Session(QObject):
         name: str,
         func: t.Callable[[], t.Any],
     ) -> None:
-        """Запустить задачу в пуле, если окно не занято.
+        """Запустить задачу в пуле.
+
+        Тяжёлая задача требует свободного окна и выставляет флаг занятости.
+        Лёгкая (см. LIGHT_TASKS) идёт рядом с любой тяжёлой: каталог моделей
+        и проверка связи не трогают ни ядро, ни файлы.
 
         Результат и ошибка уходят сигналами taskFinished/taskFailed: они
         испускаются из рабочего потока, а Qt доставляет их в поток окна.
         """
-        if self._busy:
-            return
-        self._cancel.clear()
-        self._set_busy(True)
+        light = name in LIGHT_TASKS
+        if not light:
+            if self._busy:
+                return
+            self._cancel.clear()
+            self._set_busy(True)
 
         def _done(result: t.Any) -> None:
             # Флаг занятости снимет queued-слот _settle в главном потоке.

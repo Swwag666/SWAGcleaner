@@ -1,0 +1,219 @@
+name: CI
+
+# Весь смысл этого workflow: прогнать в облаке ТОТ ЖЕ самый start-build.bat,
+# которым проект собирается локально. Никаких отдельных шагов «pip install»,
+# «cargo build», «pyinstaller» в обход батника - иначе CI начнёт проверять
+# свой собственный рецепт сборки, а не тот, что лежит в репозитории, и расхождение
+# между «у меня собралось» и «в репозитории собралось» вернётся.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Дешёвая проверка, которая спасает от самой злой поломки в этом проекте.
+  #
+  # start-build.bat содержит русские строки и ОБЯЗАН лежать в репозитории в
+  # CP866+CRLF: cmd.exe читает батник побайтово, но позицию в файле считает в
+  # символах, поэтому на UTF-8 он съезжает внутрь многобайтовой последовательности
+  # и начинает исполнять мусор («'ропавшие' is not recognized...»). Достаточно
+  # один раз открыть файл в редакторе и нажать «сохранить» - и сборка ломается
+  # молча и необъяснимо. .gitattributes это запрещает, а эта джоба ловит нарушение
+  # за 20 секунд, до того как сгорит 10 минут основной сборки.
+  # ---------------------------------------------------------------------------
+  bat-encoding:
+    name: Кодировка start-build.bat
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: CP866, CRLF, без BOM, cmd парсит файл
+        shell: powershell
+        run: |
+          $p = Join-Path $env:GITHUB_WORKSPACE 'start-build.bat'
+          $b = [System.IO.File]::ReadAllBytes($p)
+          $enc = [System.Text.Encoding]::GetEncoding(866)
+          $fail = @()
+
+          # 1. UTF-8 BOM - cmd прочитает его как часть первой команды.
+          if ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) {
+            $fail += 'файл сохранён с UTF-8 BOM'
+          }
+
+          # 2. Кириллица в UTF-8 вместо CP866. В CP866 русские буквы живут в
+          #    0x80-0xAF и 0xE0-0xF1, а байты 0xD0/0xD1 - это псевдографика,
+          #    которой в файле нет вовсе. Так что пара D0|D1 + 80..BF может
+          #    означать только одно: файл пересохранён в UTF-8.
+          $utf8cyr = 0
+          for ($i = 0; $i -lt $b.Length - 1; $i++) {
+            if (($b[$i] -eq 0xD0 -or $b[$i] -eq 0xD1) -and $b[$i+1] -ge 0x80 -and $b[$i+1] -le 0xBF) { $utf8cyr++ }
+          }
+          if ($utf8cyr -gt 0) {
+            $fail += ('найдено ' + $utf8cyr + ' последовательностей UTF-8-кириллицы: файл в UTF-8, а нужен CP866')
+          }
+
+          # 3. Псевдографика CP866 (0xB0-0xDF) в файле не используется - баннеры
+          #    нарисованы символами = и -. Если блок появился, кто-то вставил
+          #    рамку из другого редактора, и кодировка там почти наверняка не та.
+          $box = 0
+          foreach ($x in $b) { if ($x -ge 0xB0 -and $x -le 0xDF) { $box++ } }
+          if ($box -gt 0) {
+            $fail += ('найдено ' + $box + ' байтов псевдографики 0xB0-0xDF, в этом батнике их быть не должно')
+          }
+
+          # 4. Переводы строк строго CRLF: голый LF ломает метки и goto.
+          $cr = 0; $lf = 0
+          foreach ($x in $b) { if ($x -eq 0x0D) { $cr++ } elseif ($x -eq 0x0A) { $lf++ } }
+          if ($cr -ne $lf) {
+            $fail += ('переводы строк не CRLF: CR=' + $cr + ' LF=' + $lf)
+          }
+
+          # 5. chcp 866 обязан стоять второй строкой, до первого русского echo.
+          $lines = ($enc.GetString($b)) -split "`r`n"
+          if ($lines.Count -lt 2 -or $lines[1] -notmatch '^chcp 866') {
+            $fail += 'вторая строка должна быть "chcp 866 >nul"'
+          }
+
+          # 6. И главное - cmd действительно способен этот файл исполнить.
+          $h = Join-Path $env:RUNNER_TEMP 'help.log'
+          cmd /c "start-build.bat --help > `"$h`" 2>&1 < nul"
+          $rc = $LASTEXITCODE
+          $htext = $enc.GetString([System.IO.File]::ReadAllBytes($h))
+          if ($rc -ne 0) { $fail += ('--help вернул код ' + $rc) }
+          if ($htext -match 'is not recognized') { $fail += 'cmd не распарсил файл: в выводе --help есть "is not recognized"' }
+          if ($htext.IndexOf([char]0xFFFD) -ge 0) { $fail += 'в выводе --help есть U+FFFD - текст побился' }
+          if ($htext -notmatch 'SWAGcleaner') { $fail += 'вывод --help не похож на справку SWAGcleaner' }
+
+          if ($fail.Count -gt 0) {
+            Write-Host '::error::start-build.bat сломан, чинить кодировку, а не сборку'
+            foreach ($f in $fail) { Write-Host ('::error::  ' + $f) }
+            Write-Host ''
+            Write-Host 'Как чинить: сохранить файл в CP866 с CRLF. Правильный способ - держать'
+            Write-Host 'в .gitattributes строку  start-build.bat text eol=crlf working-tree-encoding=CP866'
+            Write-Host 'и дать git пересобрать рабочую копию: удалить файл и выполнить  git checkout -- start-build.bat'
+            exit 1
+          }
+          Write-Host ('start-build.bat в порядке: ' + $b.Length + ' байт, CP866+CRLF, ' + $lines.Count + ' строк, --help код ' + $rc)
+
+  # ---------------------------------------------------------------------------
+  # Основная сборка: обе раскладки, каждая проходит полный путь от голого
+  # чекаута до замороженного exe, который реально запускают.
+  # fail-fast выключен специально: onefile и onedir ломаются по-разному, и
+  # полезно видеть обе картины сразу, а не одну до падения второй.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Сборка ${{ matrix.mode }}
+    needs: bat-encoding
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [onefile, onedir]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Батник сам найдёт питон, а если не найдёт - поставит. Здесь питон
+      # выставляется заранее исключительно ради кеша pip и предсказуемой версии:
+      # искать интерпретатор по всему раннеру на каждой сборке смысла нет.
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      # Rust на windows-latest уже стоит, батник его только проверит. Кешируем
+      # target/, иначе каждая сборка компилирует зависимости ядра заново.
+      - name: Кэш target/ для cargo
+        uses: actions/cache@v4
+        with:
+          path: rust/swagscan/target
+          key: cargo-target-${{ runner.os }}-${{ hashFiles('rust/swagscan/Cargo.lock') }}
+          restore-keys: |
+            cargo-target-${{ runner.os }}-
+
+      - name: start-build.bat --${{ matrix.mode }} --tests --verify
+        shell: powershell
+        run: |
+          $log  = Join-Path $env:RUNNER_TEMP 'swag-build.log'
+          $utf8 = Join-Path $env:RUNNER_TEMP 'swag-build-utf8.log'
+          foreach ($f in @($log, $utf8)) { if (Test-Path $f) { Remove-Item $f -Force } }
+
+          $mode = '${{ matrix.mode }}'
+          $flags = "--$mode --tests --verify --no-pause"
+          Write-Host ('запускаю: start-build.bat ' + $flags)
+          Write-Host ''
+
+          # Батник пишет журнал в CP866 (см. джобу bat-encoding), а лог GitHub
+          # Actions читается как UTF-8. Поэтому вывод перехватывается в файл и
+          # перекодируется, иначе вместо русского текста в логе будут кракозябры.
+          cmd /c "start-build.bat $flags > `"$log`" 2>&1 < nul"
+          $rc = $LASTEXITCODE
+
+          $enc = [System.Text.Encoding]::GetEncoding(866)
+          $fs = [System.IO.File]::Open($log, 'Open', 'Read', 'ReadWrite')
+          $ms = New-Object System.IO.MemoryStream
+          $fs.CopyTo($ms); $fs.Close()
+          $text = $enc.GetString($ms.ToArray())
+          [System.IO.File]::WriteAllText($utf8, $text, (New-Object System.Text.UTF8Encoding($false)))
+          $lines = $text -split "`r?`n"
+
+          Write-Host '::group::журнал start-build.bat (перекодирован из CP866)'
+          foreach ($l in $lines) {
+            # строки, начинающиеся с :: или ##[, Actions поймёт как свои команды
+            if ($l.StartsWith('::') -or $l.StartsWith('##[')) { Write-Host (' ' + $l) } else { Write-Host $l }
+          }
+          Write-Host '::endgroup::'
+
+          $pick = $lines | Where-Object {
+            $_ -match '^\s*(режим:|артефакт|размер|SHA256|итог:|время сборки|cargo:)' -or
+            $_ -match 'вырезано тяжёлых бинарников|passed; \d+ failed|test result:|СБОЙ|ОШИБКА'
+          }
+          $md = New-Object System.Collections.Generic.List[string]
+          $md.Add('### Сборка ' + $mode)
+          $md.Add('')
+          if ($rc -eq 0) { $md.Add('Код возврата `0` - батник дошёл до конца.') }
+          else { $md.Add('Код возврата `' + $rc + '` - **сборка не удалась**.') }
+          $md.Add('')
+          $md.Add('```')
+          if ($pick) { $pick | ForEach-Object { $md.Add($_.Trim()) } } else { $md.Add('(ключевые строки не найдены - смотри журнал выше)') }
+          $md.Add('```')
+          $md.Add('')
+          [System.IO.File]::AppendAllText($env:GITHUB_STEP_SUMMARY, ($md -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
+
+          if ($rc -ne 0) { Write-Host ('::error::start-build.bat вернул ' + $rc + ', подробности в журнале выше') }
+          exit $rc
+
+      - name: Артефакт
+        uses: actions/upload-artifact@v4
+        with:
+          name: SWAGcleaner-${{ matrix.mode }}
+          path: ${{ matrix.mode == 'onedir' && 'dist/SWAGcleaner' || 'dist/SWAGcleaner.exe' }}
+          if-no-files-found: error
+          retention-days: 14
+
+      # Журнал прикладывается только при падении и только в UTF-8, чтобы его
+      # можно было читать прямо в браузере без перекодировки.
+      - name: Журнал сборки при падении
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.mode }}
+          path: ${{ runner.temp }}/swag-build-utf8.log
+          if-no-files-found: ignore
+          retention-days: 7

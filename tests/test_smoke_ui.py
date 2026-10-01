@@ -62,6 +62,34 @@ def _cat_card(cat_id: str, files: int = 10, size: int = 1024,
             "lane": lane, "risk": risk, "regrows": regrows, "admin": admin}
 
 
+def _wait_scene_settled(stack: t.Any, page: t.Any,
+                        timeout_ms: int = 6000) -> None:
+    """Дождаться фактического конца перехода сцены, а не фиксированное время.
+
+    Жёсткий qWait(TRANSITION_MS + 120) флейкал: таймеры анимации под
+    offscreen-платформой стартуют с задержкой, и запаса в 120 мс иногда
+    не хватало - переход досматривался уже после проверки.
+    """
+    from PySide6.QtCore import QAbstractAnimation
+
+    waited = 0
+    while waited < timeout_ms:
+        QTest.qWait(25)
+        waited += 25
+        group = stack._group
+        done = (
+            page is not None
+            and page.pos().x() == 0
+            and page.graphicsEffect() is None
+            and (group is None
+                 or group.state() == QAbstractAnimation.State.Stopped)
+        )
+        if done:
+            return
+    raise AssertionError(
+        f"переход сцены не завершился за {timeout_ms} мс")
+
+
 @pytest.fixture
 def win(qapp: t.Any) -> t.Any:
     """Главное окно на время одного теста.
@@ -257,13 +285,18 @@ class TestFonts:
             assert ratio == 0.0, f"в теме {theme_name} размыто {ratio:.0%} штрихов"
 
     def test_dark_theme_uses_bolder_pixel_font(self, qapp: t.Any) -> None:
-        # Светлое на тёмном кажется тоньше, поэтому на тёмной теме вес выше.
-        dark = theme.font_for("pixel", "dark").weight()
-        light = theme.font_for("pixel", "light").weight()
-        assert dark.value > light.value
+        # Светлое на тёмном кажется тоньше, поэтому на тёмной теме пиксельный
+        # шрифт утолщается. Вес живёт в QSS (глобальное правило), а не в QFont
+        # приложения: смена темы не должна рассылать смену шрифта по виджетам.
+        dark = theme.qss("dark", "pixel")
+        light = theme.qss("light", "pixel")
+        assert "font-weight: bold" in dark
+        assert "font-weight: bold" not in light
+        assert theme.font_for("pixel", "dark") == theme.font_for("pixel", "light")
 
     def test_default_font_is_not_bolded(self, qapp: t.Any) -> None:
         assert theme.font_for("default", "dark").weight().value == theme.font_for("default", "light").weight().value
+        assert "font-weight: bold" not in theme.qss("dark", "default")
 
 
 # ---------- страницы ----------
@@ -438,14 +471,15 @@ class TestSceneStack:
     def test_transition_settles_on_final_state(self, win: t.Any) -> None:
         win.go_to_page(2)
         page = win._stack.widget(2)
-        QTest.qWait(SceneStack.TRANSITION_MS + 120)
+        _wait_scene_settled(win._stack, page)
         assert win._stack.currentIndex() == 2
         assert page.pos().x() == 0
-        assert page.graphicsEffect().opacity() == 1.0
+        # В покое эффект прозрачности снят: страница красится напрямую.
+        assert page.graphicsEffect() is None
 
     def test_previous_page_is_hidden_after_transition(self, win: t.Any) -> None:
         win.go_to_page(3)
-        QTest.qWait(SceneStack.TRANSITION_MS + 120)
+        _wait_scene_settled(win._stack, win._stack.widget(3))
         assert not win._stack.widget(0).isVisible()
 
     def test_page_slides_in_from_the_side(self, win: t.Any) -> None:
@@ -453,25 +487,26 @@ class TestSceneStack:
         page = win._stack.widget(1)
         # Сразу после переключения страница ещё смещена вправо и прозрачна.
         assert page.pos().x() > 0
+        assert page.graphicsEffect() is not None
         assert page.graphicsEffect().opacity() < 1.0
-        QTest.qWait(SceneStack.TRANSITION_MS + 120)
+        _wait_scene_settled(win._stack, page)
         assert page.pos().x() == 0
 
     def test_rapid_switching_leaves_no_ghost_pages(self, win: t.Any) -> None:
         for index in (1, 3, 4, 2):
             win.go_to_page(index)
-        QTest.qWait(SceneStack.TRANSITION_MS + 200)
+        _wait_scene_settled(win._stack, win._stack.widget(2))
         visible = [i for i, page in enumerate(win._stack._pages) if page.isVisible()]
         assert visible == [2]
-        assert win._stack.widget(2).graphicsEffect().opacity() == 1.0
+        assert win._stack.widget(2).graphicsEffect() is None
         assert win._stack.widget(2).pos().x() == 0
 
     def test_same_page_switch_is_ignored(self, win: t.Any) -> None:
         win.go_to_page(1)
-        QTest.qWait(SceneStack.TRANSITION_MS + 120)
-        before = win._stack.widget(1).graphicsEffect().opacity()
+        _wait_scene_settled(win._stack, win._stack.widget(1))
+        assert win._stack.widget(1).graphicsEffect() is None
         win.go_to_page(1)
-        assert win._stack.widget(1).graphicsEffect().opacity() == before
+        assert win._stack.widget(1).graphicsEffect() is None
 
     def test_accent_bar_sweeps_under_the_header(self, win: t.Any) -> None:
         QTest.qWait(AccentBar.SWEEP_MS + 120)

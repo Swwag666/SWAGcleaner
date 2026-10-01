@@ -24,6 +24,7 @@ from PySide6.QtGui import QColor, QPainter, QPixmap, QPolygon
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from ui.context import ctx
+from ui.theme import apply_role_font
 
 # Картинки персонажа лежат рядом с проектом: assets/character.
 # В «числовой» теме свой протагонист: assets/character/num.
@@ -404,6 +405,7 @@ class SpeechBox(QFrame):
 
         self._name = QLabel(self)
         self._name.setObjectName("speechName")
+        apply_role_font(self._name)
         root.addWidget(self._name)
 
         text_row = QHBoxLayout()
@@ -417,6 +419,7 @@ class SpeechBox(QFrame):
 
         self._caret = QLabel("▾", self)
         self._caret.setObjectName("speechCaret")
+        apply_role_font(self._caret)
         self._caret.setAlignment(Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
         self._caret.setVisible(False)
         text_row.addWidget(self._caret, 0, Qt.AlignmentFlag.AlignBottom)

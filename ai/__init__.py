@@ -19,6 +19,7 @@ from .config import config_dir, config_path, load_settings, save_settings
 from .provider import (
     AiSettings,
     AiUnavailable,
+    AnthropicProvider,
     OllamaProvider,
     OpenAIProvider,
     Provider,
@@ -39,6 +40,7 @@ __all__ = [
     "AiAssistant",
     "AiSettings",
     "AiUnavailable",
+    "AnthropicProvider",
     "OllamaProvider",
     "OpenAIProvider",
     "Provider",

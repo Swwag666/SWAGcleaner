@@ -37,6 +37,7 @@ from ui.theme import (
     ConfigCard,
     HeroCard,
     ShimmerProgress,
+    apply_role_font,
     body,
     button,
     card,
@@ -435,13 +436,16 @@ class CategoryCard(QFrame):
         self._lane_label = QLabel(self)
         self._lane_label.setObjectName("laneBadge")
         self._lane_label.setProperty("lane", self._lane)
+        apply_role_font(self._lane_label)
         bottom.addWidget(self._lane_label)
         self._risk_label = QLabel(self)
         self._risk_label.setObjectName("riskBadge")
         self._risk_label.setProperty("risk", risk)
+        apply_role_font(self._risk_label)
         bottom.addWidget(self._risk_label)
         self._note_label = QLabel(self)
         self._note_label.setProperty("role", "hint")
+        apply_role_font(self._note_label)
         self._note_label.setWordWrap(True)
         bottom.addWidget(self._note_label, 1)
         layout.addLayout(bottom)
@@ -2030,6 +2034,8 @@ class SettingsTab(EmptyTab):
                                   "ollama")
         self._ai_provider.addItem(ctx().tr("settings.ai_provider_openai"),
                                   "openai")
+        self._ai_provider.addItem(ctx().tr("settings.ai_provider_anthropic"),
+                                  "anthropic")
         self._ai_provider.currentIndexChanged.connect(self._on_ai_changed)
         layout.addWidget(self._ai_provider)
 
@@ -2044,10 +2050,10 @@ class SettingsTab(EmptyTab):
         self._ai_model = QComboBox(self)
         self._ai_model.setEditable(True)
         model_row.addWidget(self._ai_model, 1)
-        refresh = QPushButton(ctx().tr("settings.ai_models_refresh"), self)
-        refresh.setMinimumHeight(30)
-        refresh.clicked.connect(self._emit_ai_models)
-        model_row.addWidget(refresh)
+        self._ai_models_btn = QPushButton(ctx().tr("settings.ai_models_refresh"), self)
+        self._ai_models_btn.setMinimumHeight(30)
+        self._ai_models_btn.clicked.connect(self._emit_ai_models)
+        model_row.addWidget(self._ai_models_btn)
         layout.addLayout(model_row)
 
         self._ai_key_label = self._add_section_label("settings.ai_key_label",
@@ -2069,10 +2075,10 @@ class SettingsTab(EmptyTab):
         layout.addWidget(self._ai_remote_warn)
 
         buttons = QHBoxLayout()
-        test = QPushButton(ctx().tr("settings.ai_test"), self)
-        test.setMinimumHeight(30)
-        test.clicked.connect(self._emit_ai_test)
-        buttons.addWidget(test)
+        self._ai_test_btn = QPushButton(ctx().tr("settings.ai_test"), self)
+        self._ai_test_btn.setMinimumHeight(30)
+        self._ai_test_btn.clicked.connect(self._emit_ai_test)
+        buttons.addWidget(self._ai_test_btn)
         save = QPushButton(ctx().tr("settings.ai_save"), self)
         save.setMinimumHeight(30)
         save.clicked.connect(self._emit_ai_save)
@@ -2088,10 +2094,10 @@ class SettingsTab(EmptyTab):
     def _on_ai_changed(self, *_args) -> None:
         """Провайдер/адрес поменялись: видимость ключа и предупреждения."""
         if self._ai_key is not None and self._ai_provider is not None:
-            is_openai = self._ai_provider.currentData() == "openai"
-            self._ai_key.setVisible(bool(is_openai))
+            needs_key = self._ai_provider.currentData() in ("openai", "anthropic")
+            self._ai_key.setVisible(bool(needs_key))
             if self._ai_key_label is not None:
-                self._ai_key_label.setVisible(bool(is_openai))
+                self._ai_key_label.setVisible(bool(needs_key))
         if self._ai_remote_warn is not None:
             settings = self.collect_ai_settings()
             self._ai_remote_warn.setVisible(bool(settings.is_remote()))
@@ -2162,6 +2168,20 @@ class SettingsTab(EmptyTab):
     def setAiStatus(self, text: str) -> None:
         if self._ai_status is not None:
             self._ai_status.setText(text)
+
+    def setAiBusy(self, busy: bool) -> None:  # noqa: N802 - как у виджетов Qt
+        """Погасить/вернуть кнопки сетевых запросов AI на время хождения.
+
+        Сетевые запросы AI лёгкие и идут мимо общего гейта занятости:
+        занятость здесь показывает себя - кнопка «в работе», а не молчаливо
+        проглоченный клик.
+        """
+        for attr in ("_ai_models_btn", "_ai_test_btn"):
+            btn = getattr(self, attr, None)
+            if btn is not None:
+                btn.setEnabled(not busy)
+        if busy and self._ai_status is not None:
+            self._ai_status.setText(ctx().tr("settings.ai_busy"))
 
     def _emit_ai_save(self) -> None:
         self.aiSaveRequested.emit(self.collect_ai_settings())

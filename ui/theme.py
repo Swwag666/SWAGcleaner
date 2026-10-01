@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QStatusBar,
     QVBoxLayout,
     QWidget,
 )
@@ -247,12 +248,16 @@ def fonts_sizes(kind: str) -> Dict[str, int]:
 
 
 def font_for(kind: str, theme: str = "dark", weight: QFont.Weight | None = None) -> QFont:
-    """Собрать шрифт приложения.
+    """Собрать базовый шрифт приложения.
 
-    Для пиксельного шрифта: целый размер в пикселях, выключенное сглаживание
-    и, на тёмной теме, более жирный вес. Последнее — оптическая компенсация:
-    светлые штрихи на тёмном фоне кажутся тоньше, чем такие же тёмные на
-    светлом, поэтому на тёмной теме тот же текст выглядит «потрёпанным».
+    Для пиксельного шрифта: целый размер в пикселях, выключенное сглаживание,
+    полное хинтинг-предпочтение и разрядка в 1px ( раньше разрядку задавал QSS
+    на каждый селектор — смена темы перечитывала шрифт из стилей и рассылала
+    FontChange по всем виджетам, окно замирало на секунды ). Результат
+    НЕ зависит от темы: смена темы не должна менять шрифт приложения.
+    Оптическая компенсация «светлое на тёмном кажется тоньше» уехала в QSS
+    ( глобальный font-weight ), который дёшев: не меняет метрики шрифта.
+    Параметр theme оставлен для совместимости подписи и игнорируется.
     """
     _kind = kind if kind in FONT_KINDS else "default"
     font = QFont(resolve_family(_kind))
@@ -260,13 +265,97 @@ def font_for(kind: str, theme: str = "dark", weight: QFont.Weight | None = None)
         font.setPixelSize(fonts_sizes(_kind)["base"])
         font.setStyleStrategy(QFont.StyleStrategy.NoAntialias)
         font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
-        if theme not in ("light",):
-            font.setWeight(QFont.Weight.Bold)
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.0)
     else:
         font.setPointSize(fonts_sizes(_kind)["base"])
     if weight is not None:
         font.setWeight(weight)
     return font
+
+
+# Активный вид шрифта: фабрики виджетов спрашивают его при создании, чтобы
+# ставить рольной шрифт сразу. Обновляется в apply_theme.
+_active_kind: str = "pixel"
+
+# Рольные шрифты. Размер шрифта в QSS — главный тормоз смены темы: каждый
+# font-size в стилях Qt разрешает шрифт заново и рассылает FontChange, из-за
+# чего все QLabel с переносом пересчитывают высоту. Здесь размеры задаются
+# кодом, и смена темы их не трогает вовсе.
+_ROLE_RULES: Dict[str, Tuple[str, float | None]] = {
+    "title": ("title", None),
+    "hint": ("small", None),
+    "section": ("small", 2.0),
+    "stat": ("title", None),
+}
+_LABEL_NAME_RULES: Dict[str, Tuple[str, float | None]] = {
+    "sidebarCaption": ("small", 2.0),
+    "sidebarStatus": ("small", None),
+    "speechName": ("small", 2.0),
+    "speechCaret": ("small", None),
+    "riskBadge": ("small", 1.0),
+    "laneBadge": ("small", 1.0),
+    "accordionCount": ("small", None),
+    "heroStatValue": ("title", None),
+    "heroStatCaption": ("small", None),
+}
+
+
+def role_font(kind: str, size_key: str, spacing: float | None = None) -> QFont:
+    """Шрифт по роли: базовый + размер + разрядка.
+
+    size_key — «base», «small», «title», «nav» или «emph» (акцентная цифра
+    hero-карточки: заметно крупнее title). spacing задаётся в пикселях.
+    """
+    k = kind if kind in FONT_KINDS else "default"
+    sizes = fonts_sizes(k)
+    if size_key == "emph":
+        size = sizes["title"] + (8 if k == "pixel" else 5)
+    else:
+        size = sizes.get(size_key, sizes["base"])
+    font = font_for(k)
+    if k == "pixel":
+        font.setPixelSize(size)
+    else:
+        font.setPointSize(size)
+    if spacing:
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, spacing)
+    return font
+
+
+def widget_font(widget: QWidget, kind: str = "pixel") -> QFont:
+    """Шрифт для виджета по его роли/objectName/типу. Базовый, если правил нет."""
+    k = kind if kind in FONT_KINDS else "default"
+    name = widget.objectName() or ""
+    role = widget.property("role")
+    if isinstance(widget, QLabel):
+        rule = _LABEL_NAME_RULES.get(name)
+        if rule is None and role:
+            rule = _ROLE_RULES.get(str(role))
+        if rule is not None and name != "heroStatValue":
+            return role_font(k, rule[0], rule[1])
+    if isinstance(widget, QPushButton) and name == "navItem":
+        return role_font(k, "nav")
+    if isinstance(widget, (QStatusBar, QProgressBar)):
+        return role_font(k, "small")
+    return font_for(k)
+
+
+def apply_role_font(widget: QWidget, kind: str | None = None) -> None:
+    """Поставить виджету его рольной шрифт ( для фабрик и конструкторов )."""
+    k = kind or _active_kind
+    font = widget_font(widget, k)
+    if widget.font() != font:
+        widget.setFont(font)
+
+
+def apply_widget_fonts(app: QApplication, kind: str) -> None:
+    """Обновить шрифты всех виджетов под выбранный вид шрифта.
+
+    Дорогой проход — запускается только при смене вида ( pixel/default ),
+    а не при смене темы: тема шрифты не меняет.
+    """
+    for widget in app.allWidgets():
+        apply_role_font(widget, kind)
 
 
 def palette(theme: str, accent: str = "blue") -> Dict[str, str]:
@@ -289,16 +378,25 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
         accent: str = "blue") -> str:
     """Собрать таблицу стилей для темы, вида шрифта и акцента.
 
-    font-family здесь намеренно не задаётся: семейство ставит QApplication
-    через font_for(), иначе Qt-стили перебивали бы настройку сглаживания.
+    font-family и font-size здесь намеренно не задаются: семейство и рольные
+    размеры ставит код (font_for/role_font), иначе Qt-стили перебивали бы
+    настройку сглаживания, а каждый font-size в стилях при смене темы
+    перечитывал шрифт и рассылал FontChange по всем виджетам — окно
+    замирало. Исключение — heroStatValue[emphasis]: его размер динамический,
+    дешевле оставить один font-size в стилях, чем ловить смену свойства.
     """
     c = palette(theme, accent)
     size = fonts_sizes(font_kind)
-    spacing = "1px" if font_kind == "pixel" else "0px"
-    # У пиксельного шрифта размер задаём в пикселях, у обычного — в пунктах.
-    unit = "px" if font_kind == "pixel" else "pt"
+    # Оптическая компенсация веса: светлые штрихи на тёмном фоне кажутся
+    # тоньше, поэтому пиксельный шрифт на тёмных темах утолщается через QSS.
+    # font-weight в стилях дёшев: метрики шрифта не меняются, дорогой
+    # font-resolve не запускается.
+    bold_rule = "font-weight: bold;" if (
+        font_kind == "pixel" and theme != "light") else ""
     # Акцентная «героическая» цифра: заметно крупнее title, но не слон.
     emph = size["title"] + (8 if font_kind == "pixel" else 5)
+    # У пиксельного шрифта размер задаём в пикселях, у обычного — в пунктах.
+    unit = "px" if font_kind == "pixel" else "pt"
     # Верхняя кромка карточек чуть светлее нижней: панель «ловит свет» и
     # выглядит объёмной, а не плоской плашкой.
     border_light = QColor(c["border"]).lighter(122).name()
@@ -308,22 +406,17 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
     }}
     QWidget {{
         color: {c["text_primary"]};
-        letter-spacing: {spacing};
+        {bold_rule}
     }}
     QLabel {{
         background: transparent;
         color: {c["text_primary"]};
-        letter-spacing: {spacing};
     }}
     QLabel[role="secondary"] {{ color: {c["text_secondary"]}; }}
-    QLabel[role="hint"] {{ color: {c["text_placeholder"]}; font-size: {size["small"]}{unit}; }}
-    QLabel[role="title"] {{ font-size: {size["title"]}{unit}; color: {c["text_primary"]}; }}
-    QLabel[role="section"] {{
-        font-size: {size["small"]}{unit};
-        color: {c["text_placeholder"]};
-        letter-spacing: 2px;
-    }}
-    QLabel[role="stat"] {{ font-size: {size["title"]}{unit}; color: {c["accent"]}; }}
+    QLabel[role="hint"] {{ color: {c["text_placeholder"]}; }}
+    QLabel[role="title"] {{ color: {c["text_primary"]}; }}
+    QLabel[role="section"] {{ color: {c["text_placeholder"]}; }}
+    QLabel[role="stat"] {{ color: {c["accent"]}; }}
 
     /* ---------- боковое меню ---------- */
     QFrame#sidebar {{
@@ -332,14 +425,11 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
     }}
     QLabel#sidebarCaption {{
         color: {c["text_placeholder"]};
-        font-size: {size["small"]}{unit};
-        letter-spacing: 2px;
         padding: 0px 4px;
     }}
     QFrame#sidebarBrand {{ background: transparent; border: none; }}
     QLabel#sidebarStatus {{
         color: {c["text_placeholder"]};
-        font-size: {size["small"]}{unit};
     }}
     QLabel#statusDot {{ border-radius: 10px; background-color: {c["border"]}; }}
     QLabel#statusDot[kind="admin"] {{ background-color: {c["on"]}; }}
@@ -352,8 +442,6 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
         border-radius: 0px;
         padding: 9px 10px;
         text-align: left;
-        font-size: {size["nav"]}{unit};
-        letter-spacing: {spacing};
     }}
     QPushButton#navItem:hover {{
         color: {c["text_primary"]};
@@ -372,8 +460,6 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
         border: 1px solid {c["border"]};
         border-radius: 7px;
         padding: 8px 16px;
-        font-size: {size["base"]}{unit};
-        letter-spacing: {spacing};
     }}
     QPushButton:hover {{
         background-color: {c["bg_panel_hover"]};
@@ -411,8 +497,6 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
         border: 1px solid {c["border"]};
         border-radius: 10px;
         padding: 6px 10px;
-        font-size: {size["base"]}{unit};
-        letter-spacing: {spacing};
     }}
     QPushButton#headerButton:hover {{
         color: {c["text_primary"]};
@@ -455,8 +539,6 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
         border-radius: 10px;
     }}
     QLabel#riskBadge {{
-        font-size: {size["small"]}{unit};
-        letter-spacing: 1px;
         padding: 2px 6px;
         border-radius: 5px;
         background-color: {c["bg_input"]};
@@ -503,8 +585,6 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
     QFrame#categoryCard[risk="medium"] {{ border-left: 3px solid {c["warn"]}; }}
     QFrame#categoryCard[risk="high"] {{ border-left: 3px solid {c["danger"]}; }}
     QLabel#laneBadge {{
-        font-size: {size["small"]}{unit};
-        letter-spacing: 1px;
         padding: 2px 6px;
         border-radius: 5px;
         background-color: {c["bg_input"]};
@@ -536,11 +616,9 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
     }}
     QLabel#speechName {{
         color: {c["accent"]};
-        font-size: {size["small"]}{unit};
-        letter-spacing: 2px;
     }}
     QLabel#speechText {{ color: {c["text_primary"]}; }}
-    QLabel#speechCaret {{ color: {c["accent"]}; font-size: {size["small"]}{unit}; }}
+    QLabel#speechCaret {{ color: {c["accent"]}; }}
 
     /* ---------- ввод ---------- */
     QLineEdit, QComboBox, QTextEdit, QSpinBox {{
@@ -549,8 +627,6 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
         border: 1px solid {c["border"]};
         border-radius: 7px;
         padding: 7px 9px;
-        font-size: {size["base"]}{unit};
-        letter-spacing: {spacing};
     }}
     QLineEdit:focus, QComboBox:focus, QTextEdit:focus {{
         border-color: {c["accent"]};
@@ -574,8 +650,6 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
         selection-background-color: {c["select_bg"]};
         selection-color: {c["text_primary"]};
         gridline-color: {c["border_soft"]};
-        font-size: {size["base"]}{unit};
-        letter-spacing: {spacing};
     }}
 
     /* ---------- статус-бар ---------- */
@@ -583,8 +657,6 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
         background-color: {c["bg_sidebar"]};
         color: {c["text_secondary"]};
         border-top: 1px solid {c["border_soft"]};
-        font-size: {size["small"]}{unit};
-        letter-spacing: {spacing};
     }}
 
     /* ---------- меню ---------- */
@@ -592,7 +664,6 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
         background-color: {c["bg_sidebar"]};
         color: {c["text_primary"]};
         border-bottom: 1px solid {c["border_soft"]};
-        font-size: {size["base"]}{unit};
     }}
     QMenuBar::item:selected {{ background-color: {c["bg_panel_hover"]}; }}
     QMenu {{
@@ -615,7 +686,6 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
         border-radius: 7px;
         text-align: center;
         color: {c["text_primary"]};
-        font-size: {size["small"]}{unit};
     }}
     QProgressBar::chunk {{ background-color: {c["accent"]}; border-radius: 1px; }}
     QScrollBar:vertical {{
@@ -646,7 +716,6 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
         border-radius: 0px;
         padding: 9px 8px;
         text-align: left;
-        font-size: {size["base"]}{unit};
         color: {c["text_secondary"]};
     }}
     QPushButton#accordionHeader:hover {{
@@ -660,7 +729,6 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
     }}
     QLabel#accordionCount {{
         color: {c["text_placeholder"]};
-        font-size: {size["small"]}{unit};
     }}
     /* Тултипы - тоже карточки в теме, а не системная жёлтая тряпка. */
     QToolTip {{
@@ -687,8 +755,11 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
     }}
     QLabel#heroStatValue {{
         color: {c["accent"]};
-        font-size: {size["title"]}{unit};
     }}
+    /* Единственный font-size в стилях: акцентная цифра меняет размер
+       динамически (свойство emphasis), ловить его смену кодом дороже,
+       чем оставить одно правило. FontChange уходит максимум четырём
+       лейблам hero-карточки — это копейки. */
     QLabel#heroStatValue[emphasis="true"] {{
         color: {c["on"]};
         font-size: {emph}{unit};
@@ -698,7 +769,6 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
     QLabel#heroStatValue[tone="danger"] {{ color: {c["danger"]}; }}
     QLabel#heroStatCaption {{
         color: {c["text_placeholder"]};
-        font-size: {size["small"]}{unit};
     }}
     QPushButton#quickTile {{
         background-color: {c["bg_inset"]};
@@ -707,7 +777,6 @@ def qss(theme: str = "dark", font_kind: str = "pixel",
         border-radius: 10px;
         padding: 12px 14px;
         text-align: left;
-        font-size: {size["base"]}{unit};
     }}
     QPushButton#quickTile:hover {{
         background-color: {c["bg_panel_hover"]};
@@ -772,28 +841,43 @@ def apply_theme(app: QApplication, theme: str = "dark", font_kind: str = "pixel"
     Строка стилей собирается дорого, а полировка ею всех виджетов ещё
     дороже: держим кэш на тройку (тема, шрифт, акцент) и не трогаем
     приложение вовсе, если эта тройка уже применена.
+
+    Шрифты при смене темы не трогаем вовсе: рольные размеры живут в
+    QFont виджетов, таблица стилей теперь меняет только цвета. Проход
+    setFont по всем виджетам нужен один раз — при смене вида шрифта.
     """
+    global _active_kind
     key = (theme, font_kind, accent)
     sheet = _QSS_CACHE.get(key)
     if sheet is None:
         sheet = qss(theme, font_kind, accent)
         _QSS_CACHE[key] = sheet
     if app.styleSheet() != sheet:
-        app.setStyleSheet(sheet)
-    font = font_for(font_kind, theme)
-    current = app.font()
-    if (current.family(), current.pixelSize(), current.pointSize(), current.weight()) != (
-        font.family(), font.pixelSize(), font.pointSize(), font.weight()
-    ):
+        # Фильтр кликов снимаем на время пере-полировки: смена стилей
+        # прогоняет через него десятки тысяч событий, и каждый вызов
+        # Python-кода стоит денег. Синхронная операция — клик между
+        # снятием и возвратом не успевает произойти.
+        from ui import sounds as _sounds
+        quiet = _sounds.suspend(app)
+        try:
+            app.setStyleSheet(sheet)
+        finally:
+            if quiet:
+                _sounds.resume(app)
+    # Шрифт приложения держим равным базовому: новые виджеты-сироты
+    # (без рольного setFont) наследуют его при создании.
+    font = font_for(font_kind)
+    if app.font() != font:
         app.setFont(font)
-        # Виджеты, у которых в QSS задан font-size, впекают семейство из
-        # собственного шрифта на момент полировки (Qt сливает размер из
-        # стилей с семейством виджета) - так лейблы оставались на системном
-        # шрифте рядом с пиксельными. Ставим шрифт приложения (с выключенным
-        # сглаживанием и нужным весом) каждому виджету напрямую: QSS поверх
-        # перебивает только размер, семейство и стратегия остаются нашими.
-        for widget in app.allWidgets():
-            widget.setFont(font)
+    kind_changed = _active_kind != font_kind
+    if kind_changed:
+        _active_kind = font_kind
+        # Рольные шрифты: каждому виджету — его размер по роли/objectName.
+        # Раньше семейство и стратегия вбивались вручную из-за QSS
+        # font-size, который сливал размер из стилей с семейством виджета
+        # на момент полировки; теперь размеры тоже идут из QFont, и QSS
+        # шрифтов не задаёт (кроме heroStatValue[emphasis]).
+        apply_widget_fonts(app, font_kind)
 
 
 # ---------- фабрики типовых виджетов ----------
@@ -870,6 +954,7 @@ def heading(text: str, parent: QWidget | None = None) -> QLabel:
     label = QLabel(text, parent)
     label.setProperty("role", "title")
     label.setWordWrap(True)
+    apply_role_font(label)
     return label
 
 
@@ -893,6 +978,7 @@ def hint(text: str, parent: QWidget | None = None) -> QLabel:
     label = QLabel(text, parent)
     label.setProperty("role", "hint")
     label.setWordWrap(True)
+    apply_role_font(label)
     # Текст прижат к верху: после правки высоты через heightForWidth
     # центрирование уводило строки под нижний край видимой области.
     label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -924,6 +1010,7 @@ def section(text: str, parent: QWidget | None = None) -> QLabel:
     """Разреженная подпись раздела."""
     label = QLabel(text, parent)
     label.setProperty("role", "section")
+    apply_role_font(label)
     return label
 
 
@@ -931,6 +1018,7 @@ def stat(text: str, parent: QWidget | None = None) -> QLabel:
     """Крупная цифра-показатель."""
     label = QLabel(text, parent)
     label.setProperty("role", "stat")
+    apply_role_font(label)
     return label
 
 
@@ -972,6 +1060,7 @@ def risk_badge(level: str, parent: QWidget | None = None) -> QLabel:
     label.setObjectName("riskBadge")
     label.setProperty("risk", level if level in ("low", "medium", "high")
                       else "low")
+    apply_role_font(label)
     return label
 
 
@@ -1009,6 +1098,7 @@ class Accordion(QFrame):
         self._chevron = QLabel("v" if open else ">", self)
         self._chevron.setProperty("role", "hint")
         self._chevron.setFixedWidth(12)
+        apply_role_font(self._chevron)
         head_row.addWidget(self._chevron)
         self._header = QPushButton(title, self)
         self._header.setObjectName("accordionHeader")
@@ -1019,6 +1109,7 @@ class Accordion(QFrame):
         head_row.addWidget(self._header, 1)
         self._count = QLabel("", self)
         self._count.setObjectName("accordionCount")
+        apply_role_font(self._count)
         head_row.addWidget(self._count)
         outer.addLayout(head_row)
 
@@ -1066,6 +1157,7 @@ class ShimmerProgress(QProgressBar):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        apply_role_font(self)
         self._phase = 0.0
         self._timer = QTimer(self)
         self._timer.setInterval(40)
@@ -1215,6 +1307,7 @@ class HeroCard(QFrame):
 
         self._title = QLabel("", self)
         self._title.setProperty("role", "title")
+        apply_role_font(self._title)
         outer.addWidget(self._title)
 
         stats_row = QHBoxLayout()
@@ -1231,6 +1324,8 @@ class HeroCard(QFrame):
             value.setObjectName("heroStatValue")
             caption = QLabel("", tile)
             caption.setObjectName("heroStatCaption")
+            apply_role_font(value)
+            apply_role_font(caption)
             tile_layout.addWidget(value)
             tile_layout.addWidget(caption)
             stats_row.addWidget(tile, 1)

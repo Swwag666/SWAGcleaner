@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 
 from ui import sounds
 from ui.context import ctx
-from ui.theme import palette
+from ui.theme import apply_role_font, palette
 from ui.widgets import AnimatedNumber
 
 # Виды риска: как подписать действие и каким цветом.
@@ -85,11 +85,13 @@ class ConfirmDialog(QDialog):
         head_row.setSpacing(10)
         self._title = QLabel(self._headline or ctx().tr("confirm.title"), self._panel)
         self._title.setProperty("role", "title")
+        apply_role_font(self._title)
         head_row.addWidget(self._title)
         head_row.addStretch(1)
 
         self._count = AnimatedNumber(self._panel)
         self._count.setProperty("role", "stat")
+        apply_role_font(self._count)
         self._count.setValue(len(self._items))
         self._count.finish()
         head_row.addWidget(self._count)
@@ -103,6 +105,7 @@ class ConfirmDialog(QDialog):
             self._panel,
         )
         self._note.setProperty("role", "hint")
+        apply_role_font(self._note)
         self._note.setWordWrap(True)
         layout.addWidget(self._note)
 
@@ -169,6 +172,7 @@ class ConfirmDialog(QDialog):
         badge = QLabel(ctx().tr(RISK_KEYS[risk]), row)
         badge.setObjectName("riskBadge")
         badge.setProperty("risk", risk)
+        apply_role_font(badge)
         badge.setMinimumWidth(74)
         badge.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._risk_labels.append(badge)

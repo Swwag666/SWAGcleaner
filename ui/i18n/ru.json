@@ -331,6 +331,8 @@
     "ai_provider_label": "Провайдер",
     "ai_provider_ollama": "Ollama (локально)",
     "ai_provider_openai": "OpenAI-совместимый API",
+    "ai_provider_anthropic": "Anthropic-совместимый API",
+    "ai_busy": "Опрашиваю сервер...",
     "ai_url_label": "Адрес сервера",
     "ai_model_label": "Модель",
     "ai_models_refresh": "Подтянуть список",

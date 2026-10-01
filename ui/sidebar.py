@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from ui import icons
 from ui.context import ctx
+from ui.theme import apply_role_font
 
 
 class Sidebar(QFrame):
@@ -75,12 +76,14 @@ class Sidebar(QFrame):
         brand_row.addWidget(self._brand_icon)
         self._brand_title = QLabel("SWAGcleaner", self._brand)
         self._brand_title.setProperty("role", "title")
+        apply_role_font(self._brand_title)
         brand_row.addWidget(self._brand_title)
         brand_row.addStretch(1)
         root.addWidget(self._brand)
 
         self._caption = QLabel(self)
         self._caption.setObjectName("sidebarCaption")
+        apply_role_font(self._caption)
         self._caption.setContentsMargins(16, 0, 10, 10)
         root.addWidget(self._caption)
         root.addSpacing(4)
@@ -105,6 +108,7 @@ class Sidebar(QFrame):
         self._admin_row.addWidget(self._admin_dot)
         self._admin_label = QLabel("", self)
         self._admin_label.setObjectName("sidebarStatus")
+        apply_role_font(self._admin_label)
         self._admin_row.addWidget(self._admin_label)
         self._admin_row.addStretch(1)
         root.addLayout(self._admin_row)
@@ -154,6 +158,7 @@ class Sidebar(QFrame):
         button = QPushButton(self)
         button.setObjectName("navItem")
         button.setCheckable(True)
+        apply_role_font(button)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         button.setMinimumHeight(42)

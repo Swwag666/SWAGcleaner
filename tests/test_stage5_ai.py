@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import typing as t
 
+from ui.context import ctx
+
 
 class TestListModels:
     def test_ollama_catalog(self, monkeypatch: t.Any) -> None:
@@ -196,3 +198,80 @@ class TestSettingsTabAi:
                  for i in range(page._ai_model.count())]
         assert "my-custom:7b" in texts
         assert page._ai_model.currentText() == "my-custom:7b"
+
+    def test_provider_combo_has_anthropic(self, qapp: t.Any) -> None:
+        page = self._page()
+        data = [page._ai_provider.itemData(i)
+                for i in range(page._ai_provider.count())]
+        assert data == ["ollama", "openai", "anthropic"]
+
+    def test_key_visible_for_anthropic(self, qapp: t.Any) -> None:
+        from ai.provider import AiSettings
+        page = self._page()
+        page.setAiSettings(AiSettings(provider="anthropic"))
+        assert not page._ai_key.isHidden()
+        assert not page._ai_key_label.isHidden()
+
+    def test_set_ai_busy_disables_request_buttons(self, qapp: t.Any) -> None:
+        page = self._page()
+        assert page._ai_models_btn.isEnabled()
+        assert page._ai_test_btn.isEnabled()
+        page.setAiBusy(True)
+        assert not page._ai_models_btn.isEnabled()
+        assert not page._ai_test_btn.isEnabled()
+        assert page._ai_status.text() == ctx().tr("settings.ai_busy")
+        page.setAiBusy(False)
+        assert page._ai_models_btn.isEnabled()
+        assert page._ai_test_btn.isEnabled()
+
+
+class TestAiLightTasks:
+    """Лёгкие AI-задачи идут мимо гейта занятости тяжёлых."""
+
+    def _session(self) -> t.Any:
+        from ui.session import Session
+        from core.swagscan import SwagscanClient
+
+        class _FakeClient(SwagscanClient):
+            def __init__(self) -> None:
+                pass
+
+            def available(self) -> bool:
+                return False
+
+        return Session(client=_FakeClient())
+
+    def test_models_task_runs_while_heavy_busy(self, qapp: t.Any,
+                                               monkeypatch: t.Any) -> None:
+        from ai.provider import AiSettings
+        session = self._session()
+        # Тяжёлая задача «идёт»: гейт закрыт.
+        session._set_busy(True)
+        assert session.is_busy()
+
+        launched: t.List[str] = []
+
+        def fake_run(name, func):
+            launched.append(name)
+            return True
+
+        monkeypatch.setattr(session, "_run", fake_run)
+        from ui.session import LIGHT_TASKS
+        assert LIGHT_TASKS == frozenset({"ai_test", "ai_models"})
+        session.list_ai_models_task(AiSettings())
+        session.test_ai_task(AiSettings())
+        assert launched == ["ai_models", "ai_test"]
+        # Гейт занятости лёгкими задачами не трогается.
+        assert session.is_busy()
+
+    def test_light_settle_keeps_heavy_busy(self, qapp: t.Any) -> None:
+        session = self._session()
+        session._set_busy(True)
+        # Лёгкая задача завершилась - флаг тяжёлой остаётся.
+        session._settle("ai_models", {"names": []})
+        assert session.is_busy()
+        session._settle_failed("ai_test", "oops")
+        assert session.is_busy()
+        # Тяжёлая завершилась - окно свободно.
+        session._settle("cleaner_scan", {})
+        assert not session.is_busy()

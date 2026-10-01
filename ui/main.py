@@ -51,6 +51,7 @@ from ui.scene import SceneStack
 from ui.session import Session, get_session, human_size
 from ui.sidebar import Sidebar
 from ui.tabs import AdvisorTab, CleanerTab, DedupTab, PlaceTab, SettingsTab, TweaksTab
+from ui.theme import apply_role_font
 from ui.widgets import AccentBar, ParticleBurst
 
 _LOGGER = logging.getLogger("swag.ui.main")
@@ -148,6 +149,10 @@ class MainWindow(QMainWindow):
         self._assistant_visible = True
         self._assistant_animation: QParallelAnimationGroup | None = None
         self._work_page: QWidget | None = None
+        # AI-запросы лёгкие и идут мимо общего гейта занятости: у них свой
+        # флаг «идёт прямо сейчас» и своя страница-приёмник результата.
+        self._ai_busy = False
+        self._ai_page: QWidget | None = None
         self._tweaks_loaded = False
 
         self._build_ui()
@@ -302,6 +307,7 @@ class MainWindow(QMainWindow):
 
         self._header_title = QLabel(self._context.tr("app.title"), header)
         self._header_title.setProperty("role", "title")
+        apply_role_font(self._header_title)
         self._header_sub = QLabel(self._context.tr("app.subtitle"), header)
         self._header_sub.setProperty("role", "secondary")
 
@@ -349,6 +355,7 @@ class MainWindow(QMainWindow):
 
     def _build_status_bar(self) -> None:
         self._status_bar = QStatusBar(self)
+        apply_role_font(self._status_bar)
         # Штамп времени исходника: видно с первого взгляда, свежий ли
         # процесс крутится (особенно когда рядом лежит собранный exe).
         self._build_label = QLabel(self._build_stamp(), self._status_bar)
@@ -412,13 +419,34 @@ class MainWindow(QMainWindow):
         self._assistant_button.setIcon(icons.icon("assistant", colors["text_secondary"], 20))
         self._refresh_sidebar_caption()
 
+    def _apply_visuals_frozen(self) -> None:
+        """Сменить оформление с заморозкой перерисовки верхних окон.
+
+        Пере-полировка стилей рассылает update() каждому виджету, и очередь
+        перерисовок исполняется после возврата — окно мигает
+        промежуточными состояниями и тратит растровые проходы на каждый.
+        Отключение updates у видимых окон оставляет в очереди ОДИН итоговый
+        проход: отрисовка стартует уже новой темой.
+        """
+        windows = [w for w in self._app.topLevelWidgets() if w.isVisible()]
+        for window in windows:
+            window.setUpdatesEnabled(False)
+        try:
+            self._apply_visuals()
+        finally:
+            for window in windows:
+                try:
+                    window.setUpdatesEnabled(True)
+                except RuntimeError:
+                    pass  # окно удалено по deleteLater прямо во время смены
+
     def _refresh_sidebar_caption(self) -> None:
         self._sidebar.set_caption(self._context.tr("sidebar.caption"))
 
     def _on_theme_changed(self, _theme: str) -> None:
         # Текст от темы не меняется: retranslate тут только перестраивал
         # страницы заново и давал секундную фризу на ровном месте.
-        self._apply_visuals()
+        self._apply_visuals_frozen()
         # Сменилась тема — сменился и протагонист: в «числовой» рисуется
         # новый герой, в остальных — Клинни. Сбрасываем кеш поз и рта.
         self._mascot.clear_cache()
@@ -428,11 +456,11 @@ class MainWindow(QMainWindow):
         sounds.play("page")
 
     def _on_font_changed(self, _font_kind: str) -> None:
-        self._apply_visuals()
+        self._apply_visuals_frozen()
         sounds.play("page")
 
     def _on_accent_changed(self, _accent: str) -> None:
-        self._apply_visuals()
+        self._apply_visuals_frozen()
         sounds.play("page")
 
     def _on_speech_requested(self, text: str) -> None:
@@ -783,7 +811,8 @@ class MainWindow(QMainWindow):
         Обработчик итога не должен уронить окно: любое исключение внутри
         _finish_* ловится здесь, окно возвращается в свободное состояние.
         """
-        page = self._work_page or self._current_page()
+        page = (self._ai_page if name in ("ai_test", "ai_models")
+                else None) or self._work_page or self._current_page()
         if name in ("cleaner_scan", "purge", "purge_dupes"):
             self._refresh_hero()
         try:
@@ -816,7 +845,12 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001 - см. docstring
             _LOGGER.exception("обработчик итога задачи упал: %s", name)
             self._work_page = None
-            self.set_busy(False)
+            self._ai_busy = False
+            self._ai_page = None
+            # Полоску гасим только если тяжёлой задачи правда нет: лёгкий
+            # сбой не должен остановить индикатор идущего скана.
+            if not self.is_busy():
+                self.set_busy(False)
 
     def _on_core_error(self, message: str) -> None:
         """Ошибка ядра: статус страницы, реплика персонажа, звук."""
@@ -1351,36 +1385,51 @@ class MainWindow(QMainWindow):
         self._assistant.say(text, "idle")
 
     def _ask_ai_test(self, settings: object) -> None:
-        """Проверка связи с Ollama/API — фоном, сеть может жевать."""
-        if self.is_busy():
-            sounds.play("error")
+        """Проверка связи с Ollama/API — фоном, сеть может жевать.
+
+        Это лёгкая задача: она не ждёт окончания тяжёлой (скан/чистка) и не
+        трогает полоску занятости — кнопка честно гаснет на время запроса.
+        """
+        if self._ai_busy:
             return
-        self._work_page = self._current_page()
-        self.set_busy(True)
+        self._ai_busy = True
+        self._ai_page = self._current_page()
         sounds.play("click")
+        if self._ai_page is not None and hasattr(self._ai_page, "setAiBusy"):
+            self._ai_page.setAiBusy(True)
         self._session.test_ai_task(settings)
 
     def _ask_ai_models(self, settings: object) -> None:
-        """Каталог моделей сервера — фоном."""
-        if self.is_busy():
-            sounds.play("error")
+        """Каталог моделей сервера — фоном, мимо общего гейта занятости.
+
+        Раньше клик молча глотался, если параллельно шёл скан (загрузка
+        твиков, чистка) - кнопка казалась мёртвой. Теперь каталог тянется
+        всегда: тяжёлым задачам лёгкий GET не помеха.
+        """
+        if self._ai_busy:
             return
-        self._work_page = self._current_page()
-        self.set_busy(True)
+        self._ai_busy = True
+        self._ai_page = self._current_page()
         sounds.play("click")
+        if self._ai_page is not None and hasattr(self._ai_page, "setAiBusy"):
+            self._ai_page.setAiBusy(True)
         self._session.list_ai_models_task(settings)
 
     def _finish_ai_test(self, result: dict, page: QWidget) -> None:
-        self._work_page = None
-        self.set_busy(False)
+        self._ai_busy = False
+        self._ai_page = None
         text = str(result.get("text", ""))
+        if page is not None and hasattr(page, "setAiBusy"):
+            page.setAiBusy(False)
         if page is not None and hasattr(page, "setAiStatus"):
             page.setAiStatus(text)
         self._assistant.say(text, "idle")
 
     def _finish_ai_models(self, result: dict, page: QWidget) -> None:
-        self._work_page = None
-        self.set_busy(False)
+        self._ai_busy = False
+        self._ai_page = None
+        if page is not None and hasattr(page, "setAiBusy"):
+            page.setAiBusy(False)
         names = list(result.get("names") or [])
         error = str(result.get("error") or "")
         if page is not None and hasattr(page, "setAiModels"):
