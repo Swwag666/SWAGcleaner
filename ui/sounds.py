@@ -141,3 +141,26 @@ def attach(app: QApplication) -> ClickSoundFilter:
         _filter = ClickSoundFilter(app)
         app.installEventFilter(_filter)
     return _filter
+
+
+def suspend(app: QApplication) -> bool:
+    """Снять фильтр кликов на время тяжёлой операции.
+
+    Пере-полировка стилей прогоняет через фильтр десятки тысяч событий —
+    сам вызов Python-кода на каждом стоит заметных денег. Клик между
+    suspend и resume физически не успевает: операция синхронная и не
+    выходит в цикл событий. Возвращает, был ли фильтр снят.
+    """
+    if _filter is None:
+        return False
+    try:
+        app.removeEventFilter(_filter)
+    except RuntimeError:  # pragma: no cover - приложение уже умирает
+        return False
+    return True
+
+
+def resume(app: QApplication) -> None:
+    """Вернуть фильтр кликов после suspend."""
+    if _filter is not None:
+        app.installEventFilter(_filter)

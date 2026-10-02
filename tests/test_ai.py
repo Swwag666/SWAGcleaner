@@ -17,6 +17,7 @@ from ai.config import config_path, load_settings, save_settings
 from ai.provider import (
     AiSettings,
     AiUnavailable,
+    AnthropicProvider,
     OllamaProvider,
     OpenAIProvider,
     make_provider,
@@ -138,6 +139,10 @@ class TestFactory:
     def test_make_openai(self) -> None:
         assert isinstance(make_provider(AiSettings(provider="openai")), OpenAIProvider)
 
+    def test_make_anthropic(self) -> None:
+        provider = make_provider(AiSettings(provider="anthropic"))
+        assert isinstance(provider, AnthropicProvider)
+
     def test_make_unknown_raises(self) -> None:
         with pytest.raises(AiUnavailable):
             make_provider(AiSettings(provider="claude"))
@@ -175,6 +180,131 @@ class TestProviderOfflineBehavior:
             OllamaProvider(AiSettings(base_url="http://127.0.0.1:1", timeout_sec=2)).complete("с", "о")
         text = str(info.value)
         assert "Ollama" in text and "не отвечает" in text
+
+
+class TestAnthropicProvider:
+    """Messages API: хвосты путей, заголовки, разбор ответов - без сети."""
+
+    def _settings(self, base: str = "https://api.anthropic.com") -> AiSettings:
+        return AiSettings(provider="anthropic", base_url=base,
+                          model="claude-sonnet-4", api_key="sk-ant-key")
+
+    def test_messages_url_with_plain_base(self, monkeypatch: t.Any) -> None:
+        import ai.provider as prov
+        seen = {}
+
+        def fake_post(url, payload, headers, timeout_sec, label):
+            seen["url"] = url
+            seen["payload"] = payload
+            seen["headers"] = headers
+            return {"content": [{"type": "text", "text": "привет"}]}
+
+        monkeypatch.setattr(prov, "_post_json", fake_post)
+        answer = AnthropicProvider(self._settings()).complete("система", "вопрос")
+        assert answer == "привет"
+        assert seen["url"] == "https://api.anthropic.com/v1/messages"
+        assert seen["payload"]["model"] == "claude-sonnet-4"
+        assert seen["payload"]["system"] == "система"
+        assert seen["payload"]["messages"] == [{"role": "user", "content": "вопрос"}]
+        assert seen["headers"]["x-api-key"] == "sk-ant-key"
+        assert seen["headers"]["anthropic-version"] == "2023-06-01"
+
+    def test_messages_url_with_v1_base(self, monkeypatch: t.Any) -> None:
+        import ai.provider as prov
+        seen = {}
+
+        def fake_post(url, payload, headers, timeout_sec, label):
+            seen["url"] = url
+            return {"content": [{"type": "text", "text": "ок"}]}
+
+        monkeypatch.setattr(prov, "_post_json", fake_post)
+        AnthropicProvider(
+            self._settings(base="https://api.anthropic.com/v1")).complete("с", "о")
+        assert seen["url"] == "https://api.anthropic.com/v1/messages"
+
+    def test_json_mode_appends_instruction(self, monkeypatch: t.Any) -> None:
+        import ai.provider as prov
+        seen = {}
+
+        def fake_post(url, payload, headers, timeout_sec, label):
+            seen["payload"] = payload
+            return {"content": [{"type": "text", "text": "{}"}]}
+
+        monkeypatch.setattr(prov, "_post_json", fake_post)
+        AnthropicProvider(self._settings()).complete("ты ассистент", "дай json",
+                                                     json_mode=True)
+        system = seen["payload"]["system"]
+        assert system.startswith("ты ассистент")
+        assert "JSON" in system
+
+    def test_content_blocks_joined(self, monkeypatch: t.Any) -> None:
+        import ai.provider as prov
+        monkeypatch.setattr(
+            prov, "_post_json",
+            lambda url, payload, headers, timeout_sec, label:
+                {"content": [{"type": "text", "text": "часть "},
+                             {"type": "tool_use", "id": "x"},
+                             {"type": "text", "text": "вторая"}]})
+        answer = AnthropicProvider(self._settings()).complete("с", "о")
+        assert answer == "часть вторая"
+
+    def test_empty_content_raises_russian(self, monkeypatch: t.Any) -> None:
+        import ai.provider as prov
+        monkeypatch.setattr(prov, "_post_json",
+                            lambda url, payload, headers, timeout_sec, label:
+                                {"content": []})
+        with pytest.raises(AiUnavailable) as info:
+            AnthropicProvider(self._settings()).complete("с", "о")
+        assert "пустой ответ" in str(info.value)
+
+    def test_list_models_headers_and_url(self, monkeypatch: t.Any) -> None:
+        import ai.provider as prov
+        seen = {}
+
+        def fake_request(req, timeout_sec, label, url):
+            seen["url"] = url
+            seen["headers"] = dict(req.header_items())
+            return {"data": [{"id": "claude-sonnet-4"}, {"id": "claude-opus-4"}]}
+
+        monkeypatch.setattr(prov, "_request_json", fake_request)
+        names = AnthropicProvider(self._settings()).list_models()
+        assert names == ["claude-sonnet-4", "claude-opus-4"]
+        assert seen["url"] == "https://api.anthropic.com/v1/models"
+        headers = {k.lower(): v for k, v in seen["headers"].items()}
+        assert headers.get("x-api-key") == "sk-ant-key"
+        assert headers.get("anthropic-version") == "2023-06-01"
+
+    def test_list_models_with_v1_base(self, monkeypatch: t.Any) -> None:
+        import ai.provider as prov
+        seen = {}
+
+        def fake_request(req, timeout_sec, label, url):
+            seen["url"] = url
+            return {"data": [{"id": "m"}]}
+
+        monkeypatch.setattr(prov, "_request_json", fake_request)
+        AnthropicProvider(
+            self._settings(base="https://rustvy.xyz/v1")).list_models()
+        assert seen["url"] == "https://rustvy.xyz/v1/models"
+
+    def test_ping_checks_settings_only(self) -> None:
+        assert AnthropicProvider(
+            AiSettings(provider="anthropic", base_url="not-a-url")).ping() is False
+        assert AnthropicProvider(
+            AiSettings(provider="anthropic", model="  ")).ping() is False
+        assert AnthropicProvider(
+            AiSettings(provider="anthropic", base_url="http://127.0.0.1:8082",
+                       model="x")).ping() is True
+
+    def test_settings_roundtrip_anthropic(self) -> None:
+        settings = AiSettings(provider="anthropic",
+                              base_url="https://api.anthropic.com",
+                              model="claude-sonnet-4")
+        data = json.loads(settings.to_json())
+        assert data["provider"] == "anthropic"
+        restored = AiSettings.from_json(settings.to_json())
+        assert restored.provider == "anthropic"
+        assert restored.base_url == "https://api.anthropic.com"
 
 
 class TestPromptBuilders:

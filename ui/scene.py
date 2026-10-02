@@ -9,10 +9,16 @@
 геометрией детей и не даёт двигать страницу во время анимации.
 Здесь геометрию выставляем вручную, зато позиция и прозрачность
 страницы свободны.
+
+Эффект прозрачности живёт ТОЛЬКО во время перехода: QGraphicsOpacityEffect
+перенаправляет отрисовку виджета в offscreen-пиксмап, и тяжёлая страница
+(сотни виджетов) с постоянно висящим эффектом рапстеризуется в буфер при
+каждом кадре. Поэтому в покое эффект снят, страница красится напрямую —
+быстрый путь Qt. Эффект создаётся на входе в переход и снимается в _settle().
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import List, Optional
 
 from PySide6.QtCore import (
     QAbstractAnimation,
@@ -38,7 +44,6 @@ class SceneStack(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._pages: List[QWidget] = []
-        self._effects: Dict[QWidget, QGraphicsOpacityEffect] = {}
         self._current = -1
         self._group: QParallelAnimationGroup | None = None
         self._outgoing: QWidget | None = None
@@ -47,12 +52,10 @@ class SceneStack(QWidget):
 
     def addWidget(self, page: QWidget) -> None:  # noqa: N802 - как у QStackedWidget
         page.setParent(self)
-        effect = QGraphicsOpacityEffect(page)
-        effect.setOpacity(1.0)
-        page.setGraphicsEffect(effect)
+        # Эффект прозрачности НЕ вешаем: он нужен только на время перехода
+        # (см. docstring модуля), в покое страница должна краситься напрямую.
         page.hide()
         page.setGeometry(0, 0, self.width(), self.height())
-        self._effects[page] = effect
         self._pages.append(page)
 
     def count(self) -> int:
@@ -97,11 +100,14 @@ class SceneStack(QWidget):
         page.move(self.SLIDE_PX, 0)
         page.show()
         page.raise_()
-        self._effects[page].setOpacity(0.0)
 
         group = QParallelAnimationGroup(self)
 
-        fade_in = QPropertyAnimation(self._effects[page], b"opacity", group)
+        effect = QGraphicsOpacityEffect(page)
+        effect.setOpacity(0.0)
+        page.setGraphicsEffect(effect)
+
+        fade_in = QPropertyAnimation(effect, b"opacity", group)
         fade_in.setDuration(self.TRANSITION_MS)
         fade_in.setStartValue(0.0)
         fade_in.setEndValue(1.0)
@@ -117,7 +123,10 @@ class SceneStack(QWidget):
 
         if previous is not None and previous is not page:
             # Уходящая гаснет быстрее, чтобы две страницы почти не накладывались.
-            fade_out = QPropertyAnimation(self._effects[previous], b"opacity", group)
+            out_effect = QGraphicsOpacityEffect(previous)
+            out_effect.setOpacity(1.0)
+            previous.setGraphicsEffect(out_effect)
+            fade_out = QPropertyAnimation(out_effect, b"opacity", group)
             fade_out.setDuration(self.FADE_OUT_MS)
             fade_out.setStartValue(1.0)
             fade_out.setEndValue(0.0)
@@ -134,7 +143,11 @@ class SceneStack(QWidget):
         self._settle()
 
     def _settle(self) -> None:
-        """Привести страницы в конечное состояние и остановить анимацию."""
+        """Привести страницы в конечное состояние и остановить анимацию.
+
+        Эффекты прозрачности снимаются со ВСЕХ страниц: в покое каждая
+        красится напрямую, без гоняния через offscreen-пиксмап.
+        """
         if self._group is not None and self._group.state() != QAbstractAnimation.State.Stopped:
             self._group.stop()
         outgoing = self._outgoing
@@ -142,13 +155,13 @@ class SceneStack(QWidget):
         if outgoing is not None:
             outgoing.hide()
             outgoing.move(0, 0)
-            self._effects[outgoing].setOpacity(1.0)
         page = self.currentWidget()
         if page is not None:
             page.move(0, 0)
-            self._effects[page].setOpacity(1.0)
             page.show()
             page.raise_()
         for other in self._pages:
             if other is not page:
                 other.hide()
+            if other.graphicsEffect() is not None:
+                other.setGraphicsEffect(None)

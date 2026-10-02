@@ -30,6 +30,10 @@ OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_CHAT_PATH = "/api/chat"
 OLLAMA_TAGS_PATH = "/api/tags"
 OPENAI_COMPLETIONS_PATH = "/chat/completions"
+ANTHROPIC_MESSAGES_PATH = "/v1/messages"
+ANTHROPIC_MODELS_PATH = "/v1/models"
+ANTHROPIC_VERSION = "2023-06-01"
+ANTHROPIC_MAX_TOKENS = 1024
 
 DEFAULT_PROVIDER = "ollama"
 DEFAULT_MODEL = "llama3.1"
@@ -37,7 +41,7 @@ DEFAULT_TIMEOUT_SEC = 60
 DEFAULT_TEMPERATURE = 0.4
 
 USER_AGENT = "SWAGcleaner/1.0 (local cleaner assistant)"
-PROVIDER_NAMES = ("ollama", "openai")
+PROVIDER_NAMES = ("ollama", "openai", "anthropic")
 
 _HTTP_SCHEMES = ("http://", "https://")
 
@@ -53,7 +57,8 @@ class AiUnavailable(RuntimeError):
 class AiSettings:
     """Настройки AI-слоя. По умолчанию AI выключен — включает человек сам.
 
-    provider — "ollama" (локально) или "openai" (совместимый эндпоинт),
+    provider — "ollama" (локально), "openai" (совместимый эндпоинт) или
+    "anthropic" (Messages API: x-api-key + anthropic-version),
     base_url — адрес сервера без завершающего слэша,
     model — имя модели,
     api_key — ключ для внешнего эндпоинта (для Ollama не нужен),
@@ -498,6 +503,114 @@ class OpenAIProvider(Provider):
         return names
 
 
+def _anthropic_tail(base: str, default: str) -> str:
+    """Хвост пути Anthropic-эндпоинта с учётом уже вписанного /v1.
+
+    Канонический адрес Anthropic - https://api.anthropic.com, эндпоинты
+    /v1/messages и /v1/models. Но люди часто вставляют и адрес с /v1 на
+    конце (стиль OpenAI). Оба варианта должны работать без сюрпризов.
+    """
+    path = ""
+    try:
+        path = urllib.parse.urlparse(base or "").path.rstrip("/").lower()
+    except ValueError:
+        path = ""
+    if path.endswith("/v1"):
+        return default[len("/v1"):]
+    return default
+
+
+class AnthropicProvider(Provider):
+    """Anthropic-совместимый эндпоинт: POST {base}/v1/messages.
+
+    Формат Messages API: ключ в заголовке x-api-key + anthropic-version,
+    системный промпт отдельным полем system, ответ - список блоков content.
+    """
+
+    label = "Anthropic-совместимый сервер"
+
+    def _headers(self) -> t.Dict[str, str]:
+        headers = {
+            "x-api-key": self._settings.api_key,
+            "anthropic-version": ANTHROPIC_VERSION,
+        }
+        return {k: v for k, v in headers.items() if v}
+
+    def complete(
+        self,
+        system: str,
+        user: str,
+        temperature: float = DEFAULT_TEMPERATURE,
+        json_mode: bool = False,
+    ) -> str:
+        settings = self._settings
+        system_text = system or ""
+        if json_mode:
+            # У Messages API нет response_format: просим JSON словами.
+            system_text = (system_text + "\n" if system_text else "") + (
+                "Ответь строго валидным JSON без обёрток и пояснений.")
+        payload: t.Dict[str, t.Any] = {
+            "model": settings.model,
+            "max_tokens": ANTHROPIC_MAX_TOKENS,
+            "system": system_text,
+            "messages": [{"role": "user", "content": user}],
+            "temperature": float(temperature),
+        }
+        tail = _anthropic_tail(settings.base_url, ANTHROPIC_MESSAGES_PATH)
+        url = _join_url(settings.base_url, tail, self.label)
+        data = _post_json(url, payload, self._headers(), settings.timeout_sec, self.label)
+        content = data.get("content")
+        if not isinstance(content, list) or not content:
+            raise AiUnavailable(f"{self.label} вернул пустой ответ: {_brief(data)}")
+        chunks: t.List[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+        if not chunks:
+            raise AiUnavailable(f"{self.label} вернул ответ без текста: {_brief(data)}")
+        return "".join(chunks)
+
+    def ping(self, timeout_sec: float = 1.5) -> bool:
+        """Сеть не трогает: только проверка, что настройки вообще вменяемые."""
+        settings = self._settings
+        base = (settings.base_url or "").strip().rstrip("/").lower()
+        if not base.startswith(_HTTP_SCHEMES):
+            LOGGER.info("AI: у Anthropic-эндпоинта кривой адрес: %s", settings.base_url)
+            return False
+        if not settings.model.strip():
+            LOGGER.info("AI: не указана модель для Anthropic-эндпоинта")
+            return False
+        if not settings.api_key:
+            LOGGER.info("AI: Anthropic-эндпоинт без ключа - сгодится для локальных прокси")
+        return True
+
+    def list_models(self, timeout_sec: float = 5.0) -> t.List[str]:
+        """Каталог моделей эндпоинта: GET {base}/v1/models."""
+        settings = self._settings
+        tail = _anthropic_tail(settings.base_url, ANTHROPIC_MODELS_PATH)
+        url = _join_url(settings.base_url, tail, self.label)
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("Accept", "application/json")
+        req.add_header("User-Agent", USER_AGENT)
+        for key, value in self._headers().items():
+            req.add_header(key, value)
+        data = _request_json(req, timeout_sec, self.label, url)
+        items = data.get("data")
+        if not isinstance(items, list):
+            raise AiUnavailable(
+                f"{self.label} вернул неожиданный формат каталога моделей: "
+                f"{_brief(data)}"
+            )
+        names: t.List[str] = []
+        for item in items:
+            name = item.get("id") if isinstance(item, dict) else item
+            if isinstance(name, str) and name.strip():
+                names.append(name.strip())
+        return names
+
+
 def make_provider(settings: AiSettings) -> Provider:
     """Фабрика: собирает провайдер по настройкам.
 
@@ -508,6 +621,8 @@ def make_provider(settings: AiSettings) -> Provider:
         return OllamaProvider(settings)
     if name == "openai":
         return OpenAIProvider(settings)
+    if name == "anthropic":
+        return AnthropicProvider(settings)
     raise AiUnavailable(
         f"Неизвестный AI-провайдер «{name or 'пусто'}». Доступны: {', '.join(PROVIDER_NAMES)}."
     )

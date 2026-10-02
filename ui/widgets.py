@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.context import ctx
+from ui.theme import apply_role_font
 
 
 class AccentBar(QFrame):
@@ -256,6 +257,7 @@ class StatTile(QFrame):
 
         self._caption = QLabel(self)
         self._caption.setProperty("role", "section")
+        apply_role_font(self._caption)
         # Переносимая подпись: без неё минимум плитки - вся строка целиком,
         # и ряд из трёх плиток не влезал в узкий вьюпорт скролла.
         self._caption.setWordWrap(True)
@@ -266,6 +268,7 @@ class StatTile(QFrame):
         row.setSpacing(6)
         self._number = AnimatedNumber(self)
         self._number.setProperty("role", "stat")
+        apply_role_font(self._number)
         self._number.setValue(0, decimals)
         self._number.finish()
         row.addWidget(self._number)
@@ -399,6 +402,7 @@ class StorageRow(QFrame):
         layout.addWidget(name)
 
         bar = QProgressBar(self)
+        apply_role_font(bar)
         bar.setRange(0, 1000)
         bar.setValue(int(round(max(0.0, min(1.0, fraction)) * 1000)))
         bar.setTextVisible(False)

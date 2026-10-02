@@ -17,7 +17,9 @@ ctx().setAssistantMood), поэтому сессия не знает ни про
 from __future__ import annotations
 
 import logging
+import os
 import threading
+import time
 import typing as t
 from dataclasses import dataclass, field
 
@@ -37,6 +39,17 @@ LANE_DIRECT = "direct"
 # из окна честно просит подождать экран категорий), но сводка по категориям
 # полна всегда — она считается из самого стрима, а не из накопленного.
 MAX_SHOWN_CANDIDATES = 50_000
+
+# Лёгкие задачи: короткие сетевые справочники (каталог моделей, проверка
+# связи AI), вопрос Клинне и чтение описи карантина. Они не конфликтуют
+# со сканами и чистками, поэтому идут РЯДОМ с тяжёлой задачей, а не ждут
+# её. Гейт занятости их не касается, и их завершение не сбрасывает флаг
+# занятости чужой задачи.
+LIGHT_TASKS = frozenset({"ai_test", "ai_models", "ai_ask", "quarantine_list"})
+
+# Сколько секунд результат скана чистки живёт как кеш: быстрые повторные
+# нажатия «Скан» не гоняют обход дерева заново, если профиль тот же.
+SCAN_CACHE_TTL = 120.0
 
 
 def human_size(num_bytes: float) -> str:
@@ -95,6 +108,8 @@ class ScanResult:
     summaries: t.List[CategorySummary] = field(default_factory=list)
     items: t.List[CandidateItem] = field(default_factory=list)
     truncated: bool = False
+    # Скан отдан из кеша (тот же профиль, ничего не менялось).
+    from_cache: bool = False
 
 
 @dataclass
@@ -124,6 +139,11 @@ class PurgeReport:
     lanes: t.Dict[str, int] = field(default_factory=dict)
     rejects: t.List[t.Dict[str, str]] = field(default_factory=list)
     failures: t.List[t.Dict[str, str]] = field(default_factory=list)
+    # Карантин: файлы перенесены в папку просмотра, а не стёрты.
+    quarantined: int = 0
+    quarantined_bytes: int = 0
+    quarantine_dir: str = ""
+    no_space: t.List[t.Dict[str, str]] = field(default_factory=list)
 
     @staticmethod
     def from_core(data: t.Mapping[str, t.Any], dry_run: bool) -> "PurgeReport":
@@ -154,6 +174,8 @@ class Session(QObject):
     # Сигналы для окна: занятость, прогресс, ошибки, итоги задач.
     busyChanged = Signal(bool)
     progressTick = Signal(int)              # процент текущего скана
+    dedupPhase = Signal(str, float)         # фаза скана дубликатов, байт пройдено
+    scanPhase = Signal(str, float, float)   # фаза скана чистки, файлы, байты
     taskFinished = Signal(str, object)      # имя задачи, результат
     taskFailed = Signal(str, str)           # имя задачи, текст ошибки
     errorOccurred = Signal(str)             # текст ошибки (для статуса/реплики)
@@ -170,6 +192,11 @@ class Session(QObject):
         self._last_purge: t.Optional[PurgeReport] = None
         self._last_recs: t.List[t.Dict[str, t.Any]] = []
         self._last_uninstallers: t.Dict[str, str] = {}
+        # Кеш повторного скана чистки: (профиль, время, результат).
+        # Аннулируется любым удалением — файлы ушли, данные устарели.
+        self._scan_cache: t.Optional[
+            t.Tuple[t.Tuple[t.Tuple[str, ...], bool], float, ScanResult]
+        ] = None
         # Журнал и бэкапы ленивые: папки создаются при первом действии,
         # а не при старте окна.
         self._journal: t.Any = None
@@ -259,6 +286,93 @@ class Session(QObject):
                 return {"names": [], "error": str(exc)}
 
         self._run("ai_models", work)
+
+    def ask_ai_task(self, question: str) -> None:
+        """Вопрос Клинне по данным скана: фоном, мимо гейта занятости.
+
+        Ответ собирается из того, что человек видит на экране: категории
+        чистки с примерами путей, дубликаты, план советника. Генерация
+        может тянуться секундами, поэтому поток — только фоновый.
+        """
+
+        def work() -> t.Dict[str, t.Any]:
+            text = ""
+            assistant = self.ai()
+            if assistant.available():
+                text = assistant.answer(self.ask_context(), question)
+            return {"text": text, "question": question}
+
+        self._run("ai_ask", work)
+
+    def ask_context(self) -> t.Dict[str, t.Any]:
+        """Снимок последних находок для ответа на вопрос.
+
+        Клиння отвечает только по данным — без выдумок. Поэтому контекст
+        это ровно то, что нашла программа: сводки категорий с парой живых
+        путей (вопрос обычно «что это за файлы»), выборка групп дублей,
+        план советника и итог последней чистки.
+        """
+        data: t.Dict[str, t.Any] = {}
+        scan = self._last_scan
+        if scan.summaries:
+            wanted = {s.id for s in scan.summaries}
+            samples: t.Dict[str, t.List[str]] = {s.id: [] for s in scan.summaries}
+            for item in scan.items:
+                for cat in item.categories:
+                    if cat in samples and len(samples[cat]) < 3:
+                        samples[cat].append(item.path)
+                if all(len(v) >= 3 for v in samples.values()):
+                    break
+            cats = []
+            for summary in scan.summaries[:40]:
+                entry = {
+                    "id": summary.id,
+                    "files": summary.files,
+                    "mb": round(summary.bytes / (1024 * 1024), 1),
+                    "risk": summary.risk,
+                    "lane": "trash" if summary.lane == "trash" else "direct",
+                    "regrows": bool(summary.regrows),
+                    "admin": bool(summary.admin),
+                }
+                if samples.get(summary.id):
+                    entry["examples"] = samples[summary.id]
+                cats.append(entry)
+            data["cleaner"] = {
+                "files_total": scan.files,
+                "mb_total": round(scan.bytes / (1024 * 1024), 1),
+                "categories": cats,
+                "list_truncated": bool(scan.truncated),
+            }
+        if self._last_groups:
+            groups = [
+                {"copies": len(g.paths),
+                 "mb_each": round(g.size / (1024 * 1024), 1),
+                 "paths": g.paths[:4]}
+                for g in self._last_groups[:12]
+            ]
+            wasted = sum(g.wasted() for g in self._last_groups)
+            data["dupes"] = {
+                "groups_total": len(self._last_groups),
+                "mb_wasted": round(wasted / (1024 * 1024), 1),
+                "samples": groups,
+            }
+        if self._last_recs:
+            recs = [
+                {"name": str(r.get("name", "")), "type": str(r.get("type", "")),
+                 "reason": str(r.get("reason", ""))[:120]}
+                for r in self._last_recs[:20]
+            ]
+            data["advisor_plan"] = recs
+        purge = self._last_purge
+        if purge is not None and not purge.dry_run:
+            data["last_purge"] = {
+                "removed": purge.removed,
+                "freed_mb": round(purge.freed_bytes / (1024 * 1024), 1),
+                "quarantined": purge.quarantined,
+            }
+        if not data:
+            data["note"] = "сканов пока не было: данных о машине нет"
+        return data
 
     # ---------- этап 6: зависимости и рантаймы ----------
 
@@ -458,35 +572,73 @@ class Session(QObject):
         self._busy = busy
         self.busyChanged.emit(busy)
 
-    def _settle(self, _name: str, _result: object) -> None:
-        """Задача завершилась — окно свободно (слот главного потока)."""
+    def _settle(self, name: str, _result: object) -> None:
+        """Задача завершилась — окно свободно (слот главного потока).
+
+        Лёгкие задачи занятость не снимают: она им не принадлежала.
+        """
+        if name in LIGHT_TASKS:
+            return
         self._set_busy(False)
 
-    def _settle_failed(self, _name: str, _message: str) -> None:
+    def _settle_failed(self, name: str, _message: str) -> None:
+        if name in LIGHT_TASKS:
+            return
         self._set_busy(False)
+
+    def _guard_progress(
+        self, name: str, fn: t.Callable[[dict], None]
+    ) -> t.Callable[[dict], None]:
+        """Обёртка колбэка прогресса: падение становится видимой ошибкой.
+
+        Тихая смерть колбэка (например, конвертация bytes в int для
+        сигнала) раньше выглядела как «вечный скан на 0%»: исключение
+        глоталось, а окно молчало. Теперь любая поломка обработки
+        прогресса уходит в errorOccurred и показывается в окне.
+        """
+        def wrapper(event: dict) -> None:
+            try:
+                fn(event)
+            except Exception as e:  # noqa: BLE001 — прогресс не должен молчать
+                _LOGGER.exception("обработка прогресса %s упала", name)
+                try:
+                    self.errorOccurred.emit(
+                        f"{name}: {e.__class__.__name__}: {e}")
+                except Exception:  # noqa: BLE001 — последняя страховка
+                    _LOGGER.error("не смогли отдать ошибку прогресса %s", name)
+        return wrapper
 
     def _run(
         self,
         name: str,
         func: t.Callable[[], t.Any],
     ) -> None:
-        """Запустить задачу в пуле, если окно не занято.
+        """Запустить задачу в пуле.
+
+        Тяжёлая задача требует свободного окна и выставляет флаг занятости.
+        Лёгкая (см. LIGHT_TASKS) идёт рядом с любой тяжёлой: каталог моделей
+        и проверка связи не трогают ни ядро, ни файлы.
 
         Результат и ошибка уходят сигналами taskFinished/taskFailed: они
         испускаются из рабочего потока, а Qt доставляет их в поток окна.
         """
-        if self._busy:
-            return
-        self._cancel.clear()
-        self._set_busy(True)
+        light = name in LIGHT_TASKS
+        if not light:
+            if self._busy:
+                return
+            self._cancel.clear()
+            self._set_busy(True)
 
         def _done(result: t.Any) -> None:
             # Флаг занятости снимет queued-слот _settle в главном потоке.
             self.taskFinished.emit(name, result)
 
         def _error(message: str) -> None:
-            self.errorOccurred.emit(message)
-            self.taskFailed.emit(name, message)
+            try:
+                self.errorOccurred.emit(message)
+                self.taskFailed.emit(name, message)
+            except Exception:  # noqa: BLE001 — ошибка не должна теряться молча
+                _LOGGER.exception("не смогли отдать ошибку задачи %s", name)
 
         run_async(
             self._pool.pool,
@@ -589,10 +741,26 @@ class Session(QObject):
     # ---------- чистильщик ----------
 
     def scan_candidates(self, roots: t.Sequence[str], cat_roots: bool) -> None:
-        """Скан кандидатов: стрим файлов из ядра складывается в сводки."""
+        """Скан кандидатов: стрим файлов из ядра складывается в сводки.
+
+        Повторный скан того же профиля в течение SCAN_CACHE_TTL отдаёт
+        прошлый результат мгновенно (from_cache=True): «много сканов
+        подряд» не гоняет обход дерева заново, когда ничего не менялось.
+        Любое удаление кеш обнуляет — файлы ушли.
+        """
         meta = self.cat_meta()
+        profile = (tuple(roots), bool(cat_roots))
 
         def work() -> ScanResult:
+            cached = self._scan_cache
+            if cached is not None:
+                cached_profile, cached_ts, cached_result = cached
+                if cached_profile == profile \
+                        and (time.time() - cached_ts) < SCAN_CACHE_TTL \
+                        and cached_result.summaries:
+                    cached_result.from_cache = True
+                    return cached_result
+
             collected: t.Dict[str, CandidateItem] = {}
             per_cat: t.Dict[str, t.List[int]] = {}
 
@@ -608,13 +776,24 @@ class Session(QObject):
                     bucket[1] += event.size
 
             def on_progress(event: dict) -> None:
+                phase = str(event.get("phase") or "")
+                if phase == "walking":
+                    # Обход дерева не знает общего числа файлов: проценты
+                    # не растут, живость показываем счётчиком пройденного.
+                    self.progressTick.emit(0)
+                    self.scanPhase.emit(
+                        phase,
+                        float(event.get("done") or 0),
+                        float(event.get("bytes") or 0))
+                    return
                 done, total = event.get("done"), event.get("total")
                 if isinstance(done, int) and isinstance(total, int) and total > 0:
                     self.progressTick.emit(max(0, min(100, round(100 * done / total))))
 
             data = self._client.candidates(
                 list(roots), cat_roots=cat_roots,
-                on_progress=on_progress, on_file=on_file,
+                on_progress=self._guard_progress("cleaner_scan", on_progress),
+                on_file=on_file,
             )
             summaries = [
                 CategorySummary(
@@ -639,6 +818,7 @@ class Session(QObject):
                 truncated=len(collected) >= MAX_SHOWN_CANDIDATES,
             )
             self._last_scan = result
+            self._scan_cache = (profile, time.time(), result)
             self._persist_last_scan(result)
             return result
 
@@ -685,13 +865,19 @@ class Session(QObject):
         return total
 
     def purge_items(self, items: t.Sequence[t.Mapping[str, str]],
-                    dry_run: bool) -> None:
+                    dry_run: bool,
+                    quarantine: t.Optional[bool] = None) -> None:
         """Удаление (или репетиция) выбранных пунктов. Дорожки решает ядро.
 
         Ядро шлёт progress-события на каждый обработанный чанк: фаза
         «planned» — это оглашение плана (ещё 0%), дальше done/total растут
         по мере удаления. Прогоняем их в progressTick — полоса на странице
         ползёт, а не стоит на нуле.
+
+        Карантин (включён в настройках, репетиция его игнорирует): файлы
+        не стираются, а переезжают в папку карантина с манифестом путей.
+        Не влезло или занято — файл остаётся на месте, путь приходит
+        в отчёт: молчаливых потерь нет.
         """
 
         def on_progress(event: dict) -> None:
@@ -702,23 +888,36 @@ class Session(QObject):
             if isinstance(done, int) and isinstance(total, int) and total > 0:
                 self.progressTick.emit(max(0, min(100, round(100 * done / total))))
 
+        entries = [(str(it["path"]), str(it.get("category", "")))
+                   for it in items]
+
         def work() -> PurgeReport:
-            return self._purge_work(items, dry_run, on_progress)
+            use_q = ctx().quarantineEnabled() if quarantine is None else quarantine
+            if not dry_run and use_q:
+                return self._quarantine_work(
+                    entries, kind="cleaner",
+                    on_progress=self._guard_progress("purge", on_progress))
+            return self._purge_work(
+                items, dry_run, self._guard_progress("purge", on_progress))
 
         self._run("purge", work)
 
-    def purge_duplicates(self, groups: t.Sequence[DupGroup]) -> None:
+    def purge_duplicates(self, groups: t.Sequence[DupGroup],
+                         quarantine: t.Optional[bool] = None) -> None:
         """Удаление дублей: в каждой группе остаётся самый свежий файл.
 
         Выбор «кого оставить» (stat по mtime) делается здесь, в рабочем
         потоке: stat тысяч путей в главном потоке на медленном диске
         замораживал окно (найдено контрольным аудитом).
+
+        С карантином дубли переезжают в папку просмотра группами:
+        манифест батча помнит хэш группы, оставленный файл и убранные.
         """
 
         def work() -> PurgeReport:
             from pathlib import Path
 
-            items: t.List[t.Dict[str, str]] = []
+            entries: t.List[t.Dict[str, t.Any]] = []
             for group in groups:
                 if len(group.paths) < 2:
                     continue
@@ -727,13 +926,231 @@ class Session(QObject):
                     key=lambda p: Path(p).stat().st_mtime
                     if Path(p).exists() else 0,
                 )
-                items.extend(
-                    {"path": p, "category": "dupes.photo"}
-                    for p in group.paths if p != keep
-                )
+                entries.append({
+                    "hash": group.hash,
+                    "size": group.size,
+                    "keep": keep,
+                    "removed": [p for p in group.paths if p != keep],
+                })
+            use_q = ctx().quarantineEnabled() if quarantine is None else quarantine
+            if use_q:
+                flat = [
+                    (p, "dupes.photo")
+                    for e in entries for p in e["removed"]
+                ]
+                return self._quarantine_work(
+                    flat, kind="dupes", groups=entries)
+            items = [
+                {"path": p, "category": "dupes.photo"}
+                for e in entries for p in e["removed"]
+            ]
             return self._purge_work(items, False)
 
         self._run("purge", work)
+
+    def clear_quarantine(self) -> None:
+        """Стереть карантин: место освобождается по-настоящему.
+
+        Тяжёлая задача пула: папки карантина бывают большими, удаление
+        рекурсивное. Итог — освобождённые байты, их покажет тост.
+        """
+
+        def work() -> int:
+            from core import quarantine as qcore
+
+            freed = qcore.clear()
+            try:
+                self.journal().log(
+                    "quarantine", self.tr_quarantine_cleared(freed),
+                    outcome="ok", freed_bytes=freed)
+            except Exception:  # noqa: BLE001 — журнал не должен ронять очистку
+                _LOGGER.warning("строка журнала не записана", exc_info=True)
+            return freed
+
+        self._run("quarantine_clear", work)
+
+    def quarantine_list(self) -> None:
+        """Опись карантина для окна просмотра: лёгкая, рядом со сканами.
+
+        Чтение манифестов и подсчёт размеров — сотни записей, не тяжёлая
+        работа, окно карантина не должно ждать окончания чужого скана.
+        """
+
+        def work() -> t.Dict[str, t.Any]:
+            from core import quarantine as qcore
+
+            entries = qcore.entries()
+            total = sum(int(e.get("size", 0)) for e in entries)
+            return {"entries": entries, "bytes": total}
+
+        self._run("quarantine_list", work)
+
+    def quarantine_restore(
+            self, selected: t.Sequence[t.Mapping[str, t.Any]]) -> None:
+        """Вернуть выбранные записи карантина на исходные места.
+
+        Отказ не останавливает остальные: итог — список вернувшихся и
+        список причин по каждой невзявшейся записи.
+        """
+
+        def work() -> t.Dict[str, t.Any]:
+            from core import quarantine as qcore
+
+            restored: t.List[t.Dict[str, t.Any]] = []
+            failed: t.List[t.Dict[str, t.Any]] = []
+            for entry in selected:
+                if self._cancel.is_set():
+                    break
+                ok, reason = qcore.restore(dict(entry))
+                if ok:
+                    restored.append({
+                        "path": str(entry.get("path", "")),
+                        "size": int(entry.get("size", 0)),
+                    })
+                else:
+                    failed.append({
+                        "path": str(entry.get("path", "")),
+                        "reason": reason,
+                    })
+            try:
+                self.journal().log(
+                    "quarantine_restore",
+                    ctx().tr("quarantine.restore_journal").format(
+                        count=len(restored)),
+                    outcome="error" if failed else "ok",
+                    restored=len(restored), failed=len(failed))
+            except Exception:  # noqa: BLE001 — журнал не должен ронять задачу
+                _LOGGER.warning("строка журнала не записана", exc_info=True)
+            return {"restored": restored, "failed": failed}
+
+        self._run("quarantine_restore", work)
+
+    def quarantine_delete(
+            self, selected: t.Sequence[t.Mapping[str, t.Any]],
+            batches: t.Sequence[str] = ()) -> None:
+        """Стереть выбранные записи (или батчи) карантина навсегда.
+
+        Одиночные записи удаляются пофайлово, батчи — целиком с манифестом.
+        Возвращает освобождённые байты и список отказов.
+        """
+
+        def work() -> t.Dict[str, t.Any]:
+            from core import quarantine as qcore
+
+            freed = 0
+            failed: t.List[t.Dict[str, t.Any]] = []
+            for entry in selected:
+                if self._cancel.is_set():
+                    break
+                freed += int(entry.get("size", 0))
+                ok, reason = qcore.delete_entry(dict(entry))
+                if not ok:
+                    failed.append({
+                        "path": str(entry.get("path", "")),
+                        "reason": reason,
+                    })
+            for batch in batches:
+                ok, batch_freed = qcore.delete_batch(str(batch))
+                if ok:
+                    freed += batch_freed
+                else:
+                    failed.append({"path": str(batch), "reason": "батч не найден"})
+            try:
+                self.journal().log(
+                    "quarantine_delete",
+                    ctx().tr("quarantine.delete_journal").format(
+                        size=human_size(freed)),
+                    outcome="error" if failed else "ok",
+                    freed_bytes=freed, failed=len(failed))
+            except Exception:  # noqa: BLE001 — журнал не должен ронять задачу
+                _LOGGER.warning("строка журнала не записана", exc_info=True)
+            return {"freed": freed, "failed": failed}
+
+        self._run("quarantine_delete", work)
+
+    def tr_quarantine_cleared(self, freed: int) -> str:
+        return ctx().tr("quarantine.cleared").format(size=human_size(freed))
+
+    def _quarantine_work(
+        self,
+        entries: t.Sequence[t.Tuple[str, str]],
+        kind: str,
+        groups: t.Optional[t.Sequence[t.Dict[str, t.Any]]] = None,
+        on_progress: t.Optional[t.Callable[[dict], None]] = None,
+    ) -> PurgeReport:
+        """Перенести пункты в карантин: папка просмотра вместо стирания.
+
+        Структура путей сохраняется (C:\\Users\\x\\t.tmp -> C/Users/x/t.tmp),
+        рядом лежит manifest.json с исходными путями и группами дублей.
+        Место под копию проверяется заранее: не влезло — файл остаётся
+        на месте и попадает в no_space отчёта, а не исчезает молча.
+        """
+        from core import quarantine as qcore
+
+        batch = qcore.new_batch()
+        report = PurgeReport(dry_run=False)
+        report.planned = len(entries)
+        report.quarantine_dir = str(batch)
+
+        moved = 0
+        moved_bytes = 0
+        manifest: t.List[t.Dict[str, t.Any]] = []
+        for i, (path, category) in enumerate(entries):
+            if self._cancel.is_set():
+                report.cancelled = True
+                break
+            dst, reason = qcore.stash_file(path, batch)
+            if dst is None:
+                report.no_space.append({"path": path, "reason": reason})
+                continue
+            moved += 1
+            try:
+                moved_bytes += os.path.getsize(dst)
+            except OSError:
+                pass
+            manifest.append({
+                "path": path,
+                "category": category,
+                "stashed": str(dst),
+            })
+            if on_progress is not None and (i % 64 == 0 or i == len(entries) - 1):
+                on_progress({"phase": "quarantine", "done": i + 1,
+                             "total": len(entries)})
+
+        try:
+            qcore.write_manifest(batch, kind, manifest, groups=groups)
+        except Exception:  # noqa: BLE001 — манифест не должен ронять удаление
+            _LOGGER.warning("манифест карантина не записан", exc_info=True)
+
+        report.quarantined = moved
+        report.quarantined_bytes = moved_bytes
+        report.removed = moved
+        batch_drive = qcore.drive_of(str(batch))
+        freed = 0
+        for entry in manifest:
+            if qcore.drive_of(entry["path"]) != batch_drive:
+                freed += os.path.getsize(entry["stashed"]) \
+                    if os.path.exists(entry["stashed"]) else 0
+        report.freed_bytes = freed
+        report.lanes = {"quarantine": moved}
+        report.refused = len(report.no_space)
+        self._last_purge = report
+        # Файлы ушли с исходных мест: кеши скана и групп больше не валидны.
+        self._last_scan = ScanResult()
+        self._last_groups = []
+        self._scan_cache = None
+        try:
+            self.journal().log(
+                "purge", self.describe_purge(report),
+                outcome="error" if report.no_space else "ok",
+                dry_run=False, planned=report.planned,
+                quarantined=report.quarantined,
+                quarantined_bytes=report.quarantined_bytes,
+                no_space=len(report.no_space),
+                quarantine_dir=report.quarantine_dir)
+        except Exception:  # noqa: BLE001 — журнал не должен ронять удаление
+            _LOGGER.warning("строка журнала не записана", exc_info=True)
+        return report
 
     def _purge_work(
         self,
@@ -754,6 +1171,7 @@ class Session(QObject):
         if not dry_run:
             self._last_scan = ScanResult()
             self._last_groups = []
+            self._scan_cache = None
         try:
             self.journal().log(
                 "purge", self.describe_purge(report),
@@ -1054,8 +1472,47 @@ class Session(QObject):
 
     # ---------- дубликаты ----------
 
-    def scan_duplicates(self, roots: t.Sequence[str]) -> None:
-        """Точные дубликаты по BLAKE3: группы приходят событием dupgroups."""
+    # Экран «Дубликаты фото» ищет картинки: скан всех файлов домашней
+    # папки длился бы вечно и не имел отношения к названию страницы.
+    # Ядро сравнивает расширения без учёта регистра.
+    PHOTO_EXTS = (
+        "jpg", "jpeg", "png", "webp", "bmp", "gif",
+        "tif", "tiff", "heic", "heif", "avif", "jxl",
+    )
+
+    def scan_duplicates(self, roots: t.Sequence[str],
+                        exts: t.Optional[t.Sequence[str]] = None) -> None:
+        """Точные дубликаты по BLAKE3: группы приходят событием dupgroups.
+
+        Прогресс ядра идёт в progressTick, смена фазы (сбор, размер,
+        быстрая сверка, полный хэш) — сигналом dedupPhase: пользователь
+        видит, что скан жив, а не «вечно 0%».
+        """
+        exts = list(exts) if exts is not None else list(self.PHOTO_EXTS)
+        phase_seen: t.List[str] = []
+
+        def on_progress(event: dict) -> None:
+            total = int(event.get("total") or 0)
+            done = int(event.get("done") or 0)
+            if total > 0:
+                self.progressTick.emit(max(0, min(100, round(100 * done / total))))
+            else:
+                self.progressTick.emit(0)
+            phase = str(event.get("phase") or "")
+            last = phase_seen[-1] if phase_seen else ""
+            # bytes уходят как float: домашняя папка легко переваливает
+            # за 2^31 байт, а C++ int в сигнале ронял поток с OverflowError.
+            scanned = float(event.get("bytes") or 0)
+            if phase == "walk":
+                # Сбор каталогов не знает общего объёма — проценты не растут.
+                # Движение показываем байтами: каждый тик обновляет статус,
+                # иначе долгий walk выглядит как «вечный 0%».
+                if phase != last:
+                    phase_seen.append(phase)
+                self.dedupPhase.emit(phase, scanned)
+            elif phase and phase != last:
+                phase_seen.append(phase)
+                self.dedupPhase.emit(phase, scanned)
 
         def work() -> t.Dict[str, t.Any]:
             groups: t.List[DupGroup] = []
@@ -1071,9 +1528,19 @@ class Session(QObject):
                 )
 
             data = self._client.duplicates(list(roots), min_size=64 * 1024,
+                                           exts=exts,
+                                           on_progress=self._guard_progress(
+                                               "dedup", on_progress),
                                            on_groups=on_groups)
             self._last_groups = groups
-            return {"data": data, "groups": groups}
+            # Кеш хешей в rust: сколько файлов не перечитывались потому,
+            # что размер+время файла не изменились с прошлого скана.
+            try:
+                cache_hits = int(data.get("cache_hits", 0) or 0)
+            except (TypeError, ValueError, AttributeError):
+                cache_hits = 0
+            return {"data": data, "groups": groups,
+                    "cache_hits": cache_hits}
 
         self._run("dedup", work)
 
@@ -1102,10 +1569,24 @@ class Session(QObject):
 
         Дорожки в отчёте ядра — план по пунктам, а не факт удаления, поэтому
         в итоговой строке их нет: план пользователь уже видел в подтверждении.
+        Карантинный итог говорит прямо: файлы лежат в папке просмотра,
+        место освободится после очистки карантина.
         """
         if report.dry_run:
             return ctx().tr("session.purge_plan").format(
                 count=report.planned, size=human_size(report.planned_bytes))
+        if report.quarantine_dir:
+            parts = [
+                ctx().tr("session.purge_quarantined").format(
+                    count=report.quarantined,
+                    size=human_size(report.quarantined_bytes)),
+            ]
+            if report.no_space:
+                parts.append(ctx().tr("session.purge_no_space").format(
+                    count=len(report.no_space)))
+            if report.cancelled:
+                parts.append(ctx().tr("session.purge_cancelled"))
+            return "; ".join(parts)
         parts = [
             ctx().tr("session.purge_done").format(
                 count=report.removed, size=human_size(report.freed_bytes)),

@@ -1,9 +1,8 @@
 """Установка gpedit (редактор групповых политик) на Home-редакции Windows.
 
-В отличие от MakuTweaker (генерирует bat в %TEMP% и гоняет его), у нас чистый
-Python: перечисляем .mum-пакеты GroupPolicy в %SystemRoot%\\servicing\\Packages
-и ставим каждый через DISM напрямую. Результат по каждому пакету честно
-возвращается.
+Самописный путь без генерации bat-обёрток: чистый Python — перечисляем
+.mum-пакеты GroupPolicy в %SystemRoot%\\servicing\\Packages и ставим каждый
+через DISM напрямую. Результат по каждому пакету честно возвращается.
 """
 from __future__ import annotations
 

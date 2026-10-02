@@ -1,0 +1,93 @@
+name: Release
+
+# Релиз по тегу v*: собирает onefile-exe тем же start-build.bat (тесты как
+# жёсткий гейт), упаковывает в SWAGcleaner-vX.Y.Z.zip + SHA256SUMS.txt и
+# публикует GitHub Release. Только официальные actions/*; публикация - gh CLI
+# из состава раннера с GITHUB_TOKEN, никаких сторонних release-actions.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Тег релиза (например v1.0.1); нужен только при ручном запуске'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Сборка и публикация
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Тег релиза
+        id: tag
+        shell: powershell
+        run: |
+          $tag = '${{ github.ref_name }}'
+          if ($tag -notlike 'v*') { $tag = '${{ inputs.tag }}' }
+          if ($tag -notlike 'v*') {
+            Write-Host '::error::запуск без тега v*: push тег v1.0.1 или workflow_dispatch с inputs.tag'
+            exit 1
+          }
+          Write-Host ('тег релиза: ' + $tag)
+          Add-Content -Path $env:GITHUB_OUTPUT -Value ('tag=' + $tag)
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Кэш target/ для cargo
+        uses: actions/cache@v4
+        with:
+          path: rust/swagscan/target
+          key: cargo-target-${{ runner.os }}-${{ hashFiles('rust/swagscan/Cargo.lock') }}
+          restore-keys: |
+            cargo-target-${{ runner.os }}-
+
+      # run-build.ps1: тот же рецепт, что в CI - CP866-журнал перекодируется,
+      # --no-pause, код возврата доносится до шага. Тесты и живой self-test
+      # замороженного exe идут внутри батника как жёсткий гейт.
+      - name: start-build.bat --onefile --tests --verify
+        shell: powershell
+        run: .github\scripts\run-build.ps1 -Mode onefile
+
+      - name: Артефакт (контроль)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SWAGcleaner-onefile-release
+          path: dist/SWAGcleaner.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      # pack-release.ps1: zip + SHA256SUMS.txt + gh release create/upload.
+      # GITHUB_TOKEN пробрасывается скрипту через env.
+      - name: Упаковка и публикация релиза
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .github\scripts\pack-release.ps1 -Tag '${{ steps.tag.outputs.tag }}'
+
+      - name: Журнал сборки при падении
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-build-log
+          path: ${{ runner.temp }}/swag-build-utf8.log
+          if-no-files-found: ignore
+          retention-days: 7

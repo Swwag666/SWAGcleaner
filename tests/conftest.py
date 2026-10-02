@@ -92,3 +92,30 @@ def fake_installed_provider() -> FakeInstalledProvider:
             {"display_name": "Some Bloatware App", "install_location": r"C:\Program Files\Bloatware", "publisher": "Bloatware Corp"},
         ]
     )
+
+
+@pytest.fixture
+def win_fake(qapp: t.Any) -> t.Any:
+    """Окно вместе с фейковой сессией: тест сам завершает задачи.
+
+    Общая для всех файлов UI-тестов: и smoke, и карантин гоняют окно
+    на одном и том же фейковом ядре.
+    """
+    from PySide6.QtTest import QTest
+
+    from tests.fakes import FakeCoreSession
+    from ui.context import ctx
+    from ui.main import MainWindow
+
+    session = FakeCoreSession()
+    window = MainWindow(qapp, ctx(), session)
+    window.resize(1100, 700)
+    window.show()
+    QTest.qWait(80)
+    yield window, session
+    window.close()
+    window.deleteLater()
+    qapp.processEvents()
+    ctx().setLocale("ru")
+    ctx().setTheme("dark")
+    ctx().setFontKind("pixel")

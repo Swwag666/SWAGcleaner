@@ -3,8 +3,8 @@
 Скрипты лежат в assets/activation/ и пакуются в exe. Запуск: cmd.exe /c со
 stdin=DEVNULL (внутри есть choice-подтверждение на eval-редакциях — без stdin
 оно не зависает, а падает мимо), таймаут, классификация результата по строкам
-вывода (тот же протокол, что читал MakuTweaker, только без молчаливого
-проглатывания: хвост вывода возвращается для диагностики).
+выва (протокол маркеров MAS, без молчаливого проглатывания: хвост вывода
+возвращается для диагностики).
 
 Плюс ручной KMS-путь: slmgr /ipk (ключ по редакции) + /skms + /ato.
 """
@@ -20,8 +20,8 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 _SCRIPT_DIR = Path(__file__).resolve().parent.parent / "assets" / "activation"
-_HWID_SCRIPT = "MakuTweakerNew.HWID.cmd"
-_OFFICE_SCRIPT = "MakuTweakerNew.Office.cmd"
+_HWID_SCRIPT = "hwid_activation.cmd"
+_OFFICE_SCRIPT = "office_activation.cmd"
 
 # Ключи GVLK по редакциям (публичные KMS-клиентские ключи Microsoft).
 _EDITION_KEYS = {

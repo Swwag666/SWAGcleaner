@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -37,6 +37,7 @@ from ui.theme import (
     ConfigCard,
     HeroCard,
     ShimmerProgress,
+    apply_role_font,
     body,
     button,
     card,
@@ -51,6 +52,30 @@ from ui.theme import (
     subheading,
 )
 from ui.widgets import StatsRow, StorageBar, StorageRow, TreemapWidget
+
+
+class ComboPopupOnPress(QObject):
+    """Клик в поле editable-комбо открывает список моделей.
+
+    Стандартный editable QComboBox открывает список только стрелкой справа:
+    клик в само поле даёт каретку редактирования, и созданный каталог
+    «не выводится» и «не даёт выбрать», хотя он подтянут. Фильтр открывает
+    popup по клику в поле, когда список закрыт; клик при открытом списке
+    Qt закрывает сам — выходит честный toggle.
+    """
+
+    def __init__(self, combo: QComboBox) -> None:
+        super().__init__(combo)
+        self._combo = combo
+
+    def eventFilter(self, _watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.MouseButtonPress:
+            view = self._combo.view()
+            if view is not None and not view.isVisible():
+                # singleShot: дать Qt сначала обработать клик (фокус,
+                # каретку), список раскрывается сразу после.
+                QTimer.singleShot(0, self._combo.showPopup)
+        return False
 
 
 class EmptyTab(QWidget):
@@ -435,13 +460,16 @@ class CategoryCard(QFrame):
         self._lane_label = QLabel(self)
         self._lane_label.setObjectName("laneBadge")
         self._lane_label.setProperty("lane", self._lane)
+        apply_role_font(self._lane_label)
         bottom.addWidget(self._lane_label)
         self._risk_label = QLabel(self)
         self._risk_label.setObjectName("riskBadge")
         self._risk_label.setProperty("risk", risk)
+        apply_role_font(self._risk_label)
         bottom.addWidget(self._risk_label)
         self._note_label = QLabel(self)
         self._note_label.setProperty("role", "hint")
+        apply_role_font(self._note_label)
         self._note_label.setWordWrap(True)
         bottom.addWidget(self._note_label, 1)
         layout.addLayout(bottom)
@@ -503,6 +531,88 @@ class CategoryCard(QFrame):
         if self._regrows:
             notes.append(ctx().tr("cats.regrows_note"))
         self._note_label.setText(" · ".join(notes))
+
+
+class DupGroupCard(QFrame):
+    """Карточка группы дублей: галочка решает, поедет ли группа в удаление.
+
+    Группа — первичная сущность выбора на экране дубликатов: внутри группы
+    всегда остаётся самый свежий файл, выбор возможен только между
+    группами. Карточка показывает объём, число копий и где они лежат.
+    """
+
+    toggled = Signal(int, bool)
+
+    def __init__(self, index: int, size: int, paths: List[str],
+                 parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("categoryCard")
+        self.setProperty("risk", "medium")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._index = index
+        self._size = int(size)
+        self._paths = list(paths)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(4)
+
+        top = QHBoxLayout()
+        top.setSpacing(10)
+        name = (self._paths[0].replace("/", "\\").split("\\")[-1]
+                if self._paths else "?")
+        self._check = QCheckBox(f"{human_size(self._size)} × {len(self._paths)} — {name}", self)
+        self._check.setChecked(True)
+        self._check.toggled.connect(self._on_check)
+        top.addWidget(self._check, 1)
+        self._wasted_label = QLabel(self)
+        self._wasted_label.setProperty("role", "secondary")
+        top.addWidget(self._wasted_label, 0, Qt.AlignmentFlag.AlignRight)
+        layout.addLayout(top)
+
+        self._paths_label = QLabel(self)
+        self._paths_label.setProperty("role", "hint")
+        apply_role_font(self._paths_label)
+        self._paths_label.setWordWrap(True)
+        layout.addWidget(self._paths_label)
+
+        self.retranslate()
+
+    def group_index(self) -> int:
+        return self._index
+
+    def is_checked(self) -> bool:
+        return self._check.isChecked()
+
+    def set_checked(self, on: bool) -> None:
+        self._check.setChecked(on)
+
+    def _on_check(self, on: bool) -> None:
+        self.setProperty("checked", "true" if on else "false")
+        style = self.style()
+        style.unpolish(self)
+        style.polish(self)
+        self.toggled.emit(self._index, on)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001, N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._check.toggle()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def retranslate(self) -> None:
+        wasted = self._size * max(0, len(self._paths) - 1)
+        self._wasted_label.setText(
+            ctx().tr("dedup.wasted_fmt").format(size=human_size(wasted)))
+        shown = self._paths[:2]
+        rest = len(self._paths) - len(shown)
+        text = "\n".join(shown)
+        if rest > 0:
+            text += "\n" + ctx().tr("preview.more_paths").format(count=rest)
+        if self._paths:
+            text += "\n" + ctx().tr("session.dup_keep_note")
+        self._paths_label.setText(text.strip())
 
 
 class JournalPanel(QFrame):
@@ -631,9 +741,11 @@ class CleanerTab(EmptyTab):
 
     scanRequested = Signal()
     cleanRequested = Signal()
+    quarantineSendRequested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         self._status_label: Optional[QLabel] = None
+        self._quar_button: Optional[QPushButton] = None
         self._cards: List[CategoryCard] = []
         self._cards_layout: Optional[QVBoxLayout] = None
         self._scroll: Optional[QScrollArea] = None
@@ -729,7 +841,12 @@ class CleanerTab(EmptyTab):
         scan.clicked.connect(self.scanRequested.emit)
         clean = self._add_button("cleaner.clean_button", primary=True)
         clean.clicked.connect(self.cleanRequested.emit)
-        self._add_row(scan, clean)
+        # Явная кнопка карантна: файлы уезжают в папку просмотра,
+        # а не в корзину - своя дорожка, минуя выбор судьбы в диалоге.
+        quar = self._add_button("cleaner.quar_button")
+        quar.clicked.connect(self.quarantineSendRequested.emit)
+        self._quar_button = quar
+        self._add_row(scan, clean, quar)
         # Растяжку не добавляем: её роль играет растущая область результата,
         # иначе кнопки уедут в середину страницы.
 
@@ -911,9 +1028,11 @@ class DedupTab(EmptyTab):
     chooseFolderRequested = Signal()
     scanRequested = Signal()
     deleteRequested = Signal()
+    quarantineSendRequested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         self._status_label: Optional[QLabel] = None
+        self._quar_button: Optional[QPushButton] = None
         self._groups_area: Optional[QLabel] = None
         self._journal: Optional[JournalPanel] = None
         self._scroll: Optional[QScrollArea] = None
@@ -947,6 +1066,15 @@ class DedupTab(EmptyTab):
         self._groups_area = body(self._groups_text(), self)
         self._groups_area.setProperty("role", "secondary")
         host_layout.addWidget(self._groups_area)
+        # Карточки групп: галочка на каждой решает, кто поедет в удаление.
+        # Контейнер живёт между текстом-заглушкой и журналом.
+        self._cards_host = QWidget()
+        self._cards_layout = QVBoxLayout(self._cards_host)
+        self._cards_layout.setContentsMargins(0, 0, 0, 0)
+        self._cards_layout.setSpacing(8)
+        self._group_cards: List[QWidget] = []
+        self._groups: List[t.Any] = []
+        host_layout.addWidget(self._cards_host)
         self._journal = JournalPanel(self)
         host_layout.addWidget(self._journal, 1)
         host_layout.addStretch(1)
@@ -983,7 +1111,12 @@ class DedupTab(EmptyTab):
         scan.clicked.connect(self.scanRequested.emit)
         delete = self._add_button("dedup.delete_button", primary=True)
         delete.clicked.connect(self.deleteRequested.emit)
-        self._add_row(folder, scan, delete)
+        # Дубликаты можно сразу увезти в карантин - без корзины и без
+        # развилки в диалоге: выбранные группы едут в папку просмотра.
+        quar = self._add_button("dedup.quar_button")
+        quar.clicked.connect(self.quarantineSendRequested.emit)
+        self._quar_button = quar
+        self._add_row(folder, scan, delete, quar)
         self._layout.addStretch(1)
 
     def _status_text(self) -> str:
@@ -1003,14 +1136,60 @@ class DedupTab(EmptyTab):
         )
 
     def setGroups(self, text: str) -> None:
+        """Текст вместо списка (заглушки и «дублей нет»)."""
         if self._groups_area is not None:
             self._groups_area.setText(text)
+        self._clear_group_cards()
         # Новый скан сменяет журнал прошлого удаления.
         if self._journal is not None:
             self._journal.setVisible(False)
         if self._groups_area is not None:
             self._groups_area.setVisible(True)
         self._sync_host_min()
+
+    def set_groups(self, groups: t.Sequence[t.Any]) -> None:
+        """Карточки групп с галочками: выбор, что удалять.
+
+        Каждый элемент — группа дублей (size + paths); внутри группы
+        останется самый свежий файл, галочка решает судьбу группы целиком.
+        """
+        self._clear_group_cards()
+        self._groups = list(groups)
+        if self._journal is not None:
+            self._journal.setVisible(False)
+        if not self._groups:
+            if self._groups_area is not None:
+                self._groups_area.setText(ctx().tr("session.dup_none"))
+                self._groups_area.setVisible(True)
+            self._sync_host_min()
+            return
+        if self._groups_area is not None:
+            self._groups_area.setVisible(False)
+        self._cards_host.setVisible(True)
+        for i, group in enumerate(self._groups):
+            size = int(getattr(group, "size", 0) or 0)
+            paths = [str(p) for p in getattr(group, "paths", [])]
+            card = DupGroupCard(i, size, paths, self._cards_host)
+            self._cards_layout.addWidget(card)
+            self._group_cards.append(card)
+        self._sync_host_min()
+
+    def _clear_group_cards(self) -> None:
+        for card in self._group_cards:
+            card.setParent(None)
+            card.deleteLater()
+        self._group_cards = []
+        self._groups = []
+
+    def selected_groups(self) -> t.List[t.Any]:
+        """Группы с поднятыми галочками: их и почистит кнопка удаления."""
+        return [self._groups[card.group_index()]
+                for card in self._group_cards
+                if isinstance(card, DupGroupCard) and card.is_checked()
+                and card.group_index() < len(self._groups)]
+
+    def group_cards(self) -> t.List[QWidget]:
+        return list(self._group_cards)
 
     def show_journal(self, report, summary: str) -> None:
         """После удаления дублей: журнал вместо списка групп до нового скана."""
@@ -1019,12 +1198,16 @@ class DedupTab(EmptyTab):
         self._journal.show_report(report, summary)
         if self._groups_area is not None:
             self._groups_area.setVisible(False)
+        self._cards_host.setVisible(False)
         self._sync_host_min()
 
     def retranslate(self) -> None:
         super().retranslate()
         if self._journal is not None:
             self._journal.retranslate()
+        for card in self._group_cards:
+            if isinstance(card, DupGroupCard):
+                card.retranslate()
 
     def _title(self) -> str:
         return ctx().tr("dedup.title")
@@ -1891,6 +2074,7 @@ class SettingsTab(EmptyTab):
     accentChanged = Signal(str)
     motionChanged = Signal(str)
     soundsChanged = Signal(bool)
+    quarantineActionRequested = Signal(str)  # "open" | "clear"
     aiSaveRequested = Signal(object)     # AiSettings из виджетов
     aiTestRequested = Signal(object)     # проверить связь
     aiModelsRequested = Signal(object)   # подтянуть каталог моделей
@@ -1902,6 +2086,8 @@ class SettingsTab(EmptyTab):
         self._motion_combo: Optional[QComboBox] = None
         self._font_combo: Optional[QComboBox] = None
         self._sounds_check: Optional[QCheckBox] = None
+        self._quarantine_check: Optional[QCheckBox] = None
+        self._quarantine_size: Optional[QLabel] = None
         self._accordions: List[Accordion] = []
         self._ai_enabled: Optional[QCheckBox] = None
         self._ai_provider: Optional[QComboBox] = None
@@ -1982,6 +2168,12 @@ class SettingsTab(EmptyTab):
         self._add_ai_section(ai_acc.body_layout())
         host_layout.addWidget(ai_acc)
         ai_acc.toggled.connect(lambda _open=False: self._sync_host_min())
+
+        q_acc = Accordion(ctx().tr("quarantine.section"), self, open=False)
+        self._accordions.append(q_acc)
+        self._add_quarantine_section(q_acc.body_layout())
+        host_layout.addWidget(q_acc)
+        q_acc.toggled.connect(lambda _open=False: self._sync_host_min())
         host_layout.addStretch(1)
 
         scroll.setWidget(host)
@@ -2010,6 +2202,7 @@ class SettingsTab(EmptyTab):
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
+        self.refresh_quarantine()
         self.schedule_layout_sync()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
@@ -2030,6 +2223,8 @@ class SettingsTab(EmptyTab):
                                   "ollama")
         self._ai_provider.addItem(ctx().tr("settings.ai_provider_openai"),
                                   "openai")
+        self._ai_provider.addItem(ctx().tr("settings.ai_provider_anthropic"),
+                                  "anthropic")
         self._ai_provider.currentIndexChanged.connect(self._on_ai_changed)
         layout.addWidget(self._ai_provider)
 
@@ -2043,11 +2238,16 @@ class SettingsTab(EmptyTab):
         model_row = QHBoxLayout()
         self._ai_model = QComboBox(self)
         self._ai_model.setEditable(True)
+        self._ai_model.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._ai_model.lineEdit().setPlaceholderText(
+            ctx().tr("settings.ai_model_placeholder"))
+        self._ai_model_popup = ComboPopupOnPress(self._ai_model)
+        self._ai_model.lineEdit().installEventFilter(self._ai_model_popup)
         model_row.addWidget(self._ai_model, 1)
-        refresh = QPushButton(ctx().tr("settings.ai_models_refresh"), self)
-        refresh.setMinimumHeight(30)
-        refresh.clicked.connect(self._emit_ai_models)
-        model_row.addWidget(refresh)
+        self._ai_models_btn = QPushButton(ctx().tr("settings.ai_models_refresh"), self)
+        self._ai_models_btn.setMinimumHeight(30)
+        self._ai_models_btn.clicked.connect(self._emit_ai_models)
+        model_row.addWidget(self._ai_models_btn)
         layout.addLayout(model_row)
 
         self._ai_key_label = self._add_section_label("settings.ai_key_label",
@@ -2069,10 +2269,10 @@ class SettingsTab(EmptyTab):
         layout.addWidget(self._ai_remote_warn)
 
         buttons = QHBoxLayout()
-        test = QPushButton(ctx().tr("settings.ai_test"), self)
-        test.setMinimumHeight(30)
-        test.clicked.connect(self._emit_ai_test)
-        buttons.addWidget(test)
+        self._ai_test_btn = QPushButton(ctx().tr("settings.ai_test"), self)
+        self._ai_test_btn.setMinimumHeight(30)
+        self._ai_test_btn.clicked.connect(self._emit_ai_test)
+        buttons.addWidget(self._ai_test_btn)
         save = QPushButton(ctx().tr("settings.ai_save"), self)
         save.setMinimumHeight(30)
         save.clicked.connect(self._emit_ai_save)
@@ -2088,10 +2288,10 @@ class SettingsTab(EmptyTab):
     def _on_ai_changed(self, *_args) -> None:
         """Провайдер/адрес поменялись: видимость ключа и предупреждения."""
         if self._ai_key is not None and self._ai_provider is not None:
-            is_openai = self._ai_provider.currentData() == "openai"
-            self._ai_key.setVisible(bool(is_openai))
+            needs_key = self._ai_provider.currentData() in ("openai", "anthropic")
+            self._ai_key.setVisible(bool(needs_key))
             if self._ai_key_label is not None:
-                self._ai_key_label.setVisible(bool(is_openai))
+                self._ai_key_label.setVisible(bool(needs_key))
         if self._ai_remote_warn is not None:
             settings = self.collect_ai_settings()
             self._ai_remote_warn.setVisible(bool(settings.is_remote()))
@@ -2146,7 +2346,11 @@ class SettingsTab(EmptyTab):
         self._on_ai_changed()
 
     def setAiModels(self, names: t.List[str]) -> None:
-        """Каталог моделей с сервера в выпадающий список (текущая остаётся)."""
+        """Каталог моделей с сервера в выпадающий список (текущая остаётся).
+
+        После заполнения список раскрывается сам: пользователь жал «подтянуть»
+        именно за этим — сразу выбирает модель кликом, не ища стрелку.
+        """
         if self._ai_model is None:
             return
         current = self._ai_model.currentText().strip()
@@ -2158,10 +2362,26 @@ class SettingsTab(EmptyTab):
             self._ai_model.insertItem(0, current)
         self._ai_model.setCurrentText(current)
         self._ai_model.blockSignals(False)
+        if names and self.isVisible():
+            self._ai_model.showPopup()
 
     def setAiStatus(self, text: str) -> None:
         if self._ai_status is not None:
             self._ai_status.setText(text)
+
+    def setAiBusy(self, busy: bool) -> None:  # noqa: N802 - как у виджетов Qt
+        """Погасить/вернуть кнопки сетевых запросов AI на время хождения.
+
+        Сетевые запросы AI лёгкие и идут мимо общего гейта занятости:
+        занятость здесь показывает себя - кнопка «в работе», а не молчаливо
+        проглоченный клик.
+        """
+        for attr in ("_ai_models_btn", "_ai_test_btn"):
+            btn = getattr(self, attr, None)
+            if btn is not None:
+                btn.setEnabled(not busy)
+        if busy and self._ai_status is not None:
+            self._ai_status.setText(ctx().tr("settings.ai_busy"))
 
     def _emit_ai_save(self) -> None:
         self.aiSaveRequested.emit(self.collect_ai_settings())
@@ -2175,6 +2395,83 @@ class SettingsTab(EmptyTab):
     def _on_sounds_toggled(self, enabled: bool) -> None:
         ctx().setSounds(enabled)
         self.soundsChanged.emit(enabled)
+
+    def _add_quarantine_section(self, layout: QVBoxLayout) -> None:
+        """Карантин: тумблер, отдельная папка, место, окно и очистка."""
+        self._quarantine_check = QCheckBox(
+            ctx().tr("quarantine.enable"), self)
+        self._quarantine_check.setChecked(ctx().quarantineEnabled())
+        self._quarantine_check.toggled.connect(self._on_quarantine_toggled)
+        layout.addWidget(self._quarantine_check)
+        layout.addWidget(hint(ctx().tr("quarantine.hint"), self))
+
+        # Отдельная папка карантина: карантин на большом диске не съедает
+        # системный. Пустая строка = %LOCALAPPDATA% по умолчанию.
+        folder_row = QHBoxLayout()
+        folder_row.setSpacing(8)
+        self._quarantine_dir_label = QLabel(self._quarantine_dir_text(), self)
+        self._quarantine_dir_label.setProperty("role", "secondary")
+        self._quarantine_dir_label.setWordWrap(True)
+        folder_row.addWidget(self._quarantine_dir_label, 1)
+        folder_btn = QPushButton(ctx().tr("quarantine.folder_button"), self)
+        folder_btn.setObjectName("secondaryButton")
+        folder_btn.clicked.connect(
+            lambda: self.quarantineActionRequested.emit("folder"))
+        folder_row.addWidget(folder_btn)
+        layout.addLayout(folder_row)
+
+        self._quarantine_size = QLabel(self)
+        self._quarantine_size.setProperty("role", "secondary")
+        self._quarantine_size.setWordWrap(True)
+        layout.addWidget(self._quarantine_size)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        open_btn = QPushButton(ctx().tr("quarantine.window_button"), self)
+        open_btn.setObjectName("secondaryButton")
+        open_btn.clicked.connect(
+            lambda: self.quarantineActionRequested.emit("window"))
+        row.addWidget(open_btn)
+        clear_btn = QPushButton(ctx().tr("quarantine.clear_button"), self)
+        clear_btn.setObjectName("dangerButton")
+        clear_btn.clicked.connect(
+            lambda: self.quarantineActionRequested.emit("clear"))
+        row.addWidget(clear_btn)
+        row.addStretch(1)
+        layout.addLayout(row)
+        self.refresh_quarantine()
+
+    def _quarantine_dir_text(self) -> str:
+        path = ctx().quarantineDir()
+        if path:
+            return ctx().tr("quarantine.dir_line").format(path=path)
+        return ctx().tr("quarantine.dir_default")
+
+    def quarantine_dir_label(self) -> QLabel:
+        return self._quarantine_dir_label
+
+    def _on_quarantine_toggled(self, enabled: bool) -> None:
+        ctx().setQuarantine(enabled)
+
+    def refresh_quarantine(self) -> None:
+        """Обновить строку «в карантине N · K папок».
+
+        Лёгкий проход: карантин по конструкции маленький — пакеты удаления,
+        которые пользователь сам чистит. Тяжёлый диск сюда не попадает.
+        """
+        if self._quarantine_size is None:
+            return
+        from core import quarantine
+        try:
+            size, batches = quarantine.stats()
+        except OSError:
+            size, batches = 0, 0
+        if batches == 0:
+            self._quarantine_size.setText(ctx().tr("quarantine.empty"))
+        else:
+            self._quarantine_size.setText(
+                ctx().tr("quarantine.size_line").format(
+                    size=human_size(size), batches=batches))
 
     def _add_buttons(self) -> None:
         backup = self._add_button("settings.backup_viewer")
@@ -2293,14 +2590,24 @@ class SettingsTab(EmptyTab):
     def retranslate(self) -> None:
         super().retranslate()
         self._fill_combos()
-        if len(self._accordions) >= 2:
+        if len(self._accordions) >= 3:
             self._accordions[0].set_title(ctx().tr("settings.acc_appearance"))
             self._accordions[1].set_title(ctx().tr("settings.acc_ai"))
+            self._accordions[2].set_title(ctx().tr("quarantine.section"))
+        if self._ai_model is not None:
+            self._ai_model.lineEdit().setPlaceholderText(
+                ctx().tr("settings.ai_model_placeholder"))
         if self._sounds_check is not None:
             self._sounds_check.blockSignals(True)
             self._sounds_check.setText(ctx().tr("settings.sounds_label"))
             self._sounds_check.setChecked(ctx().soundsEnabled())
             self._sounds_check.blockSignals(False)
+        if self._quarantine_check is not None:
+            self._quarantine_check.blockSignals(True)
+            self._quarantine_check.setText(ctx().tr("quarantine.enable"))
+            self._quarantine_check.setChecked(ctx().quarantineEnabled())
+            self._quarantine_check.blockSignals(False)
+        self.refresh_quarantine()
 
     def _title(self) -> str:
         return ctx().tr("settings.title")

@@ -207,26 +207,29 @@ for /f "delims=" %%V in ('"%VPY%" -m PyInstaller --version 2^>nul') do echo    P
 
 rem --- Этап 4: Rust ------------------------------------------------------------
 call :banner "этап 4/8 - ищу Rust"
-set "CARGO="
-where cargo >nul 2>&1 && set "CARGO=cargo"
-if not defined CARGO if exist "%USERPROFILE%\.cargo\bin\cargo.exe" set "CARGO=%USERPROFILE%\.cargo\bin\cargo.exe"
+call :find_cargo
 if not defined CARGO (
-    echo    Rust не найден - ставлю rustup автоматически
+    if exist "%USERPROFILE%\.cargo\bin\cargo.exe" (
+        echo    cargo найден в ~\.cargo\bin, но не запускается:
+        echo    шимы rustup висят без rustup.exe, переустанавливаю - это их чинит
+    ) else (
+        echo    Rust не найден - ставлю rustup автоматически
+    )
     call :install_rust
     if errorlevel 1 (
         set "FAILMSG=rustup не удалось поставить автоматически"
         goto :fail
     )
     call :refresh_path
-    where cargo >nul 2>&1 && set "CARGO=cargo"
-    if not defined CARGO if exist "%USERPROFILE%\.cargo\bin\cargo.exe" set "CARGO=%USERPROFILE%\.cargo\bin\cargo.exe"
+    call :find_cargo
 )
 if not defined CARGO (
-    set "FAILMSG=cargo так и не появился в PATH"
+    set "FAILMSG=cargo так и не появился или не запускается даже после переустановки rustup"
     goto :fail
 )
+echo    cargo: %CARGO%
 for /f "delims=" %%V in ('"%CARGO%" --version 2^>nul') do echo    %%V
-for /f "delims=" %%V in ('rustc --version 2^>nul') do echo    %%V
+if exist "%CARGO_DIR%rustc.exe" for /f "delims=" %%V in ('"%CARGO_DIR%rustc.exe" --version 2^>nul') do echo    %%V
 
 rem Гарантируем наличие нужного тулчейна, а не надеемся на default.
 set "CARGO_TC="
@@ -351,11 +354,18 @@ if errorlevel 1 (
 
 rem --- Этап 8: проверка артефакта ---------------------------------------------
 call :banner "этап 8/8 - проверка артефакта"
+rem Раскладку выбираем по MODE, а не по принципу "какой файл нашёлся
+rem последним": иначе протухшая папка dist\SWAGcleaner\ от прошлого
+rem onedir-прогона перетянула бы ARTIFACT на себя при сборке onefile, и этап 8
+rem отчитался бы размером и хешем чужого exe. --clean убирает обе раскладки.
 set "ARTIFACT="
-if exist "%ROOT%\dist\SWAGcleaner.exe" set "ARTIFACT=%ROOT%\dist\SWAGcleaner.exe"
-if exist "%ROOT%\dist\SWAGcleaner\SWAGcleaner.exe" set "ARTIFACT=%ROOT%\dist\SWAGcleaner\SWAGcleaner.exe"
+if "%MODE%"=="onedir" (
+    if exist "%ROOT%\dist\SWAGcleaner\SWAGcleaner.exe" set "ARTIFACT=%ROOT%\dist\SWAGcleaner\SWAGcleaner.exe"
+) else (
+    if exist "%ROOT%\dist\SWAGcleaner.exe" set "ARTIFACT=%ROOT%\dist\SWAGcleaner.exe"
+)
 if not defined ARTIFACT (
-    set "FAILMSG=PyInstaller отработал, но exe в dist не появился"
+    set "FAILMSG=PyInstaller отработал, но exe в раскладке %MODE% в dist не появился"
     goto :fail
 )
 
@@ -469,6 +479,38 @@ if not "!PR!"=="0" (
 )
 exit /b 0
 
+rem --- Поиск РАБОЧЕГО cargo --------------------------------------------------
+rem `where cargo` находит шим, даже если тот не запускается. Реальный случай с
+rem этой машины: шимы rustup в ~\.cargo\bin - симлинки на rustup.exe, и когда
+rem rustup.exe исчезает (антивирус, клинер, неудачный апдейт), все они повисают.
+rem `where` при этом рапортует успех, CARGO выставляется - и сборка падает уже
+rem на `cargo build` невнятным кодом 255, хотя тулчейны в .rustup\toolchains
+rem целы. Поэтому кандидата надо не найти, а ПРОВЕРИТЬ запуском.
+rem На выходе: CARGO - полный путь к рабочему cargo, CARGO_DIR - его папка.
+:find_cargo
+set "CARGO="
+set "CARGO_DIR="
+for /f "delims=" %%C in ('where cargo 2^>nul') do call :try_cargo "%%C"
+if not defined CARGO if exist "%USERPROFILE%\.cargo\bin\cargo.exe" call :try_cargo "%USERPROFILE%\.cargo\bin\cargo.exe"
+if defined CARGO exit /b 0
+exit /b 1
+
+:try_cargo
+rem %1 приходит уже в кавычках. Первый же живой кандидат закрывает поиск,
+rem остальные даже не трогаем - вдруг в PATH лежит второй, чужой cargo.
+rem Достоверный признак живости один - запуск. Размер файла НЕ признак:
+rem rustup-init раскладывает шимы симлинками на rustup.exe, и у рабочего cargo
+rem Length равен 0. Проверка на ноль давала ложный отказ на здоровой системе и
+rem роняла сборку уже ПОСЛЕ успешного восстановления Rust. Повисший симлинк
+rem отсекают `if exist` и сам запуск - этого достаточно.
+if defined CARGO exit /b 0
+if not exist %1 exit /b 1
+%1 --version >nul 2>&1
+if errorlevel 1 exit /b 1
+set "CARGO=%~1"
+set "CARGO_DIR=%~dp1"
+exit /b 0
+
 :install_rust
 rem Путь 1: rustup-init напрямую. Путь 2: winget.
 where curl >nul 2>&1
@@ -496,11 +538,25 @@ if errorlevel 1 exit /b 1
 exit /b 0
 
 :refresh_path
-rem Перечитать PATH из реестра: после установок текущая сессия его не видит.
-set "NEWPATH="
-for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')" 2^>nul`) do set "NEWPATH=%%P"
-if defined NEWPATH set "PATH=!NEWPATH!"
-if exist "%USERPROFILE%\.cargo\bin" set "PATH=!PATH!;%USERPROFILE%\.cargo\bin"
+rem Дочитать свежие каталоги из реестра: после установок текущая сессия их не
+rem видит. Именно ДОЧИТАТЬ к PATH процесса, а не заменить его реестровым -
+rem замена ломала CI: в GitHub Actions setup-python кладёт интерпретатор в PATH
+rem процесса через GITHUB_PATH, а не в реестр, и раннер оставался без питона.
+rem Считаем от сохранённого ORIG_PATH, а не от текущего: подпрограмму зовут три
+rem раза (этапы 0, 2, 4), и добавление к текущему растило бы PATH на каждом
+rem вызове вплоть до лимита cmd в 8191 символ, за которым set молча режет
+rem значение. От ORIG_PATH результат одинаков при любом числе вызовов.
+rem Дубликаты каталогов в PATH безвредны: Windows просто ищет по ним дважды.
+if not defined ORIG_PATH set "ORIG_PATH=!PATH!"
+set "REGPATH="
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')" 2^>nul`) do set "REGPATH=%%P"
+set "MERGED=!ORIG_PATH!"
+if defined REGPATH set "MERGED=!ORIG_PATH!;!REGPATH!"
+if exist "%USERPROFILE%\.cargo\bin" set "MERGED=!MERGED!;%USERPROFILE%\.cargo\bin"
+rem Склейка длиннее 7000 символов рискованно близка к лимиту cmd - тогда
+rem оставляем оригинал, он и так рабочий.
+if not "!MERGED:~7000,1!"=="" set "MERGED=!ORIG_PATH!"
+set "PATH=!MERGED!"
 exit /b 0
 
 :stamp
@@ -536,18 +592,28 @@ call :banner "верификация замороженной сборки, бе
 call :make_verify_spec
 if errorlevel 1 exit /b 1
 echo    собираю вариант без uac_admin и с консолью
+rem Чистим dist_verify целиком: PyInstaller с --noconfirm перезаписывает только
+rem свой вывод, а при смене режима старый exe от прошлой раскладки остался бы на
+rem месте, и верификация молча прогнала бы протухший артефакт вместо свежего.
+if exist "%ROOT%\dist_verify" rmdir /s /q "%ROOT%\dist_verify"
 "%VPY%" -m PyInstaller --noconfirm --distpath "%ROOT%\dist_verify" --workpath "%ROOT%\build_verify" "%ROOT%\SWAGcleaner-verify.spec"
 if errorlevel 1 (
     echo    верификационная сборка упала
     exit /b 1
 )
-if not exist "%ROOT%\dist_verify\SWAGcleaner.exe" (
-    echo    верификационный exe не появился
+rem Раскладка зависит от режима: onefile кладёт exe прямо в dist_verify,
+rem onedir - в dist_verify\SWAGcleaner\. Ищем обе, как это делает этап 8.
+set "VEXE="
+if exist "%ROOT%\dist_verify\SWAGcleaner.exe" set "VEXE=%ROOT%\dist_verify\SWAGcleaner.exe"
+if exist "%ROOT%\dist_verify\SWAGcleaner\SWAGcleaner.exe" set "VEXE=%ROOT%\dist_verify\SWAGcleaner\SWAGcleaner.exe"
+if not defined VEXE (
+    echo    верификационный exe не появился ни в onefile, ни в onedir раскладке
     exit /b 1
 )
+echo    верификационный exe: !VEXE!
 if exist "%SELFTEST_TXT%" del /q "%SELFTEST_TXT%"
 set "QT_QPA_PLATFORM=offscreen"
-"%ROOT%\dist_verify\SWAGcleaner.exe" --self-test >nul 2>&1
+"!VEXE!" --self-test >nul 2>&1
 set "VRC=!errorlevel!"
 set "QT_QPA_PLATFORM="
 chcp 866 >nul
